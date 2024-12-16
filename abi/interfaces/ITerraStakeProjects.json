@@ -1,0 +1,867 @@
+[
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "multiplier",
+          "type": "uint256"
+        }
+      ],
+      "name": "CategoryMultiplierUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": false,
+          "internalType": "address",
+          "name": "stakingContract",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "address",
+          "name": "rewardsContract",
+          "type": "address"
+        }
+      ],
+      "name": "ContractsSet",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes32[]",
+          "name": "documentHashes",
+          "type": "bytes32[]"
+        }
+      ],
+      "name": "DocumentationUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "minimumImpact",
+          "type": "uint256"
+        }
+      ],
+      "name": "ImpactRequirementUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "metricType",
+          "type": "string"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "metricValue",
+          "type": "string"
+        }
+      ],
+      "name": "MetricsReported",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "indexed": false,
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        }
+      ],
+      "name": "ProjectAdded",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "impactMetrics",
+          "type": "string"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes32",
+          "name": "ipfsHash",
+          "type": "bytes32"
+        }
+      ],
+      "name": "ProjectDataUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": true,
+          "internalType": "enum ITerraStakeProjects.ProjectState",
+          "name": "oldState",
+          "type": "uint8"
+        },
+        {
+          "indexed": true,
+          "internalType": "enum ITerraStakeProjects.ProjectState",
+          "name": "newState",
+          "type": "uint8"
+        }
+      ],
+      "name": "ProjectStateChanged",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "name",
+          "type": "string"
+        }
+      ],
+      "name": "ProjectUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint128",
+          "name": "amount",
+          "type": "uint128"
+        }
+      ],
+      "name": "RewardPoolUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint32",
+          "name": "newMultiplier",
+          "type": "uint32"
+        }
+      ],
+      "name": "StakingMultiplierUpdated",
+      "type": "event"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "address",
+          "name": "oracle",
+          "type": "address"
+        }
+      ],
+      "name": "addOracle",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "string",
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "location",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "impactMetrics",
+          "type": "string"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "ipfsHash",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        },
+        {
+          "internalType": "uint32",
+          "name": "stakingMultiplier",
+          "type": "uint32"
+        },
+        {
+          "internalType": "uint48",
+          "name": "startBlock",
+          "type": "uint48"
+        },
+        {
+          "internalType": "uint48",
+          "name": "endBlock",
+          "type": "uint48"
+        }
+      ],
+      "name": "addProject",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        }
+      ],
+      "name": "getCategoryMultiplier",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        }
+      ],
+      "name": "getCategoryRequirements",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "minimumImpact",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "verificationFrequency",
+              "type": "uint256"
+            },
+            {
+              "internalType": "string[]",
+              "name": "requiredDocuments",
+              "type": "string[]"
+            },
+            {
+              "internalType": "uint256",
+              "name": "qualityThreshold",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimumScale",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct ITerraStakeProjects.ImpactRequirement",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        }
+      ],
+      "name": "getGeneralMetadata",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint48",
+              "name": "startDate",
+              "type": "uint48"
+            },
+            {
+              "internalType": "uint48",
+              "name": "endDate",
+              "type": "uint48"
+            },
+            {
+              "internalType": "uint256",
+              "name": "budgetAllocation",
+              "type": "uint256"
+            },
+            {
+              "internalType": "string",
+              "name": "riskAssessment",
+              "type": "string"
+            },
+            {
+              "internalType": "string",
+              "name": "complianceDocumentation",
+              "type": "string"
+            }
+          ],
+          "internalType": "struct ITerraStakeProjects.GeneralMetadata",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "getProjectCount",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        }
+      ],
+      "name": "getProjectDetails",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "string",
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "internalType": "string",
+              "name": "description",
+              "type": "string"
+            },
+            {
+              "internalType": "string",
+              "name": "location",
+              "type": "string"
+            },
+            {
+              "internalType": "string",
+              "name": "impactMetrics",
+              "type": "string"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "ipfsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bool",
+              "name": "exists",
+              "type": "bool"
+            }
+          ],
+          "internalType": "struct ITerraStakeProjects.ProjectData",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        }
+      ],
+      "name": "getProjectState",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "enum ITerraStakeProjects.ProjectCategory",
+              "name": "category",
+              "type": "uint8"
+            },
+            {
+              "internalType": "enum ITerraStakeProjects.ProjectState",
+              "name": "state",
+              "type": "uint8"
+            },
+            {
+              "internalType": "uint32",
+              "name": "stakingMultiplier",
+              "type": "uint32"
+            },
+            {
+              "internalType": "uint128",
+              "name": "totalStaked",
+              "type": "uint128"
+            },
+            {
+              "internalType": "uint128",
+              "name": "rewardPool",
+              "type": "uint128"
+            },
+            {
+              "internalType": "bool",
+              "name": "isActive",
+              "type": "bool"
+            },
+            {
+              "internalType": "uint48",
+              "name": "startBlock",
+              "type": "uint48"
+            },
+            {
+              "internalType": "uint48",
+              "name": "endBlock",
+              "type": "uint48"
+            },
+            {
+              "internalType": "address",
+              "name": "owner",
+              "type": "address"
+            },
+            {
+              "internalType": "int256",
+              "name": "lastReportedValue",
+              "type": "int256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "lastRewardUpdate",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "accumulatedRewards",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct ITerraStakeProjects.ProjectStateData",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        }
+      ],
+      "name": "getProjectsByCategory",
+      "outputs": [
+        {
+          "internalType": "uint256[]",
+          "name": "",
+          "type": "uint256[]"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "admin",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "rewardToken",
+          "type": "address"
+        }
+      ],
+      "name": "initialize",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        }
+      ],
+      "name": "isProjectActive",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "string",
+          "name": "metricType",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "metricValue",
+          "type": "string"
+        }
+      ],
+      "name": "reportMetric",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        },
+        {
+          "internalType": "uint256",
+          "name": "multiplier",
+          "type": "uint256"
+        }
+      ],
+      "name": "setCategoryMultiplier",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "components": [
+            {
+              "internalType": "uint48",
+              "name": "startDate",
+              "type": "uint48"
+            },
+            {
+              "internalType": "uint48",
+              "name": "endDate",
+              "type": "uint48"
+            },
+            {
+              "internalType": "uint256",
+              "name": "budgetAllocation",
+              "type": "uint256"
+            },
+            {
+              "internalType": "string",
+              "name": "riskAssessment",
+              "type": "string"
+            },
+            {
+              "internalType": "string",
+              "name": "complianceDocumentation",
+              "type": "string"
+            }
+          ],
+          "internalType": "struct ITerraStakeProjects.GeneralMetadata",
+          "name": "metadata",
+          "type": "tuple"
+        }
+      ],
+      "name": "setGeneralMetadata",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectCategory",
+          "name": "category",
+          "type": "uint8"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minimumImpact",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "verificationFrequency",
+          "type": "uint256"
+        },
+        {
+          "internalType": "string[]",
+          "name": "requiredDocuments",
+          "type": "string[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "qualityThreshold",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minimumScale",
+          "type": "uint256"
+        }
+      ],
+      "name": "setImpactRequirement",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "registrationFee",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "categoryChangeFee",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "verificationFee",
+          "type": "uint256"
+        }
+      ],
+      "name": "updateFeeStructure",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "string",
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "location",
+          "type": "string"
+        },
+        {
+          "internalType": "string",
+          "name": "impactMetrics",
+          "type": "string"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "ipfsHash",
+          "type": "bytes32"
+        }
+      ],
+      "name": "updateProject",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bytes32[]",
+          "name": "documentHashes",
+          "type": "bytes32[]"
+        }
+      ],
+      "name": "updateProjectDocumentation",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "enum ITerraStakeProjects.ProjectState",
+          "name": "newState",
+          "type": "uint8"
+        }
+      ],
+      "name": "updateProjectState",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "projectId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "impactValue",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "dataQuality",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "projectScale",
+          "type": "uint256"
+        }
+      ],
+      "name": "validateProjectImpact",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+]
