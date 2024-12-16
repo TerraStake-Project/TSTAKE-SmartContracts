@@ -6,6 +6,7 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "../interfaces/ITerraStakeStaking.sol";
+import "../interfaces/IChainlinkDataFeeder.sol";
 
 contract TerraStakeStaking is 
     ITerraStakeStaking, 
