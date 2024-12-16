@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/ITerraStakeRewards.sol";
+import "../interfaces/IChainlinkDataFeeder.sol";
 
 contract TerraStakeRewards is
     ITerraStakeRewards,
