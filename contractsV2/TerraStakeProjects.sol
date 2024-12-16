@@ -9,44 +9,16 @@ import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeRewards.sol";
 
-contract TerraStakeProjects is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable {
-    // Custom Errors
-    error UnauthorizedAccess();
-    error InvalidProjectId();
-    error InvalidProjectState();
-    error ProjectAlreadyExists();
-    error InvalidParameters();
-    error InsufficientFunds();
-    error ContractNotSet();
-
+contract TerraStakeProjects is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, ITerraStakeProjects {
     // Roles
     bytes32 public constant PROJECT_MANAGER_ROLE = keccak256("PROJECT_MANAGER_ROLE");
     bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    bytes32 public constant FEED_UPDATE_ROLE = keccak256("FEED_UPDATE_ROLE");
     bytes32 public constant REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
 
     // Fee Structure
     uint256 public registrationFee;
     uint256 public verificationFee;
-
-    // Metadata Structs
-    struct ValidationData {
-        address vvb;
-        uint256 validationDate;
-        bytes32 validationReportHash;
-    }
-
-    struct VerificationData {
-        address vvb;
-        uint256 verificationDate;
-        bytes32 verificationReportHash;
-    }
-
-    struct Comment {
-        address commenter;
-        string message;
-        uint256 timestamp;
-    }
+    uint256 public categoryChangeFee;
 
     // Contract References
     ITerraStakeStaking public stakingContract;
@@ -54,50 +26,43 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
     IERC20 public rewardToken;
 
     // Mappings
-    mapping(uint256 => ITerraStakeProjects.GeneralMetadata) public generalProjectMetadata;
-    mapping(uint256 => ITerraStakeProjects.ProjectData) public projectMetadata;
-    mapping(uint256 => ITerraStakeProjects.ProjectStateData) public projectStateData;
-    mapping(ITerraStakeProjects.ProjectCategory => ITerraStakeProjects.ImpactRequirement) public categoryRequirements;
-    mapping(ITerraStakeProjects.ProjectCategory => uint256) public categoryMultipliers;
-    mapping(uint256 => ValidationData) public validations;
-    mapping(uint256 => VerificationData) public verifications;
-    mapping(uint256 => Comment[]) private projectComments;
+    mapping(uint256 => ProjectData) public projectMetadata;
+    mapping(uint256 => ProjectStateData) public projectStateData;
+    mapping(uint256 => GeneralMetadata) public generalMetadata;
+    mapping(ProjectCategory => ImpactRequirement) public categoryRequirements;
+    mapping(ProjectCategory => uint256) public categoryMultipliers;
+    mapping(uint256 => bytes32[]) public projectDocumentation;
+    mapping(ProjectCategory => uint256[]) public projectsByCategory;
 
-    // State Variables
     uint256 public projectCount;
 
     // Events
-    event ProjectAdded(uint256 indexed projectId, string name, ITerraStakeProjects.ProjectCategory category);
+    event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
     event ProjectUpdated(uint256 indexed projectId, string name);
-    event ProjectStateChanged(uint256 indexed projectId, ITerraStakeProjects.ProjectState indexed oldState, ITerraStakeProjects.ProjectState indexed newState);
-    event ValidationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
-    event VerificationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
-    event MetricsReported(uint256 indexed projectId, string metricType, string metricValue);
+    event ProjectStateChanged(uint256 indexed projectId, ProjectState oldState, ProjectState newState);
     event DocumentationUpdated(uint256 indexed projectId, bytes32[] documentHashes);
-    event CategoryMultiplierUpdated(ITerraStakeProjects.ProjectCategory indexed category, uint256 multiplier);
-    event ImpactRequirementUpdated(ITerraStakeProjects.ProjectCategory indexed category, uint256 minimumImpact);
-    event CommentAdded(uint256 indexed projectId, address commenter, string message);
+    event MetricsReported(uint256 indexed projectId, string metricType, string metricValue);
+    event CategoryMultiplierUpdated(ProjectCategory indexed category, uint256 multiplier);
+    event ImpactRequirementUpdated(ProjectCategory indexed category, uint256 minimumImpact);
+    event FeeStructureUpdated(uint256 registrationFee, uint256 verificationFee, uint256 categoryChangeFee);
     event ContractsSet(address stakingContract, address rewardsContract);
-    event FeesUpdated(uint256 registrationFee, uint256 verificationFee);
 
     constructor() {
         _disableInitializers();
     }
 
     modifier validProjectId(uint256 projectId) {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        require(projectMetadata[projectId].exists, "Invalid project ID");
         _;
     }
 
     modifier contractsSet() {
-        if (address(stakingContract) == address(0) || address(rewardsContract) == address(0)) {
-            revert ContractNotSet();
-        }
+        require(address(stakingContract) != address(0) && address(rewardsContract) != address(0), "Contracts not set");
         _;
     }
 
     function initialize(address admin, address _rewardToken) external initializer {
-        if (admin == address(0) || _rewardToken == address(0)) revert UnauthorizedAccess();
+        require(admin != address(0) && _rewardToken != address(0), "Invalid addresses");
 
         __AccessControl_init();
         __ReentrancyGuard_init();
@@ -109,27 +74,34 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
         _grantRole(VALIDATOR_ROLE, admin);
         _grantRole(REWARD_MANAGER_ROLE, admin);
 
-        registrationFee = 1000 ether;
-        verificationFee = 500 ether;
+        _initializeFeeStructure();
     }
 
-    // --- Core Project Functions ---
+    function _initializeFeeStructure() internal {
+        registrationFee = 1 ether;
+        verificationFee = 0.5 ether;
+        categoryChangeFee = 0.2 ether;
+    }
+
     function addProject(
-        string memory name,
-        string memory description,
-        string memory location,
-        string memory impactMetrics,
+        string calldata name,
+        string calldata description,
+        string calldata location,
+        string calldata impactMetrics,
         bytes32 ipfsHash,
-        ITerraStakeProjects.ProjectCategory category,
+        ProjectCategory category,
         uint32 stakingMultiplier,
         uint48 startBlock,
         uint48 endBlock
     ) external payable onlyRole(PROJECT_MANAGER_ROLE) contractsSet {
-        if (stakingMultiplier == 0 || startBlock >= endBlock) revert InvalidParameters();
-        if (msg.value < registrationFee) revert InsufficientFunds();
+        require(msg.value >= registrationFee, "Insufficient registration fee");
+        require(bytes(name).length > 0, "Project name required");
+        require(startBlock < endBlock, "Invalid project duration");
+        require(stakingMultiplier > 0, "Staking multiplier required");
 
         uint256 projectId = projectCount++;
-        projectMetadata[projectId] = ITerraStakeProjects.ProjectData({
+
+        projectMetadata[projectId] = ProjectData({
             name: name,
             description: description,
             location: location,
@@ -138,9 +110,9 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
             exists: true
         });
 
-        projectStateData[projectId] = ITerraStakeProjects.ProjectStateData({
+        projectStateData[projectId] = ProjectStateData({
             category: category,
-            state: ITerraStakeProjects.ProjectState.Proposed,
+            state: ProjectState.Proposed,
             stakingMultiplier: stakingMultiplier,
             totalStaked: 0,
             rewardPool: 0,
@@ -153,75 +125,108 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
             accumulatedRewards: 0
         });
 
+        projectsByCategory[category].push(projectId);
+
         stakingContract.updateProjectStakingData(projectId, stakingMultiplier);
+
         emit ProjectAdded(projectId, name, category);
     }
 
-    function updateProjectState(
-        uint256 projectId,
-        ITerraStakeProjects.ProjectState newState
-    ) external validProjectId(projectId) onlyRole(PROJECT_MANAGER_ROLE) {
-        ITerraStakeProjects.ProjectState oldState = projectStateData[projectId].state;
+    function updateProjectState(uint256 projectId, ProjectState newState) external validProjectId(projectId) onlyRole(PROJECT_MANAGER_ROLE) {
+        ProjectStateData storage projectState = projectStateData[projectId];
+        require(newState != projectState.state, "State already set");
 
-        // State validation rules
-        if (newState == ITerraStakeProjects.ProjectState.Active && oldState != ITerraStakeProjects.ProjectState.UnderReview)
-            revert InvalidProjectState();
+        ProjectState oldState = projectState.state;
+        projectState.state = newState;
 
-        projectStateData[projectId].state = newState;
+        if (newState == ProjectState.Active) {
+            projectState.isActive = true;
+        } else if (newState == ProjectState.Suspended || newState == ProjectState.Archived) {
+            projectState.isActive = false;
+        }
+
         emit ProjectStateChanged(projectId, oldState, newState);
     }
 
-    function reportMetrics(
-        uint256 projectId,
-        string calldata metricType,
-        string calldata metricValue
-    ) external validProjectId(projectId) onlyRole(VALIDATOR_ROLE) {
+    function reportMetric(uint256 projectId, string calldata metricType, string calldata metricValue)
+        external
+        validProjectId(projectId)
+        onlyRole(VALIDATOR_ROLE)
+    {
         emit MetricsReported(projectId, metricType, metricValue);
     }
 
-    function submitValidation(uint256 projectId, bytes32 reportHash)
+    function updateProjectDocumentation(uint256 projectId, bytes32[] calldata documentHashes)
         external
         validProjectId(projectId)
-        onlyRole(VALIDATOR_ROLE)
+        onlyRole(PROJECT_MANAGER_ROLE)
     {
-        validations[projectId] = ValidationData({
-            vvb: msg.sender,
-            validationDate: block.timestamp,
-            validationReportHash: reportHash
+        projectDocumentation[projectId] = documentHashes;
+        emit DocumentationUpdated(projectId, documentHashes);
+    }
+
+    function setCategoryMultiplier(ProjectCategory category, uint256 multiplier) external onlyRole(PROJECT_MANAGER_ROLE) {
+        require(multiplier > 0, "Multiplier must be greater than zero");
+        categoryMultipliers[category] = multiplier;
+        emit CategoryMultiplierUpdated(category, multiplier);
+    }
+
+    function setImpactRequirement(
+        ProjectCategory category,
+        uint256 minimumImpact,
+        uint256 verificationFrequency,
+        string[] calldata requiredDocuments,
+        uint256 qualityThreshold,
+        uint256 minimumScale
+    ) external onlyRole(PROJECT_MANAGER_ROLE) {
+        categoryRequirements[category] = ImpactRequirement({
+            minimumImpact: minimumImpact,
+            verificationFrequency: verificationFrequency,
+            requiredDocuments: requiredDocuments,
+            qualityThreshold: qualityThreshold,
+            minimumScale: minimumScale
         });
-        emit ValidationSubmitted(projectId, msg.sender, reportHash);
+        emit ImpactRequirementUpdated(category, minimumImpact);
     }
 
-    function submitVerification(uint256 projectId, bytes32 reportHash)
-        external
-        validProjectId(projectId)
-        onlyRole(VALIDATOR_ROLE)
-    {
-        verifications[projectId] = VerificationData({
-            vvb: msg.sender,
-            verificationDate: block.timestamp,
-            verificationReportHash: reportHash
-        });
-        emit VerificationSubmitted(projectId, msg.sender, reportHash);
-    }
-
-    // --- Administrative Functions ---
-    function setContracts(address _stakingContract, address _rewardsContract)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        if (_stakingContract == address(0) || _rewardsContract == address(0)) revert ContractNotSet();
-        stakingContract = ITerraStakeStaking(_stakingContract);
-        rewardsContract = ITerraStakeRewards(_rewardsContract);
-        emit ContractsSet(_stakingContract, _rewardsContract);
-    }
-
-    function updateFeeStructure(uint256 _registrationFee, uint256 _verificationFee)
+    function updateFeeStructure(uint256 _registrationFee, uint256 _verificationFee, uint256 _categoryChangeFee)
         external
         onlyRole(REWARD_MANAGER_ROLE)
     {
         registrationFee = _registrationFee;
         verificationFee = _verificationFee;
-        emit FeesUpdated(_registrationFee, _verificationFee);
+        categoryChangeFee = _categoryChangeFee;
+
+        emit FeeStructureUpdated(_registrationFee, _verificationFee, _categoryChangeFee);
+    }
+
+    function setContracts(address _stakingContract, address _rewardsContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_stakingContract != address(0) && _rewardsContract != address(0), "Invalid contract addresses");
+
+        stakingContract = ITerraStakeStaking(_stakingContract);
+        rewardsContract = ITerraStakeRewards(_rewardsContract);
+
+        emit ContractsSet(_stakingContract, _rewardsContract);
+    }
+
+    // View Functions
+    function getProjectDetails(uint256 projectId) external view validProjectId(projectId) returns (ProjectData memory) {
+        return projectMetadata[projectId];
+    }
+
+    function getProjectState(uint256 projectId) external view validProjectId(projectId) returns (ProjectStateData memory) {
+        return projectStateData[projectId];
+    }
+
+    function getCategoryRequirements(ProjectCategory category) external view returns (ImpactRequirement memory) {
+        return categoryRequirements[category];
+    }
+
+    function getProjectsByCategory(ProjectCategory category) external view returns (uint256[] memory) {
+        return projectsByCategory[category];
+    }
+
+    function getProjectCount() external view returns (uint256) {
+        return projectCount;
     }
 }
