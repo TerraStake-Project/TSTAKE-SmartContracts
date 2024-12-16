@@ -3,7 +3,7 @@ pragma solidity 0.8.26;
 
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract TerraStakeAccessControl is Initializable, AccessControlUpgradeable {
@@ -19,7 +19,6 @@ contract TerraStakeAccessControl is Initializable, AccessControlUpgradeable {
     bytes32 public constant DISTRIBUTION_ROLE = keccak256("DISTRIBUTION_ROLE");
     bytes32 public constant VESTING_MANAGER_ROLE = keccak256("VESTING_MANAGER_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
-
 
     // Role management mappings
     mapping(bytes32 => uint256) public roleRequirements;
@@ -145,7 +144,7 @@ contract TerraStakeAccessControl is Initializable, AccessControlUpgradeable {
      */
     function grantRole(bytes32 role, address account)
         public
-        override
+        override(AccessControlUpgradeable)
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (account == address(0)) revert InvalidAddress();
@@ -160,7 +159,7 @@ contract TerraStakeAccessControl is Initializable, AccessControlUpgradeable {
      */
     function revokeRole(bytes32 role, address account)
         public
-        override
+        override(AccessControlUpgradeable)
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (account == address(0)) revert InvalidAddress();
@@ -205,13 +204,13 @@ contract TerraStakeAccessControl is Initializable, AccessControlUpgradeable {
      * @dev Increments the member count for a role.
      */
     function _incrementRoleMemberCount(bytes32 role) private {
-        _roleMemberCount[role] = _roleMemberCount[role] + 1;
+        _roleMemberCount[role] += 1;
     }
 
     /**
      * @dev Decrements the member count for a role.
      */
     function _decrementRoleMemberCount(bytes32 role) private {
-        _roleMemberCount[role] = _roleMemberCount[role] - 1;
+        _roleMemberCount[role] -= 1;
     }
 }

@@ -6,6 +6,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
+
 interface ITerraStakeStaking {
     function totalStaked() external view returns (uint256);
     function totalStakedByUser(address user) external view returns (uint256);
@@ -219,3 +220,4 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
         minimumHolding = newMinimumHolding;
     }
 }
+

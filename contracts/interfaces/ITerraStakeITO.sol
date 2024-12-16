@@ -54,67 +54,24 @@ interface ITerraStakeITO {
         uint256 timestamp
     );
 
-    event TokensVested(
-        address indexed beneficiary,
-        uint256 amount,
-        uint256 timestamp
-    );
-
-    event VestingScheduleCreated(
-        address indexed beneficiary,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 duration,
-        uint256 cliff,
-        uint256 interval,
-        uint256 amountPerInterval,
-        bool revocable
-    );
-
-    event VestingScheduleRevoked(address indexed beneficiary, uint256 timestamp);
-
-    event LiquidityPositionCreated(uint256 tokenId, uint256 liquidity, uint256 timestamp);
-
-    // Getters
+    // Getter Functions
     function getCurrentPrice() external view returns (uint256);
-
-    function getVestedAmount(address beneficiary) external view returns (uint256);
-
-    function getVestingSchedule(address beneficiary) external view returns (AdvancedVestingSchedule memory);
 
     function getPoolPrice() external view returns (uint256);
 
-    function getLiquidityPosition(uint256 tokenId) external view returns (Position memory);
-
-    // Vesting Functions
-    function createVestingSchedule(
-        address beneficiary,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 duration,
-        uint256 cliff,
-        uint256 interval,
-        bool revocable
-    ) external;
-
-    function claimVestedTokens() external;
-
-    function revokeVestingSchedule(address beneficiary) external;
-
-    // ITO Management
+    // ITO State Management
     function startITO() external;
 
     function pauseITO() external;
 
     function finalizeITO() external;
 
+    // Token Purchase Functions
     function buyTokens(uint256 amount) external;
 
     function buyTokensAfterITO(uint256 usdcAmount) external;
 
-    // Liquidity and USDC Management
-    function setLiquidityPercentage(uint256 _percentage) external;
-
+    // Liquidity Management
     function addLiquidity(
         uint256 amountTSTAKE,
         uint256 amountUSDC,
@@ -122,13 +79,6 @@ interface ITerraStakeITO {
         int24 upperTick
     ) external returns (uint256 tokenId);
 
-    function increaseLiquidity(
-        uint256 tokenId,
-        uint256 amountTSTAKE,
-        uint256 amountUSDC
-    ) external;
-
-    function removeLiquidity(uint256 tokenId, uint128 liquidity) external;
-
+    // Governance Functions
     function withdrawUSDC(address recipient, uint256 amount) external;
 }

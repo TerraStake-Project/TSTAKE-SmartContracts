@@ -6,19 +6,18 @@ import {ERC20VotesUpgradeable} from "@openzeppelin/contracts-upgradeable/token/E
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import "../governance/TerraStakeAccessControl.sol";
 import "../interfaces/ITerraStakeToken.sol";
 
 contract TerraStakeToken is
-    ITerraStakeToken,
     Initializable,
-    ERC20Upgradeable,
     ERC20VotesUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    ITerraStakeToken
 {
     TerraStakeAccessControl public accessControl;
 
@@ -26,7 +25,6 @@ contract TerraStakeToken is
     uint256 public override burnRate;           // in basis points (e.g., 100 = 1%)
     uint256 public override redistributionRate; // in basis points
     address public redistributionAddress;
-
     AggregatorV3Interface public priceFeed;
 
     mapping(address => VestingSchedule) private vestingSchedules;
@@ -42,7 +40,7 @@ contract TerraStakeToken is
 
         string memory _name = "TerraStake";
         string memory _symbol = "TSTAKE";
-        uint256 _maxSupply = 2_000_000_000 * 10 ** 18;
+        uint256 _maxSupply = 2_000_000_000 * 10**18;
 
         __ERC20_init(_name, _symbol);
         __ERC20Votes_init();
@@ -55,7 +53,8 @@ contract TerraStakeToken is
         address admin = msg.sender;
         if (!accessControl.hasRole(accessControl.DEFAULT_ADMIN_ROLE(), admin)) revert InvalidAdminAddress();
 
-        _mint(admin, initialSupply);
+        // Mint initial supply directly
+        super._mint(admin, initialSupply);
 
         burnRate = 0;
         redistributionRate = 0;
@@ -68,7 +67,7 @@ contract TerraStakeToken is
         if (to == address(0)) revert ZeroAddress();
         if (totalSupply() + amount > maxSupply) revert MintAmountExceedsMaxSupply();
 
-        _mint(to, amount);
+        super._mint(to, amount);
     }
 
     function burn(address from, uint256 amount) external override whenNotPaused nonReentrant {
@@ -76,7 +75,7 @@ contract TerraStakeToken is
         if (from == address(0)) revert ZeroAddress();
         if (balanceOf(from) < amount) revert BurnAmountExceedsBalance();
 
-        _burn(from, amount);
+        super._burn(from, amount);
         emit TokensBurned(from, amount);
     }
 
@@ -93,7 +92,7 @@ contract TerraStakeToken is
         uint256 netAmount = amount - _burnAmount - _redistributeAmount;
 
         if (_burnAmount > 0) {
-            _burn(sender, _burnAmount);
+            super._burn(sender, _burnAmount);
             emit TokensBurned(sender, _burnAmount);
         }
 
@@ -117,10 +116,9 @@ contract TerraStakeToken is
         if (beneficiary == address(0)) revert ZeroAddress();
         if (totalAmount == 0 || duration == 0 || startTime == 0) revert InvalidRate();
         if (totalSupply() + totalAmount > maxSupply) revert MintAmountExceedsMaxSupply();
-
         if (vestingSchedules[beneficiary].totalAmount > 0) revert NoVestingSchedule();
 
-        _mint(address(this), totalAmount);
+        super._mint(address(this), totalAmount);
 
         vestingSchedules[beneficiary] = VestingSchedule({
             totalAmount: totalAmount,
@@ -201,12 +199,12 @@ contract TerraStakeToken is
         emit EmergencyWithdraw(token, to, amount);
     }
 
-    // Resolve _update Conflict
-    function _update(
-        address from,
-        address to,
-        uint256 value
-    ) internal override(ERC20Upgradeable, ERC20VotesUpgradeable) {
+    // Overriding _update from ERC20VotesUpgradeable for customization if needed
+    function _update(address from, address to, uint256 value)
+        internal
+        override(ERC20VotesUpgradeable)
+    {
+        // Add custom logic here if needed
         super._update(from, to, value);
     }
 
