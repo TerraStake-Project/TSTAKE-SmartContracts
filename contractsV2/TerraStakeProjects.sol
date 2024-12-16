@@ -8,6 +8,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeRewards.sol";
+import "../interfaces/IChainlinkDataFeeder.sol";
 
 contract TerraStakeProjects is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, ITerraStakeProjects {
     // Roles
