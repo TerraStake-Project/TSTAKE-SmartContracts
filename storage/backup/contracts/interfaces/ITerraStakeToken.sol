@@ -19,9 +19,6 @@ interface ITerraStakeToken {
     function maxSupply() external view returns (uint256);
     function burnRate() external view returns (uint256);
     function redistributionRate() external view returns (uint256);
-    function stakingRewardsRate() external view returns (uint256);
-    function redistributionAddress() external view returns (address);
-    function stakingRewardsAddress() external view returns (address);
 
     // Role Management
     function MINTER_ROLE() external view returns (bytes32);
@@ -40,11 +37,25 @@ interface ITerraStakeToken {
     }
 
     // Core Token Operations
+    /// @notice Mint tokens to a specific address
+    /// @dev Requires MINTER_ROLE
+    /// @param to The address to mint tokens to
+    /// @param amount The amount of tokens to mint
     function mint(address to, uint256 amount) external;
+
+    /// @notice Burn tokens from a specific address
+    /// @param from The address to burn tokens from
+    /// @param amount The amount of tokens to burn
     function burn(address from, uint256 amount) external;
+
+    /// @notice Transfer tokens, applying burn and redistribution if applicable
+    /// @param to The recipient of the transfer
+    /// @param amount The amount of tokens to transfer
     function transfer(address to, uint256 amount) external returns (bool);
 
     // Vesting Functions
+    /// @notice Create a vesting schedule for a beneficiary
+    /// @dev Requires VESTING_MANAGER_ROLE
     function createVestingSchedule(
         address beneficiary,
         uint256 totalAmount,
@@ -53,28 +64,49 @@ interface ITerraStakeToken {
         uint256 cliff
     ) external;
 
+    /// @notice Claim vested tokens
     function claimVestedTokens() external;
 
+    /// @notice Get the vesting schedule for a beneficiary
+    /// @param beneficiary The address to query
+    /// @return The vesting schedule for the beneficiary
     function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory);
 
-    function revokeVestingSchedule(address beneficiary) external;
-
     // Admin Functions
-    function setRates(uint256 burnRate, uint256 redistributionRate, uint256 stakingRewardsRate) external;
+    /// @notice Update burn and redistribution rates
+    /// @dev Requires GOVERNANCE_ROLE
+    function setRates(uint256 burnRate, uint256 redistributionRate) external;
+
+    /// @notice Set a new maximum supply for the token
+    /// @dev Requires DEFAULT_ADMIN_ROLE
+    /// @param newMaxSupply The new maximum supply to set
     function setMaxSupply(uint256 newMaxSupply) external;
+
+    /// @notice Pause all token transfers
+    /// @dev Requires EMERGENCY_ROLE
     function pause() external;
+
+    /// @notice Unpause all token transfers
+    /// @dev Requires EMERGENCY_ROLE
     function unpause() external;
 
     // Price Feed
+    /// @notice Get the latest price from the oracle
+    /// @return The latest price
     function getPrice() external view returns (uint256);
 
     // Emergency Functions
+    /// @notice Withdraw tokens in case of an emergency
+    /// @dev Requires EMERGENCY_ROLE
+    /// @param token The token to withdraw
+    /// @param to The recipient address
+    /// @param amount The amount to withdraw
     function emergencyWithdraw(address token, address to, uint256 amount) external;
 
     // Events
     event TokensBurned(address indexed from, uint256 amount);
     event TokensRedistributed(address indexed recipient, uint256 amount);
-    event RatesUpdated(uint256 burnRate, uint256 redistributionRate, uint256 stakingRewardsRate);
+    event RatesUpdated(uint256 burnRate, uint256 redistributionRate);
     event VestingScheduleCreated(
         address indexed beneficiary,
         uint256 totalAmount,
@@ -82,8 +114,7 @@ interface ITerraStakeToken {
         uint256 duration,
         uint256 cliff
     );
-    event VestingScheduleRevoked(address indexed beneficiary, uint256 unvestedAmount);
     event TokensClaimed(address indexed beneficiary, uint256 amount);
-    event MaxSupplyUpdated(uint256 oldMaxSupply, uint256 newMaxSupply);
+    event MaxSupplyUpdated(uint256 newMaxSupply);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
 }

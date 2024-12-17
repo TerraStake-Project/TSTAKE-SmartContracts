@@ -49,10 +49,12 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
         require(_tStakeToken != address(0), "Invalid TSTAKE address");
         require(_usdcToken != address(0), "Invalid USDC address");
         require(_positionManager != address(0), "Invalid position manager");
+        require(_liquidityPercentage <= 100, "Invalid liquidity percentage");
 
         tStakeToken = IERC20(_tStakeToken);
         usdcToken = IERC20(_usdcToken);
         positionManager = INonfungiblePositionManager(_positionManager);
+
         startingPrice = _startingPrice;
         endingPrice = _endingPrice;
         priceDuration = _priceDuration;
@@ -65,15 +67,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
         _grantRole(GOVERNANCE_ROLE, msg.sender);
         _grantRole(PAUSER_ROLE, msg.sender);
         _grantRole(UNISWAP_MANAGER_ROLE, msg.sender);
-    }
-
-    // Override revokeRole from AccessControl and IAccessControl
-    function revokeRole(bytes32 role, address account)
-        public
-        override(IAccessControl, AccessControl)
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        super.revokeRole(role, account);
     }
 
     function startITO() external override onlyRole(GOVERNANCE_ROLE) {
@@ -96,6 +89,30 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
         require(tStakeToken.transferFrom(msg.sender, address(this), liquidityTokens), "Token transfer failed");
 
         emit ITOStateChanged(ITOState.Finalized, block.timestamp);
+    }
+
+    function handleUnsoldTokens() external onlyRole(GOVERNANCE_ROLE) {
+        require(itoState == ITOState.Finalized, "ITO not finalized");
+        uint256 unsoldTokens = MAX_TOKENS_FOR_ITO - tokensSold;
+
+        if (unsoldTokens > 0) {
+            require(tStakeToken.transfer(address(0), unsoldTokens), "Token burn failed");
+            emit UnsoldTokensBurned(unsoldTokens, block.timestamp);
+        }
+    }
+
+    function updateITOPrices(uint256 _startingPrice, uint256 _endingPrice, uint256 _priceDuration)
+        external
+        onlyRole(GOVERNANCE_ROLE)
+    {
+        require(_startingPrice > 0 && _endingPrice > 0, "Invalid prices");
+        require(_priceDuration > 0, "Invalid duration");
+
+        startingPrice = _startingPrice;
+        endingPrice = _endingPrice;
+        priceDuration = _priceDuration;
+
+        emit DynamicITOParametersUpdated(_startingPrice, _endingPrice, _priceDuration);
     }
 
     function buyTokens(uint256 amount) external override nonReentrant {
@@ -183,4 +200,3 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
         emit USDCWithdrawn(recipient, amount, block.timestamp);
     }
 }
-

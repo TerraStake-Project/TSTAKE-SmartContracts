@@ -6,10 +6,10 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/utils/StorageSlot.sol";
 
 /// @title TerraStakeProxy Contract
-/// @notice Manages upgrades and access control for the TerraStake protocol
-/// @dev Implements transparent proxy pattern with timelock and pause mechanisms
+/// @notice Manages upgrades, access control, and governance integration for the TerraStake protocol
 contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, ReentrancyGuard, Pausable {
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
@@ -23,31 +23,14 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
 
     uint256 public version;
 
-    event UpgradeScheduled(
-        address indexed newImplementation, 
-        uint256 indexed effectiveTime,
-        uint256 indexed version
-    );
-    event UpgradeExecuted(
-        address indexed oldImplementation, 
-        address indexed newImplementation,
-        uint256 indexed version
-    );
-    event UpgradeCancelled(
-        address indexed newImplementation, 
-        uint256 indexed timestamp
-    );
+    event UpgradeScheduled(address indexed newImplementation, uint256 effectiveTime, uint256 version);
+    event UpgradeExecuted(address indexed oldImplementation, address indexed newImplementation, uint256 version);
+    event UpgradeCancelled(address indexed newImplementation, address indexed actor, uint256 timestamp);
     event ProxyPaused(address indexed actor, uint256 timestamp);
-    event ProxyUnpauseRequested(
-        address indexed actor, 
-        uint256 indexed effectiveTime
-    );
+    event ProxyUnpauseRequested(address indexed actor, uint256 effectiveTime);
     event ProxyUnpaused(address indexed actor, uint256 timestamp);
 
-    /// @notice Initialize the proxy with implementation and admin
-    /// @param _logic Initial implementation address
-    /// @param _admin Admin address for access control
-    /// @param _data Initialization data for implementation
+    /// @notice Initialize the proxy with implementation, admin, and roles
     constructor(
         address _logic,
         address _admin,
@@ -65,13 +48,8 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         version = 1;
     }
 
-    /// @notice Schedule an upgrade to new implementation
-    /// @param newImplementation Address of new implementation
-    function scheduleUpgrade(address newImplementation) 
-        external 
-        onlyRole(UPGRADER_ROLE) 
-        nonReentrant 
-    {
+    /// @notice Schedule an upgrade to a new implementation
+    function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) nonReentrant {
         require(newImplementation != address(0), "Zero address");
         require(newImplementation.code.length > 0, "Not a contract");
         require(pendingUpgrades[newImplementation] == 0, "Already scheduled");
@@ -84,13 +62,8 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         emit UpgradeScheduled(newImplementation, effectiveTime, version);
     }
 
-    /// @notice Execute scheduled upgrade
-    /// @param newImplementation Address of new implementation
-    function executeUpgrade(address newImplementation) 
-        external 
-        onlyRole(MULTISIG_ADMIN_ROLE) 
-        nonReentrant 
-    {
+    /// @notice Execute a scheduled upgrade
+    function executeUpgrade(address newImplementation) external onlyRole(MULTISIG_ADMIN_ROLE) nonReentrant {
         require(pendingUpgrades[newImplementation] != 0, "No upgrade scheduled");
         require(block.timestamp >= pendingUpgrades[newImplementation], "Timelock active");
 
@@ -102,6 +75,13 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
 
         version++;
         emit UpgradeExecuted(oldImplementation, newImplementation, version);
+    }
+
+    /// @notice Cancel a scheduled upgrade
+    function clearScheduledUpgrade(address newImplementation) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        require(pendingUpgrades[newImplementation] != 0, "No scheduled upgrade");
+        delete pendingUpgrades[newImplementation];
+        emit UpgradeCancelled(newImplementation, msg.sender, block.timestamp);
     }
 
     /// @notice Pause proxy functionality
@@ -127,41 +107,20 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         emit ProxyUnpaused(msg.sender, block.timestamp);
     }
 
-    /// @notice Cancel scheduled upgrade
-    /// @param newImplementation Address of scheduled implementation
-    function clearScheduledUpgrade(address newImplementation) 
-        external 
-        onlyRole(DEFAULT_ADMIN_ROLE) 
-        nonReentrant 
-    {
-        require(pendingUpgrades[newImplementation] != 0, "No scheduled upgrade");
-        delete pendingUpgrades[newImplementation];
-        emit UpgradeCancelled(newImplementation, block.timestamp);
-    }
-
     /// @notice Get current implementation
     function getImplementation() external view returns (address) {
         return _implementation();
     }
 
-    /// @dev Internal upgrade implementation
-    function _upgradeTo(address newImplementation) internal {
-        bytes32 implementationSlot = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
-        assembly {
-            sstore(implementationSlot, newImplementation)
-        }
-    }
-
     /// @dev Validate new implementation
     function _validateImplementation(address newImplementation) internal view {
         require(newImplementation != address(this), "Cannot upgrade to proxy");
-        
-        bytes32 adminSlot = 0xb53127684a568b3173ae13b9f8a6016e01e3f0fdb8cb12c3a7c6008eeda3f3a4;
-        address admin;
-        assembly {
-            admin := sload(adminSlot)
-        }
-        require(newImplementation != admin, "Cannot upgrade to admin");
+        require(StorageSlot.getAddressSlot(0xb53127684a568b3173ae13b9f8a6016e01e3f0fdb8cb12c3a7c6008eeda3f3a4).value != newImplementation, "Cannot upgrade to admin");
+    }
+
+    /// @dev Internal upgrade mechanism using OpenZeppelin StorageSlot
+    function _upgradeTo(address newImplementation) internal {
+        StorageSlot.getAddressSlot(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc).value = newImplementation;
     }
 
     receive() external payable {}
@@ -171,4 +130,3 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         super._fallback();
     }
 }
-

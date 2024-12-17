@@ -17,22 +17,22 @@ interface ITerraStakeStaking {
     }
 
     struct StakingPosition {
-        uint128 amount;
-        uint128 rewardDebt;
-        uint128 lastCheckpoint;
-        uint128 accumulatedRewards;
-        uint48 stakingStart;
+        uint128 amount;              // amount of tokens staked
+        uint128 rewardDebt;          // rewards already accounted for
+        uint128 lastCheckpoint;      // timestamp of the last rewards update
+        uint128 accumulatedRewards;  // total rewards accumulated
+        uint48 stakingStart;         // timestamp of staking start
     }
 
     struct ProjectData {
-        bool isActive;
-        bool isPaused;
-        uint128 totalStaked;
-        uint128 rewardPool;
-        uint32 stakingMultiplier;
-        uint32 withdrawalLimit;
-        uint32 penaltyRate;
-        uint32 rewardUpdateInterval;
+        bool isActive;           // is the project active for staking
+        bool isPaused;           // is the project paused
+        uint128 totalStaked;     // total tokens staked in the project
+        uint128 rewardPool;      // total rewards available for the project
+        uint32 stakingMultiplier;  // multiplier for rewards in basis points
+        uint32 withdrawalLimit;  // maximum withdrawals allowed
+        uint32 penaltyRate;      // penalty rate for early withdrawals in basis points
+        uint32 rewardUpdateInterval; // interval for updating rewards in blocks
     }
 
     // Events

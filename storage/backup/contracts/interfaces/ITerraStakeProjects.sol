@@ -76,7 +76,6 @@ interface ITerraStakeProjects {
     event CategoryMultiplierUpdated(ProjectCategory indexed category, uint256 multiplier);
     event ImpactRequirementUpdated(ProjectCategory indexed category, uint256 minimumImpact);
     event ContractsSet(address stakingContract, address rewardsContract);
-    event FeeStructureUpdated(uint256 registrationFee, uint256 verificationFee, uint256 categoryChangeFee); // Added event
 
     // Core Functions
     function initialize(address admin, address rewardToken) external;

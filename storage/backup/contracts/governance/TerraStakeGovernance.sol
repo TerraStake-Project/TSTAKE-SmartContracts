@@ -5,13 +5,13 @@ import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/acce
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "../interfaces/IChainlinkDataFeeder.sol";
+
 
 interface ITerraStakeStaking {
     function totalStaked() external view returns (uint256);
     function totalStakedByUser(address user) external view returns (uint256);
-    function getDelegatedPower(address user) external view returns (uint256);
-    function getStakingMultiplier(address user) external view returns (uint256);
+    function updateRewardRate(uint256 newRate) external;
+    function updateLockPeriod(uint256 newLockPeriod) external;
 }
 
 interface ITerraStakeITO {
@@ -42,7 +42,7 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
     error InsufficientHolding();
     error OracleValidationFailed();
 
-    // Roles
+    // Roles for access control
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant VETO_ROLE = keccak256("VETO_ROLE");
 
@@ -55,8 +55,6 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
         uint256 endBlock;
         bool executed;
         bool vetoed;
-        uint256 proposalType; // 0: Regular, 1: Enhanced (Project-specific)
-        uint256 linkedProjectId;
     }
 
     uint256 public proposalCount;
@@ -71,15 +69,12 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
     AggregatorV3Interface public priceFeed;
 
     // Events
-    event ProposalCreated(uint256 indexed proposalId, bytes data, uint256 endBlock, address target, uint256 proposalType, uint256 linkedProjectId);
+    event ProposalCreated(uint256 indexed proposalId, bytes data, uint256 endBlock, address target);
     event Voted(uint256 indexed proposalId, address indexed voter, bool support);
     event ProposalExecuted(uint256 indexed proposalId);
     event ProposalVetoed(uint256 indexed proposalId);
-    event ProposalThresholdUpdated(uint256 newThreshold);
-    event VotingDurationUpdated(uint256 newDuration);
-    event MinimumHoldingUpdated(uint256 newMinimumHolding);
 
-    // Initialization function
+    // Initialize function
     function initialize(
         address admin,
         address _stakingContract,
@@ -89,8 +84,8 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
         uint256 _proposalThreshold,
         uint256 _minimumHolding
     ) external initializer {
-        require(admin != address(0) && _stakingContract != address(0) && _itoContract != address(0) && _priceFeed != address(0), "Invalid address");
-        require(_votingDuration > 0 && _proposalThreshold > 0 && _minimumHolding > 0, "Invalid parameters");
+        if (admin == address(0) || _stakingContract == address(0) || _itoContract == address(0) || _priceFeed == address(0)) revert UnauthorizedAccess();
+        if (_votingDuration == 0 || _proposalThreshold == 0 || _minimumHolding == 0) revert InvalidProposalData();
 
         __AccessControl_init();
         __ReentrancyGuard_init();
@@ -102,15 +97,13 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
         stakingContract = ITerraStakeStaking(_stakingContract);
         itoContract = ITerraStakeITO(_itoContract);
         priceFeed = AggregatorV3Interface(_priceFeed);
-
         votingDuration = _votingDuration;
         proposalThreshold = _proposalThreshold;
         minimumHolding = _minimumHolding;
     }
 
-    function createProposal(bytes calldata data, address target, uint256 proposalType, uint256 linkedProjectId) external onlyRole(GOVERNANCE_ROLE) {
-        require(stakingContract.totalStaked() >= proposalThreshold, "Insufficient proposal threshold");
-
+    function createProposal(bytes calldata data, address target) external onlyRole(GOVERNANCE_ROLE) {
+        if (stakingContract.totalStaked() < proposalThreshold) revert VotingPowerNotSufficient();
         uint256 proposalId = proposalCount++;
         uint256 endBlock = block.number + votingDuration;
 
@@ -121,22 +114,21 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
             votesAgainst: 0,
             endBlock: endBlock,
             executed: false,
-            vetoed: false,
-            proposalType: proposalType,
-            linkedProjectId: linkedProjectId
+            vetoed: false
         });
 
-        emit ProposalCreated(proposalId, data, endBlock, target, proposalType, linkedProjectId);
+        emit ProposalCreated(proposalId, data, endBlock, target);
     }
 
-    function vote(uint256 proposalId, bool support) external {
+    function vote(uint256 proposalId, bool support) public {
         Proposal storage proposal = proposals[proposalId];
-        require(block.number <= proposal.endBlock, "Voting period ended");
-        require(!hasVoted[proposalId][msg.sender], "Already voted");
-        require(!proposal.vetoed, "Proposal vetoed");
+        if (block.number > proposal.endBlock) revert VotingPeriodEnded();
+        if (hasVoted[proposalId][msg.sender]) revert AlreadyVoted();
+        if (proposal.vetoed) revert ProposalAlreadyVetoed();
 
-        uint256 votingPower = _calculateVotingPower(msg.sender);
-        require(votingPower >= minimumHolding, "Insufficient voting power");
+        uint256 votingPower = stakingContract.totalStakedByUser(msg.sender);
+        if (votingPower == 0) revert VotingPowerNotSufficient();
+        if (votingPower < minimumHolding) revert InsufficientHolding();
 
         if (support) {
             proposal.votesFor += votingPower;
@@ -151,14 +143,14 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
 
     function executeProposal(uint256 proposalId) external onlyRole(GOVERNANCE_ROLE) {
         Proposal storage proposal = proposals[proposalId];
-        require(block.number > proposal.endBlock, "Voting period not ended");
-        require(!proposal.executed, "Proposal already executed");
-        require(!proposal.vetoed, "Proposal vetoed");
+        if (block.number <= proposal.endBlock) revert VotingPeriodNotEnded();
+        if (proposal.executed) revert ProposalAlreadyExecuted();
+        if (proposal.vetoed) revert ProposalAlreadyVetoed();
 
         if (proposal.votesFor > proposal.votesAgainst) {
-            require(_isValidProposalData(proposal.data), "Invalid proposal data");
+            if (!_isValidProposalData(proposal.data)) revert InvalidProposalData();
             (bool success, ) = proposal.target.call(proposal.data);
-            require(success, "Proposal execution failed");
+            if (!success) revert InvalidProposalData();
         }
 
         proposal.executed = true;
@@ -168,58 +160,64 @@ contract TerraStakeGovernance is Initializable, AccessControlUpgradeable, Reentr
 
     function vetoProposal(uint256 proposalId) external onlyRole(VETO_ROLE) {
         Proposal storage proposal = proposals[proposalId];
-        require(block.number <= proposal.endBlock, "Voting period ended");
-        require(!proposal.vetoed, "Proposal already vetoed");
+        if (block.number > proposal.endBlock) revert VotingPeriodEnded();
+        if (proposal.vetoed) revert ProposalAlreadyVetoed();
 
         proposal.vetoed = true;
 
         emit ProposalVetoed(proposalId);
     }
 
-    function _calculateVotingPower(address voter) internal view returns (uint256) {
-        uint256 basePower = stakingContract.totalStakedByUser(voter);
-        uint256 delegatedPower = stakingContract.getDelegatedPower(voter);
-        uint256 timeMultiplier = stakingContract.getStakingMultiplier(voter);
-
-        return (basePower + delegatedPower) * timeMultiplier / 10000;
+    function validateOraclePrice(uint256 expectedPrice) public view {
+        (, int256 answer, , , ) = priceFeed.latestRoundData();
+        if (answer <= 0 || uint256(answer) != expectedPrice) revert OracleValidationFailed();
     }
 
     function _isValidProposalData(bytes memory data) internal pure returns (bool) {
-        bytes4 updateRewardRateSig = bytes4(keccak256("updateRewardRate(uint256)"));
-        bytes4 updateLockPeriodSig = bytes4(keccak256("updateLockPeriod(uint256)"));
-        bytes4 createVestingScheduleSig = bytes4(keccak256("createVestingSchedule(address,uint256,uint256,uint256,uint256,uint256,bool)"));
+        bytes4 updateRewardSignature = bytes4(keccak256("updateRewardRate(uint256)"));
+        bytes4 updateLockPeriodSignature = bytes4(keccak256("updateLockPeriod(uint256)"));
+        bytes4 createVestingScheduleSignature = bytes4(keccak256("createVestingSchedule(address,uint256,uint256,uint256,uint256,uint256,bool)"));
 
-        bytes4 functionSig = bytes4(data);
+        bytes4 functionSignature = bytes4(data);
         return (
-            functionSig == updateRewardRateSig ||
-            functionSig == updateLockPeriodSig ||
-            functionSig == createVestingScheduleSig
+            functionSignature == updateRewardSignature ||
+            functionSignature == updateLockPeriodSignature ||
+            functionSignature == createVestingScheduleSignature
         );
     }
 
-    function updateVotingDuration(uint256 newDuration) external onlyRole(GOVERNANCE_ROLE) {
-        require(newDuration > 0, "Invalid duration");
-        votingDuration = newDuration;
-        emit VotingDurationUpdated(newDuration);
+    function updateStakingContract(address _stakingContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_stakingContract != address(0), "Invalid address");
+        stakingContract = ITerraStakeStaking(_stakingContract);
     }
 
-    function updateProposalThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
-        require(newThreshold > 0, "Invalid threshold");
-        proposalThreshold = newThreshold;
-        emit ProposalThresholdUpdated(newThreshold);
+    function updateITOContract(address _itoContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_itoContract != address(0), "Invalid address");
+        itoContract = ITerraStakeITO(_itoContract);
     }
 
-    function updateMinimumHolding(uint256 newMinimumHolding) external onlyRole(GOVERNANCE_ROLE) {
-        require(newMinimumHolding > 0, "Invalid minimum holding");
-        minimumHolding = newMinimumHolding;
-        emit MinimumHoldingUpdated(newMinimumHolding);
-    }
-
-    function getProposalStatus(uint256 proposalId) external view returns (string memory) {
+    function getProposalStatus(uint256 proposalId) public view returns (string memory) {
         Proposal storage proposal = proposals[proposalId];
+
         if (proposal.vetoed) return "Vetoed";
         if (proposal.executed) return "Executed";
         if (block.number > proposal.endBlock) return "Voting Ended";
         return "Active";
     }
+
+    function updateProposalThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+        if (newThreshold == 0) revert InvalidProposalData();
+        proposalThreshold = newThreshold;
+    }
+
+    function updateVotingDuration(uint256 newDuration) external onlyRole(GOVERNANCE_ROLE) {
+        if (newDuration == 0) revert InvalidProposalData();
+        votingDuration = newDuration;
+    }
+
+    function updateMinimumHolding(uint256 newMinimumHolding) external onlyRole(GOVERNANCE_ROLE) {
+        if (newMinimumHolding == 0) revert InvalidProposalData();
+        minimumHolding = newMinimumHolding;
+    }
 }
+
