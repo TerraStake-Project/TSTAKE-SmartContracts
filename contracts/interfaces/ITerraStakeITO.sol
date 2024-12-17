@@ -2,25 +2,6 @@
 pragma solidity 0.8.26;
 
 interface ITerraStakeITO {
-    struct AdvancedVestingSchedule {
-        uint256 totalAmount;
-        uint256 releasedAmount;
-        uint256 startTime;
-        uint256 duration;
-        uint256 cliff;
-        uint256 interval;
-        uint256 amountPerInterval;
-        bool revocable;
-        bool revoked;
-    }
-
-    struct Position {
-        uint128 liquidity;
-        int24 lowerTick;
-        int24 upperTick;
-        uint256 tokenId;
-    }
-
     enum ITOState { NotStarted, Active, Paused, Finalized }
 
     // Events
@@ -46,7 +27,13 @@ interface ITerraStakeITO {
 
     event ITOStateChanged(ITOState newState, uint256 timestamp);
 
-    event LiquidityProvisionChanged(uint256 newPercentage, uint256 timestamp);
+    event DynamicITOParametersUpdated(
+        uint256 newStartingPrice,
+        uint256 newEndingPrice,
+        uint256 newPriceDuration
+    );
+
+    event UnsoldTokensBurned(uint256 unsoldTokens, uint256 timestamp);
 
     event USDCWithdrawn(
         address indexed recipient,
@@ -65,6 +52,14 @@ interface ITerraStakeITO {
     function pauseITO() external;
 
     function finalizeITO() external;
+
+    function handleUnsoldTokens() external;
+
+    function updateITOPrices(
+        uint256 newStartingPrice,
+        uint256 newEndingPrice,
+        uint256 newPriceDuration
+    ) external;
 
     // Token Purchase Functions
     function buyTokens(uint256 amount) external;

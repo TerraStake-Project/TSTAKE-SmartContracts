@@ -6,7 +6,6 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "../interfaces/ITerraStakeStaking.sol";
-import "../interfaces/IChainlinkDataFeeder.sol";
 
 contract TerraStakeStaking is 
     ITerraStakeStaking, 
@@ -17,7 +16,7 @@ contract TerraStakeStaking is
     IERC20 public stakingToken;
     IERC20 public rewardToken;
 
-    uint256 public rewardRate; // Reward rate per second per token
+    uint256 public rewardRate;
     uint256 public lockPeriod;
     uint256 public maxStake;
     uint256 public minRewardRate;
@@ -31,34 +30,22 @@ contract TerraStakeStaking is
 
     mapping(address => mapping(uint256 => StakingPosition)) public stakingPositions;
     mapping(uint256 => ProjectData) public projects;
-
-    // User-specific stake caps
     mapping(address => uint256) public userStakeCap;
 
-    // Role Definitions
     bytes32 public constant PROJECT_MANAGER_ROLE = keccak256("PROJECT_MANAGER_ROLE");
     bytes32 public constant STAKING_MANAGER_ROLE = keccak256("STAKING_MANAGER_ROLE");
 
-    // Events
-    event ProjectActivated(uint256 indexed projectId);
-    event ProjectDeactivated(uint256 indexed projectId);
+    event UserStakeCapped(address indexed user, uint256 cap);
+    event GracePeriodConfigured(uint256 newGracePeriod);
     event StakeSlashed(address indexed user, uint256 indexed projectId, uint256 slashAmount);
     event RewardsHalved(uint256 indexed projectId, uint256 oldReward, uint256 newReward);
-    event ProjectForceUnstaked(uint256 indexed projectId, uint256 totalUnstaked);
-    event RewardRateUpdated(uint256 indexed projectId, uint256 oldRate, uint256 newRate);
-
-    // Custom Errors
-    error InvalidStakeAmount();
-    error ExceedsMaxStakeLimit();
-    error ProjectNotActive();
-    error NoStakeFound();
-    error InsufficientRewardPool();
-    error RewardsAlreadyClaimed();
-    error InsufficientFundsForPenalty();
+    event ProjectEnforcedUnstake(uint256 indexed projectId, uint256 totalUnstaked);
+    event RewardRateUpdated(uint256 newRate);
 
     function initialize(InitializeParams calldata params) external override initializer {
-        if (params.stakingToken == address(0) || params.rewardToken == address(0) || params.admin == address(0)) 
-            revert InvalidStakeAmount();
+        require(params.stakingToken != address(0), "Invalid staking token");
+        require(params.rewardToken != address(0), "Invalid reward token");
+        require(params.admin != address(0), "Invalid admin address");
 
         __ReentrancyGuard_init();
         __Pausable_init();
@@ -80,12 +67,12 @@ contract TerraStakeStaking is
         _grantRole(STAKING_MANAGER_ROLE, params.admin);
     }
 
-    // Stake functionality
     function stake(uint256 projectId, uint256 amount) external override nonReentrant whenNotPaused {
-        if (amount == 0 || amount > maxStake) revert InvalidStakeAmount();
+        require(amount > 0, "Invalid stake amount");
+        require(amount <= maxStake, "Exceeds max stake limit");
 
         ProjectData storage project = projects[projectId];
-        if (!project.isActive || project.isPaused) revert ProjectNotActive();
+        require(project.isActive && !project.isPaused, "Project not active");
 
         StakingPosition storage position = stakingPositions[msg.sender][projectId];
         _claimRewards(projectId);
@@ -103,73 +90,32 @@ contract TerraStakeStaking is
 
     function unstake(uint256 projectId) external override nonReentrant whenNotPaused {
         StakingPosition storage position = stakingPositions[msg.sender][projectId];
-        if (position.amount == 0) revert NoStakeFound();
+        require(position.amount > 0, "No stake found");
 
-        uint256 elapsed = block.timestamp - position.stakingStart;
-        bool withinGracePeriod = elapsed <= gracePeriod;
+        uint256 timeSinceStake = block.timestamp - position.stakingStart;
+        bool withinGracePeriod = timeSinceStake <= gracePeriod;
 
         uint256 penalty = withinGracePeriod ? 0 : (position.amount * projects[projectId].penaltyRate) / 10000;
-        uint256 finalAmount = position.amount - penalty;
-
-        if (penalty > 0 && stakingToken.balanceOf(address(this)) < penalty) revert InsufficientFundsForPenalty();
+        uint256 unstakeAmount = position.amount - penalty;
 
         position.amount = 0;
         position.rewardDebt = 0;
-        position.lastCheckpoint = uint128(block.timestamp);
 
-        projects[projectId].totalStaked -= uint128(finalAmount);
-        totalStaked -= finalAmount;
+        projects[projectId].totalStaked -= uint128(unstakeAmount);
+        totalStaked -= unstakeAmount;
 
-        stakingToken.transfer(msg.sender, finalAmount);
-        emit Unstaked(msg.sender, projectId, finalAmount, penalty);
+        stakingToken.transfer(msg.sender, unstakeAmount);
+        emit Unstaked(msg.sender, projectId, unstakeAmount, penalty);
     }
 
-    // Claim rewards
     function claimRewards(uint256 projectId) external override nonReentrant whenNotPaused {
         uint256 rewards = _claimRewards(projectId);
-        if (rewards == 0) revert RewardsAlreadyClaimed();
+        require(rewards > 0, "No rewards available");
 
         rewardToken.transfer(msg.sender, rewards);
         emit RewardsClaimed(msg.sender, projectId, rewards);
     }
 
-    // Reward calculation logic
-    function _claimRewards(uint256 projectId) internal returns (uint256 rewards) {
-        StakingPosition storage position = stakingPositions[msg.sender][projectId];
-        ProjectData storage project = projects[projectId];
-
-        rewards = _calculateRewards(msg.sender, projectId);
-
-        if (project.rewardPool < rewards) revert InsufficientRewardPool();
-
-        project.rewardPool -= uint128(rewards);
-        position.rewardDebt += uint128(rewards);
-        position.lastCheckpoint = uint128(block.timestamp);
-    }
-
-    function _calculateRewards(address user, uint256 projectId) internal view returns (uint256) {
-        StakingPosition storage position = stakingPositions[user][projectId];
-        ProjectData storage project = projects[projectId];
-
-        if (position.amount == 0) return 0;
-
-        uint256 timeElapsed = block.timestamp - position.lastCheckpoint;
-        return (position.amount * rewardRate * project.stakingMultiplier * timeElapsed) / (365 days * 10000);
-    }
-
-    // Grace period and penalty configuration
-    function updateGracePeriod(uint256 newGracePeriod) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        gracePeriod = newGracePeriod;
-        emit GracePeriodConfigured(newGracePeriod);
-    }
-
-    function updatePenaltyRate(uint256 projectId, uint32 newRate) external override onlyRole(PROJECT_MANAGER_ROLE) {
-        ProjectData storage project = projects[projectId];
-        project.penaltyRate = newRate;
-        emit PenaltyRateUpdated(projectId, newRate);
-    }
-
-    // Project management
     function configureProject(
         uint256 projectId,
         uint32 stakingMultiplier,
@@ -190,30 +136,53 @@ contract TerraStakeStaking is
         emit ProjectStatusToggled(projectId, isPaused);
     }
 
-    function activateProject(uint256 projectId) external onlyRole(PROJECT_MANAGER_ROLE) {
-        ProjectData storage project = projects[projectId];
-        project.isActive = true;
-        activeProjects.push(projectId);
-        emit ProjectActivated(projectId);
+    function updateGracePeriod(uint256 newGracePeriod) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        gracePeriod = newGracePeriod;
+        emit GracePeriodConfigured(newGracePeriod);
     }
 
-    function deactivateProject(uint256 projectId) external onlyRole(PROJECT_MANAGER_ROLE) {
+    function updatePenaltyRate(uint256 projectId, uint32 newRate) external override onlyRole(PROJECT_MANAGER_ROLE) {
         ProjectData storage project = projects[projectId];
-        project.isActive = false;
-
-        for (uint256 i = 0; i < activeProjects.length; i++) {
-            if (activeProjects[i] == projectId) {
-                activeProjects[i] = activeProjects[activeProjects.length - 1];
-                activeProjects.pop();
-                break;
-            }
-        }
-        emit ProjectDeactivated(projectId);
+        project.penaltyRate = newRate;
+        emit PenaltyRateUpdated(projectId, newRate);
     }
 
-    // View functions for project and staking data
+    function recoverERC20(address token, uint256 amount) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        IERC20(token).transfer(msg.sender, amount);
+        emit TokenRecovered(token, amount, msg.sender);
+    }
+
     function getActiveProjects() external view override returns (uint256[] memory) {
         return activeProjects;
+    }
+
+    function getAllProjectData() external view override returns (ProjectData[] memory allProjects) {
+        uint256 length = activeProjects.length;
+        allProjects = new ProjectData[](length);
+
+        for (uint256 i = 0; i < length; i++) {
+            allProjects[i] = projects[activeProjects[i]];
+        }
+    }
+
+    function getTotalRewards(address user) external view override returns (uint256 totalRewards) {
+        for (uint256 i = 0; i < activeProjects.length; i++) {
+            totalRewards += _calculateRewards(user, activeProjects[i]);
+        }
+        return totalRewards;
+    }
+
+    function calculateProjectedRewards(
+        address user,
+        uint256 projectId,
+        uint256 duration
+    ) external view override returns (uint256) {
+        StakingPosition storage position = stakingPositions[user][projectId];
+        ProjectData storage project = projects[projectId];
+
+        if (position.amount == 0) return 0;
+
+        return (position.amount * rewardRate * project.stakingMultiplier * duration) / (365 days * 10000);
     }
 
     function getProjectDetails(uint256 projectId) 
@@ -262,5 +231,37 @@ contract TerraStakeStaking is
             position.lastCheckpoint,
             position.stakingStart
         );
+    }
+
+    function updateProjectStakingData(uint256 projectId, uint32 stakingMultiplier) 
+        external 
+        override 
+        onlyRole(PROJECT_MANAGER_ROLE) 
+    {
+        ProjectData storage project = projects[projectId];
+        project.stakingMultiplier = stakingMultiplier;
+        emit ProjectUpdated(projectId, stakingMultiplier);
+    }
+
+    function _claimRewards(uint256 projectId) internal returns (uint256 rewards) {
+        StakingPosition storage position = stakingPositions[msg.sender][projectId];
+        ProjectData storage project = projects[projectId];
+
+        rewards = _calculateRewards(msg.sender, projectId);
+        require(project.rewardPool >= rewards, "Insufficient reward pool");
+
+        project.rewardPool -= uint128(rewards);
+        position.rewardDebt += uint128(rewards);
+        position.lastCheckpoint = uint128(block.timestamp);
+    }
+
+    function _calculateRewards(address user, uint256 projectId) internal view returns (uint256) {
+        StakingPosition storage position = stakingPositions[user][projectId];
+        ProjectData storage project = projects[projectId];
+
+        if (position.amount == 0) return 0;
+
+        uint256 timeElapsed = block.timestamp - position.lastCheckpoint;
+        return (position.amount * rewardRate * project.stakingMultiplier * timeElapsed) / (365 days * 10000);
     }
 }

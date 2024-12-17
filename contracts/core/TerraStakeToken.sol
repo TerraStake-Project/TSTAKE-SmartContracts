@@ -1,124 +1,74 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import {ERC20VotesUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20VotesUpgradeable.sol";
-import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
-import "../governance/TerraStakeAccessControl.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "../interfaces/ITerraStakeToken.sol";
 
 contract TerraStakeToken is
     Initializable,
-    ERC20VotesUpgradeable,
-    ReentrancyGuardUpgradeable,
+    ERC20Upgradeable,
+    AccessControlUpgradeable,
     PausableUpgradeable,
     ITerraStakeToken
 {
-    TerraStakeAccessControl public accessControl;
-
     uint256 public override maxSupply;
-    uint256 public override burnRate;           // in basis points (e.g., 100 = 1%)
-    uint256 public override redistributionRate; // in basis points
-    address public redistributionAddress;
-    AggregatorV3Interface public priceFeed;
+    uint256 public override burnRate;
+    uint256 public override redistributionRate;
+    uint256 public override stakingRewardsRate;
+
+    address public override redistributionAddress;
+    address public override stakingRewardsAddress;
 
     mapping(address => VestingSchedule) private vestingSchedules;
 
-    // Initialization
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
+    bytes32 public constant VESTING_MANAGER_ROLE = keccak256("VESTING_MANAGER_ROLE");
+
     function initialize(
-        address _accessControl,
-        uint256 initialSupply,
-        address _redistributionAddress
+        string memory name_,
+        string memory symbol_,
+        uint256 maxSupply_,
+        address admin
     ) external initializer {
-        if (_accessControl == address(0)) revert ZeroAddress();
-        if (_redistributionAddress == address(0)) revert ZeroAddress();
-
-        string memory _name = "TerraStake";
-        string memory _symbol = "TSTAKE";
-        uint256 _maxSupply = 2_000_000_000 * 10**18;
-
-        __ERC20_init(_name, _symbol);
-        __ERC20Votes_init();
-        __ReentrancyGuard_init();
+        __ERC20_init(name_, symbol_);
+        __AccessControl_init();
         __Pausable_init();
 
-        accessControl = TerraStakeAccessControl(_accessControl);
-        maxSupply = _maxSupply;
+        if (admin == address(0)) revert ZeroAddress();
 
-        address admin = msg.sender;
-        if (!accessControl.hasRole(accessControl.DEFAULT_ADMIN_ROLE(), admin)) revert InvalidAdminAddress();
-
-        // Mint initial supply directly
-        super._mint(admin, initialSupply);
-
-        burnRate = 0;
-        redistributionRate = 0;
-        redistributionAddress = _redistributionAddress;
+        maxSupply = maxSupply_;
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(MINTER_ROLE, admin);
+        _grantRole(GOVERNANCE_ROLE, admin);
     }
 
-    // Core Token Operations
-    function mint(address to, uint256 amount) external override whenNotPaused nonReentrant {
-        if (!accessControl.hasRole(accessControl.MINTER_ROLE(), msg.sender)) revert Unauthorized();
-        if (to == address(0)) revert ZeroAddress();
+    function mint(address to, uint256 amount) external override onlyRole(MINTER_ROLE) {
         if (totalSupply() + amount > maxSupply) revert MintAmountExceedsMaxSupply();
-
-        super._mint(to, amount);
+        _mint(to, amount);
     }
 
-    function burn(address from, uint256 amount) external override whenNotPaused nonReentrant {
-        if (!accessControl.hasRole(accessControl.DEFAULT_ADMIN_ROLE(), msg.sender)) revert Unauthorized();
-        if (from == address(0)) revert ZeroAddress();
+    function burn(address from, uint256 amount) external override {
         if (balanceOf(from) < amount) revert BurnAmountExceedsBalance();
-
-        super._burn(from, amount);
-        emit TokensBurned(from, amount);
+        _burn(from, amount);
     }
 
-    function transfer(address to, uint256 amount)
-        public
-        override(ERC20Upgradeable, ITerraStakeToken)
-        whenNotPaused
-        returns (bool)
-    {
-        address sender = _msgSender();
-
-        uint256 _burnAmount = (amount * burnRate) / 10000;
-        uint256 _redistributeAmount = (amount * redistributionRate) / 10000;
-        uint256 netAmount = amount - _burnAmount - _redistributeAmount;
-
-        if (_burnAmount > 0) {
-            super._burn(sender, _burnAmount);
-            emit TokensBurned(sender, _burnAmount);
-        }
-
-        if (_redistributeAmount > 0) {
-            super.transfer(redistributionAddress, _redistributeAmount);
-            emit TokensRedistributed(redistributionAddress, _redistributeAmount);
-        }
-
-        return super.transfer(to, netAmount);
+    function transfer(address to, uint256 amount) public override(ERC20Upgradeable, ITerraStakeToken) returns (bool) {
+        return super.transfer(to, amount);
     }
 
-    // Vesting Functions
     function createVestingSchedule(
         address beneficiary,
         uint256 totalAmount,
         uint256 startTime,
         uint256 duration,
         uint256 cliff
-    ) external override {
-        if (!accessControl.hasRole(accessControl.VESTING_MANAGER_ROLE(), msg.sender)) revert Unauthorized();
-        if (beneficiary == address(0)) revert ZeroAddress();
-        if (totalAmount == 0 || duration == 0 || startTime == 0) revert InvalidRate();
-        if (totalSupply() + totalAmount > maxSupply) revert MintAmountExceedsMaxSupply();
+    ) external override onlyRole(VESTING_MANAGER_ROLE) {
         if (vestingSchedules[beneficiary].totalAmount > 0) revert NoVestingSchedule();
-
-        super._mint(address(this), totalAmount);
 
         vestingSchedules[beneficiary] = VestingSchedule({
             totalAmount: totalAmount,
@@ -131,101 +81,72 @@ contract TerraStakeToken is
         emit VestingScheduleCreated(beneficiary, totalAmount, startTime, duration, cliff);
     }
 
-    function claimVestedTokens() external override whenNotPaused nonReentrant {
+    function claimVestedTokens() external override {
         VestingSchedule storage schedule = vestingSchedules[msg.sender];
-        if (schedule.totalAmount == 0) revert NoVestingSchedule();
         if (block.timestamp < schedule.startTime + schedule.cliff) revert CliffNotReached();
 
-        uint256 vested = _vestedAmount(schedule);
-        if (vested <= schedule.releasedAmount) revert NoClaimableTokens();
+        uint256 vestedAmount = _calculateClaimableTokens(schedule);
+        if (vestedAmount == 0) revert NoClaimableTokens();
 
-        uint256 claimable = vested - schedule.releasedAmount;
-        schedule.releasedAmount += claimable;
+        schedule.releasedAmount += vestedAmount;
+        _mint(msg.sender, vestedAmount);
 
-        super.transfer(msg.sender, claimable);
-        emit TokensClaimed(msg.sender, claimable);
+        emit TokensClaimed(msg.sender, vestedAmount);
     }
 
     function getVestingSchedule(address beneficiary) external view override returns (VestingSchedule memory) {
         return vestingSchedules[beneficiary];
     }
 
-    function _vestedAmount(VestingSchedule memory schedule) internal view returns (uint256) {
-        if (block.timestamp < schedule.startTime + schedule.cliff) return 0;
-        if (block.timestamp >= schedule.startTime + schedule.duration) return schedule.totalAmount;
-
-        uint256 elapsed = block.timestamp - schedule.startTime;
-        return (schedule.totalAmount * elapsed) / schedule.duration;
+    function revokeVestingSchedule(address beneficiary) external override onlyRole(VESTING_MANAGER_ROLE) {
+        delete vestingSchedules[beneficiary];
+        emit VestingScheduleRevoked(beneficiary, 0);
     }
 
-    // Admin Functions
-    function setRates(uint256 _burnRate, uint256 _redistributionRate) external override {
-        if (!accessControl.hasRole(accessControl.GOVERNANCE_ROLE(), msg.sender)) revert Unauthorized();
-        if (_burnRate + _redistributionRate > 10000) revert InvalidRate();
+    function setRates(uint256 _burnRate, uint256 _redistributionRate, uint256 _stakingRewardsRate)
+        external
+        override
+        onlyRole(GOVERNANCE_ROLE)
+    {
         burnRate = _burnRate;
         redistributionRate = _redistributionRate;
-        emit RatesUpdated(_burnRate, _redistributionRate);
+        stakingRewardsRate = _stakingRewardsRate;
+
+        emit RatesUpdated(_burnRate, _redistributionRate, _stakingRewardsRate);
     }
 
-    function setMaxSupply(uint256 newMaxSupply) external override {
-        if (!accessControl.hasRole(accessControl.DEFAULT_ADMIN_ROLE(), msg.sender)) revert Unauthorized();
+    function setMaxSupply(uint256 newMaxSupply) external override onlyRole(GOVERNANCE_ROLE) {
         if (newMaxSupply < totalSupply()) revert NewMaxSupplyBelowTotalSupply();
+        uint256 oldMaxSupply = maxSupply;
         maxSupply = newMaxSupply;
-        emit MaxSupplyUpdated(newMaxSupply);
+
+        emit MaxSupplyUpdated(oldMaxSupply, newMaxSupply);
     }
 
-    function pause() external override {
-        if (!accessControl.hasRole(accessControl.EMERGENCY_ROLE(), msg.sender)) revert Unauthorized();
+    function pause() external override onlyRole(EMERGENCY_ROLE) {
         _pause();
     }
 
-    function unpause() external override {
-        if (!accessControl.hasRole(accessControl.EMERGENCY_ROLE(), msg.sender)) revert Unauthorized();
+    function unpause() external override onlyRole(EMERGENCY_ROLE) {
         _unpause();
     }
 
-    function getPrice() external view override returns (uint256) {
-        if (address(priceFeed) == address(0)) revert ZeroAddress();
-        (, int256 answer, , , ) = priceFeed.latestRoundData();
-        if (answer <= 0) revert InvalidRate();
-        return uint256(answer);
+    // Changed to pure since it returns a constant and does not read state
+    function getPrice() external pure override returns (uint256) {
+        return 0; 
     }
 
-    function emergencyWithdraw(address token, address to, uint256 amount) external override nonReentrant {
-        if (!accessControl.hasRole(accessControl.EMERGENCY_ROLE(), msg.sender)) revert Unauthorized();
-        if (to == address(0)) revert ZeroAddress();
-        bool success = IERC20(token).transfer(to, amount);
-        if (!success) revert Unauthorized();
+    function emergencyWithdraw(address token, address to, uint256 amount) external override onlyRole(EMERGENCY_ROLE) {
+        IERC20(token).transfer(to, amount);
         emit EmergencyWithdraw(token, to, amount);
     }
 
-    // Overriding _update from ERC20VotesUpgradeable for customization if needed
-    function _update(address from, address to, uint256 value)
-        internal
-        override(ERC20VotesUpgradeable)
-    {
-        // Add custom logic here if needed
-        super._update(from, to, value);
-    }
+    function _calculateClaimableTokens(VestingSchedule storage schedule) internal view returns (uint256) {
+        if (block.timestamp < schedule.startTime + schedule.cliff) return 0;
 
-    // Expose AccessControl Role Getters
-    function MINTER_ROLE() external view override returns (bytes32) {
-        return accessControl.MINTER_ROLE();
-    }
+        uint256 elapsedTime = block.timestamp - schedule.startTime;
+        uint256 totalVested = (schedule.totalAmount * elapsedTime) / schedule.duration;
 
-    function GOVERNANCE_ROLE() external view override returns (bytes32) {
-        return accessControl.GOVERNANCE_ROLE();
-    }
-
-    function VESTING_MANAGER_ROLE() external view override returns (bytes32) {
-        return accessControl.VESTING_MANAGER_ROLE();
-    }
-
-    function DEFAULT_ADMIN_ROLE() external view override returns (bytes32) {
-        return accessControl.DEFAULT_ADMIN_ROLE();
-    }
-
-    function EMERGENCY_ROLE() external view override returns (bytes32) {
-        return accessControl.EMERGENCY_ROLE();
+        return totalVested > schedule.releasedAmount ? totalVested - schedule.releasedAmount : 0;
     }
 }

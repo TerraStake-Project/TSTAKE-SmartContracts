@@ -7,14 +7,13 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/ITerraStakeRewards.sol";
-import "../interfaces/IChainlinkDataFeeder.sol";
 
-contract TerraStakeRewards is
+contract TerraStakeRewards is 
     ITerraStakeRewards,
     ERC20Upgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
-    AccessControlUpgradeable
+    AccessControlUpgradeable 
 {
     uint256 public constant MAX_MULTIPLIER = 10000; // Basis points
     uint256 public constant MIN_REWARD_RATE = 1;
@@ -93,12 +92,6 @@ contract TerraStakeRewards is
         emit HalvingApplied(poolId, oldAvailable, pool.available, pool.halvingCount, block.timestamp);
     }
 
-    function simulateHalving(uint256 poolId) external view returns (uint128 newAvailable) {
-        RewardPool storage pool = rewardPools[poolId];
-        require(pool.isActive, "Inactive pool");
-        return pool.available / 2;
-    }
-
     function toggleRewardPool(uint256 poolId) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         RewardPool storage pool = rewardPools[poolId];
         pool.isActive = !pool.isActive;
@@ -152,8 +145,6 @@ contract TerraStakeRewards is
             totalClaimed += _claimRewards(msg.sender, poolIds[i]);
         }
         require(totalClaimed > 0, "No rewards to claim");
-        rewardToken.transfer(msg.sender, totalClaimed);
-        emit RewardsClaimed(msg.sender, 0, totalClaimed);
     }
 
     // Internal Reward Logic
