@@ -2,8 +2,6 @@
 pragma solidity 0.8.26;
 
 interface ITerraStakeGovernance {
-    enum ProposalStatus { Active, Vetoed, Executed, VotingEnded }
-
     struct Proposal {
         bytes data;
         address target;
@@ -67,11 +65,11 @@ interface ITerraStakeGovernance {
     /// @param expectedPrice The price expected for validation
     function validateOraclePrice(uint256 expectedPrice) external view;
 
-    /// @notice Update the staking contract address (restricted to governance/admin roles)
+    /// @notice Update the staking contract address
     /// @param stakingContract The new staking contract address
     function updateStakingContract(address stakingContract) external;
 
-    /// @notice Update the ITO contract address (restricted to governance/admin roles)
+    /// @notice Update the ITO contract address
     /// @param itoContract The new ITO contract address
     function updateITOContract(address itoContract) external;
 
@@ -90,8 +88,8 @@ interface ITerraStakeGovernance {
     // View Functions
     /// @notice Get the status of a proposal
     /// @param proposalId The ID of the proposal
-    /// @return The status of the proposal as an enum
-    function getProposalStatus(uint256 proposalId) external view returns (ProposalStatus);
+    /// @return The status of the proposal as a string
+    function getProposalStatus(uint256 proposalId) external view returns (string memory);
 
     /// @notice Get the total number of proposals
     /// @return The count of proposals

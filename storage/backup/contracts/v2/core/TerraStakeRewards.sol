@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/ITerraStakeRewards.sol";
+import "../interfaces/IChainlinkDataFeeder.sol";
 
 contract TerraStakeRewards is
     ITerraStakeRewards,
@@ -23,40 +24,22 @@ contract TerraStakeRewards is
     uint256 public baseRewardRate;
     uint256 public totalRewardsDistributed;
     uint256 public rewardPoolCount;
-    uint256 public halvingInterval; // Number of blocks between halvings
-    uint256 public lastHalvingBlock; // Last block when halving occurred
-    uint256 public userRewardCap; // Maximum reward a user can claim
+    bool public distributionPaused;
 
     mapping(uint256 => RewardPool) public rewardPools;
     mapping(address => mapping(uint256 => UserRewards)) public userRewards;
-
-    mapping(uint256 => uint256) public projectPools;
-    mapping(uint256 => bool) public projectHasPool;
-
-    address public constant ADMIN_ADDRESS = 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d;
-
-    modifier onlyStakingContract() {
-        require(msg.sender == stakingContract, "Caller is not staking contract");
-        _;
-    }
-
-    event RewardRateHalved(uint256 newRate, uint256 halvingBlock);
-    event BaseRewardRateUpdated(uint256 oldRate, uint256 newRate);
 
     // Initialization
     function initialize(
         address _rewardToken,
         address _stakingContract,
         uint256 _baseRewardRate,
-        uint256 _halvingInterval,
-        uint256 _userRewardCap,
         address admin
-    ) external initializer {
+    ) external override initializer {
         require(_rewardToken != address(0), "Invalid reward token");
         require(_stakingContract != address(0), "Invalid staking contract");
         require(admin != address(0), "Invalid admin address");
         require(_baseRewardRate >= MIN_REWARD_RATE, "Reward rate too low");
-        require(_halvingInterval > 0, "Invalid halving interval");
 
         __ERC20_init("TSTAKE", "TSTAKE");
         __AccessControl_init();
@@ -66,24 +49,23 @@ contract TerraStakeRewards is
         rewardToken = IERC20(_rewardToken);
         stakingContract = _stakingContract;
         baseRewardRate = _baseRewardRate;
-        halvingInterval = _halvingInterval;
-        lastHalvingBlock = block.number;
-        userRewardCap = _userRewardCap;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
+    // Staking Contract Management
     function setStakingContract(address _stakingContract) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_stakingContract != address(0), "Invalid staking contract");
         stakingContract = _stakingContract;
     }
 
+    // Reward Pool Management
     function createRewardPool(
         uint256 amount,
         uint32 multiplier,
         uint48 duration
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 poolId) {
-        require(amount > 0, "Invalid amount");
+        require(amount > 0, "Invalid pool amount");
         require(multiplier > 0 && multiplier <= MAX_MULTIPLIER, "Invalid multiplier");
         require(duration > 0, "Invalid duration");
 
@@ -93,26 +75,10 @@ contract TerraStakeRewards is
         pool.multiplier = multiplier;
         pool.endBlock = uint48(block.number + duration);
         pool.isActive = true;
-        pool.lastUpdateBlock = uint48(block.number);
+        pool.lastHalvingTime = block.timestamp;
 
-        require(rewardToken.transferFrom(ADMIN_ADDRESS, address(this), amount), "Reward transfer failed");
+        rewardToken.transferFrom(msg.sender, address(this), amount);
         emit RewardPoolCreated(poolId, amount, multiplier);
-    }
-
-    function createProjectPool(
-        uint256 projectId,
-        uint256 verificationFee,
-        uint32 multiplier,
-        uint48 duration
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-
-    }
-
-    function fundProjectRewards(
-        uint256 projectId,
-        uint256 verificationFee
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-
     }
 
     function applyHalving(uint256 poolId) external override onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -127,93 +93,89 @@ contract TerraStakeRewards is
         emit HalvingApplied(poolId, oldAvailable, pool.available, pool.halvingCount, block.timestamp);
     }
 
+    function simulateHalving(uint256 poolId) external view returns (uint128 newAvailable) {
+        RewardPool storage pool = rewardPools[poolId];
+        require(pool.isActive, "Inactive pool");
+        return pool.available / 2;
+    }
+
+    function toggleRewardPool(uint256 poolId) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        RewardPool storage pool = rewardPools[poolId];
+        pool.isActive = !pool.isActive;
+        emit PoolDeactivated(poolId);
+    }
+
+    function drainRewardPool(uint256 poolId, uint256 amount) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        RewardPool storage pool = rewardPools[poolId];
+        require(pool.isActive, "Inactive pool");
+        require(pool.available >= amount, "Insufficient balance in pool");
+
+        pool.available -= uint128(amount);
+        rewardToken.transfer(msg.sender, amount);
+        emit RewardPoolDrained(poolId, amount);
+    }
+
+    function toggleDistributionStatus() external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        distributionPaused = !distributionPaused;
+        emit DistributionStatusChanged(distributionPaused);
+    }
+
+    // Reward Distribution
     function distributeRewards(
         uint256 poolId,
         address[] calldata recipients,
         uint256[] calldata amounts
-    ) external override onlyStakingContract nonReentrant {
-        require(recipients.length == amounts.length, "Mismatched arrays");
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        require(recipients.length == amounts.length, "Mismatched array lengths");
         RewardPool storage pool = rewardPools[poolId];
         require(pool.isActive, "Inactive pool");
-        require(block.number <= pool.endBlock, "Pool ended");
-
-        _applyHalving();
 
         for (uint256 i = 0; i < recipients.length; i++) {
             require(pool.available >= amounts[i], "Insufficient pool balance");
             pool.available -= uint128(amounts[i]);
             userRewards[recipients[i]][poolId].pending += uint128(amounts[i]);
 
-            emit RewardsDistributed(poolId, recipients[i], amounts[i]);
+            emit RewardsDistributed(poolId, amounts[i]);
         }
-    }
-
-    function _applyHalving() internal {
-        if (block.number >= lastHalvingBlock + halvingInterval) {
-            uint256 halvings = (block.number - lastHalvingBlock) / halvingInterval;
-            for (uint256 i = 0; i < halvings; i++) {
-                baseRewardRate = baseRewardRate / 2;
-                if (baseRewardRate < MIN_REWARD_RATE) {
-                    baseRewardRate = MIN_REWARD_RATE;
-                    break;
-                }
-            }
-            lastHalvingBlock = block.number;
-            emit RewardRateHalved(baseRewardRate, lastHalvingBlock);
-        }
-    }
-
-    function setBaseRewardRate(uint256 newRate) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newRate >= MIN_REWARD_RATE, "Reward rate too low");
-        uint256 oldRate = baseRewardRate;
-        baseRewardRate = newRate;
-        emit BaseRewardRateUpdated(oldRate, newRate);
     }
 
     function claimRewards(uint256 poolId) external override nonReentrant whenNotPaused {
         uint256 rewards = _claimRewards(msg.sender, poolId);
-        require(rewards > 0, "No rewards");
-        require(rewards <= userRewardCap, "Reward exceeds cap");
-
-        require(rewardToken.transfer(msg.sender, rewards), "Transfer failed");
+        require(rewards > 0, "No rewards to claim");
+        rewardToken.transfer(msg.sender, rewards);
         emit RewardsClaimed(msg.sender, poolId, rewards);
     }
 
     function batchClaimRewards(uint256[] calldata poolIds) external override nonReentrant whenNotPaused {
         uint256 totalClaimed = 0;
         for (uint256 i = 0; i < poolIds.length; i++) {
-            uint256 claimed = _claimRewards(msg.sender, poolIds[i]);
-            require(claimed <= userRewardCap, "Reward exceeds cap");
-            totalClaimed += claimed;
+            totalClaimed += _claimRewards(msg.sender, poolIds[i]);
         }
-        require(totalClaimed > 0, "No rewards");
-        require(rewardToken.transfer(msg.sender, totalClaimed), "Transfer failed");
-
+        require(totalClaimed > 0, "No rewards to claim");
+        rewardToken.transfer(msg.sender, totalClaimed);
         emit RewardsClaimed(msg.sender, 0, totalClaimed);
     }
 
-    function _claimRewards(address user, uint256 poolId) internal returns (uint256) {
+    // Internal Reward Logic
+    function _claimRewards(address user, uint256 poolId) internal returns (uint256 rewards) {
         UserRewards storage userReward = userRewards[user][poolId];
         RewardPool storage pool = rewardPools[poolId];
         require(pool.isActive, "Inactive pool");
 
-        uint256 rewards = userReward.pending;
-        if (rewards == 0) return 0;
-
-        userReward.pending = 0;
-        userReward.claimed += uint128(rewards);
-        pool.distributed += uint128(rewards);
-        totalRewardsDistributed += rewards;
-        return rewards;
+        rewards = calculateReward(user, poolId);
+        if (rewards > 0) {
+            userReward.claimed += uint128(rewards);
+            userReward.pending = 0;
+            pool.distributed += uint128(rewards);
+            totalRewardsDistributed += rewards;
+        }
     }
 
-    function updateHalvingInterval(uint256 newInterval) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newInterval > 0, "Invalid halving interval");
-        halvingInterval = newInterval;
-    }
-
-    function setUserRewardCap(uint256 cap) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        userRewardCap = cap;
+    function calculateReward(address user, uint256 poolId) public view override returns (uint256) {
+        UserRewards storage userReward = userRewards[user][poolId];
+        RewardPool storage pool = rewardPools[poolId];
+        if (!pool.isActive || userReward.pending == 0) return 0;
+        return (userReward.pending * pool.multiplier) / MAX_MULTIPLIER;
     }
 
     function getPoolInfo(uint256 poolId) external view override returns (
@@ -237,12 +199,6 @@ contract TerraStakeRewards is
         );
     }
 
-    function getPoolUtilization(uint256 poolId) external view returns (uint256 utilized, uint256 remaining) {
-        RewardPool storage pool = rewardPools[poolId];
-        utilized = pool.distributed;
-        remaining = pool.available;
-    }
-
     function getUserRewardInfo(address user, uint256 poolId) external view override returns (
         uint128 pending,
         uint128 claimed,
@@ -264,9 +220,5 @@ contract TerraStakeRewards is
         for (uint256 i = 0; i < rewardPoolCount; i++) {
             totalPending += userRewards[user][i].pending;
         }
-    }
-
-    function isProjectHasPool(uint256 projectId) external view override returns (bool) {
-        return projectHasPool[projectId];
     }
 }
