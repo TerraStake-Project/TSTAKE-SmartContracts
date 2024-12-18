@@ -32,33 +32,30 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
     mapping(uint256 => DataFeed) public projectFeeds;
     mapping(uint256 => uint256) public lastUpdateTimestamp;
 
-    // Price feed configurations
-    address public tStakeAggregator;
-    address public usdcAggregator;
-    address public ethAggregator;
-
-    bool public tStakeFeedActive;
-    bool public usdcFeedActive;
-    bool public ethFeedActive;
-
     // Roles
     bytes32 public constant FEED_MANAGER_ROLE = keccak256("FEED_MANAGER_ROLE");
+    bytes32 public constant REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
 
     // Configurable stale threshold
     uint256 public staleThreshold;
 
     // Events
     event DataFeedUpdated(uint256 indexed projectId, address indexed aggregator, bool active);
-    event PriceFeedUpdated(string indexed feedType, address indexed aggregator, bool active);
     event DataFedToTerraStake(uint256 indexed projectId, int256 value, uint256 timestamp);
+    event DataFeedAutoDeactivated(uint256 indexed projectId, uint256 timestamp);
+    event FeedBatchDeactivated(uint256[] projectIds, uint256 timestamp);
+    event FeedBatchReactivate(uint256[] projectIds, uint256 timestamp);
     event StaleThresholdUpdated(uint256 newThreshold);
 
-    // Constructor
+    // Modifier to validate project existence
+    modifier validProject(uint256 projectId) {
+        if (projectFeeds[projectId].aggregator == address(0)) revert InvalidProjectId();
+        if (!projectFeeds[projectId].active) revert FeedInactive();
+        _;
+    }
+
     constructor(
         address _terraStakeProjectsContract,
-        address _tStakeAggregator,
-        address _usdcAggregator,
-        address _ethAggregator,
         address _owner,
         uint256 _staleThreshold
     ) {
@@ -66,17 +63,11 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
         if (_owner == address(0)) revert InvalidAddress();
 
         terraStakeProjectsContract = _terraStakeProjectsContract;
-        tStakeAggregator = _tStakeAggregator;
-        usdcAggregator = _usdcAggregator;
-        ethAggregator = _ethAggregator;
-
-        tStakeFeedActive = tStakeAggregator != address(0);
-        usdcFeedActive = usdcAggregator != address(0);
-        ethFeedActive = ethAggregator != address(0);
         staleThreshold = _staleThreshold;
 
         _grantRole(DEFAULT_ADMIN_ROLE, _owner);
         _grantRole(FEED_MANAGER_ROLE, _owner);
+        _grantRole(REWARD_MANAGER_ROLE, _owner);
     }
 
     // Set or update a data feed
@@ -91,43 +82,17 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
         emit DataFeedUpdated(projectId, aggregator, active);
     }
 
-    // Update the TSTAKE, USDC, and ETH price feeds
-    function updatePriceFeed(string calldata feedType, address aggregator, bool active) external onlyRole(FEED_MANAGER_ROLE) {
-        if (keccak256(bytes(feedType)) == keccak256(bytes("TSTAKE"))) {
-            tStakeAggregator = aggregator;
-            tStakeFeedActive = active;
-        } else if (keccak256(bytes(feedType)) == keccak256(bytes("USDC"))) {
-            usdcAggregator = aggregator;
-            usdcFeedActive = active;
-        } else if (keccak256(bytes(feedType)) == keccak256(bytes("ETH"))) {
-            ethAggregator = aggregator;
-            ethFeedActive = active;
-        } else {
-            revert InvalidAddress();
-        }
-        emit PriceFeedUpdated(feedType, aggregator, active);
-    }
+    // Deactivate an individual feed
+    function deactivateFeed(uint256 projectId) external onlyRole(FEED_MANAGER_ROLE) {
+        if (!projectFeeds[projectId].active) revert FeedAlreadyInactive();
+        projectFeeds[projectId].active = false;
 
-    // Fetch the latest TSTAKE price
-    function getTStakePrice() public view returns (int256) {
-        return _getLatestPrice(tStakeAggregator, tStakeFeedActive);
-    }
-
-    // Fetch the latest USDC price
-    function getUSDCPrice() public view returns (int256) {
-        return _getLatestPrice(usdcAggregator, usdcFeedActive);
-    }
-
-    // Fetch the latest ETH price
-    function getETHPrice() public view returns (int256) {
-        return _getLatestPrice(ethAggregator, ethFeedActive);
+        emit DataFeedUpdated(projectId, projectFeeds[projectId].aggregator, false);
     }
 
     // Feed latest data to TerraStakeProjects contract
-    function feedDataToTerraStake(uint256 projectId) public nonReentrant {
-        if (projectFeeds[projectId].aggregator == address(0) || !projectFeeds[projectId].active) revert InvalidProjectId();
-
-        int256 value = _getLatestPrice(projectFeeds[projectId].aggregator, true);
+    function feedDataToTerraStake(uint256 projectId) public validProject(projectId) nonReentrant {
+        int256 value = getLatestData(projectId);
         uint256 timestamp = block.timestamp;
 
         ITerraStakeProjects(terraStakeProjectsContract).updateProjectDataFromChainlink(projectId, value);
@@ -136,21 +101,61 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
         emit DataFedToTerraStake(projectId, value, timestamp);
     }
 
+    // Batch feed data to multiple projects
+    function batchFeedDataToTerraStake(uint256[] calldata projectIds) external nonReentrant {
+        for (uint256 i = 0; i < projectIds.length; i++) {
+            feedDataToTerraStake(projectIds[i]);
+        }
+    }
+
+    // Validate data fetched from Chainlink
+    function validateData(uint256 projectId, int256 expectedValue) external view validProject(projectId) returns (bool) {
+        int256 value = getLatestData(projectId);
+        return value == expectedValue;
+    }
+
+    // Automatically deactivate unhealthy feeds
+    function autoBatchDeactivateFeeds(uint256[] calldata projectIds) external onlyRole(FEED_MANAGER_ROLE) {
+        for (uint256 i = 0; i < projectIds.length; i++) {
+            if (!checkFeedHealth(projectIds[i])) {
+                projectFeeds[projectIds[i]].active = false;
+                emit DataFeedAutoDeactivated(projectIds[i], block.timestamp);
+            }
+        }
+        emit FeedBatchDeactivated(projectIds, block.timestamp);
+    }
+
+    // Manually reactivate inactive feeds
+    function manualRecoverInactiveFeeds(uint256[] calldata projectIds) external onlyRole(FEED_MANAGER_ROLE) {
+        for (uint256 i = 0; i < projectIds.length; i++) {
+            if (!projectFeeds[projectIds[i]].active) {
+                projectFeeds[projectIds[i]].active = true;
+            }
+        }
+        emit FeedBatchReactivate(projectIds, block.timestamp);
+    }
+
     // Update stale threshold
     function updateStaleThreshold(uint256 newThreshold) external onlyRole(DEFAULT_ADMIN_ROLE) {
         staleThreshold = newThreshold;
         emit StaleThresholdUpdated(newThreshold);
     }
 
-    // Internal function to fetch the latest price
-    function _getLatestPrice(address aggregator, bool active) internal view returns (int256) {
-        if (!active) revert FeedInactive();
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(aggregator);
+    // Fetch the latest data for a project
+    function getLatestData(uint256 projectId) public view validProject(projectId) returns (int256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(projectFeeds[projectId].aggregator);
         (, int256 price, , uint256 updatedAt, ) = priceFeed.latestRoundData();
 
         if (price <= 0) revert DataValueInvalid();
         if (block.timestamp - updatedAt >= staleThreshold) revert DataStale();
 
         return price;
+    }
+
+    // Check the health of a specific feed
+    function checkFeedHealth(uint256 projectId) public view returns (bool) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(projectFeeds[projectId].aggregator);
+        (, , , uint256 updatedAt, ) = priceFeed.latestRoundData();
+        return block.timestamp - updatedAt < staleThreshold;
     }
 }

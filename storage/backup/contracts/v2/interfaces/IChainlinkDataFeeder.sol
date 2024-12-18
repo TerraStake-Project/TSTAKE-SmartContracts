@@ -15,12 +15,9 @@ interface IChainlinkDataFeeder {
     event FeedBatchDeactivated(uint256[] projectIds, uint256 timestamp);
     event FeedBatchReactivate(uint256[] projectIds, uint256 timestamp);
     event StaleThresholdUpdated(uint256 newThreshold);
-    event PriceFeedUpdated(string indexed feedType, address indexed aggregator, bool active);
 
     // Core Functions
     function setDataFeed(uint256 projectId, address aggregator, bool active) external;
-
-    function updatePriceFeed(string calldata feedType, address aggregator, bool active) external;
 
     function deactivateFeed(uint256 projectId) external;
 
@@ -38,12 +35,6 @@ interface IChainlinkDataFeeder {
 
     // View Functions
     function getLatestData(uint256 projectId) external view returns (int256);
-
-    function getTStakePrice() external view returns (int256);
-
-    function getUSDCPrice() external view returns (int256);
-
-    function getETHPrice() external view returns (int256);
 
     function checkFeedHealth(uint256 projectId) external view returns (bool);
 

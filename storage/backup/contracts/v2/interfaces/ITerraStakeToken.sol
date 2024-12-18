@@ -2,7 +2,6 @@
 pragma solidity 0.8.26;
 
 interface ITerraStakeToken {
-    // Custom Errors
     error MintAmountExceedsMaxSupply();
     error BurnAmountExceedsBalance();
     error ZeroAddress();
@@ -11,40 +10,29 @@ interface ITerraStakeToken {
     error CliffNotReached();
     error NoClaimableTokens();
 
-    // Structs
     struct VestingSchedule {
-        uint256 totalAmount;        // Total tokens to vest
-        uint256 releasedAmount;     // Tokens already claimed
-        uint256 startTime;          // Vesting start time
-        uint256 duration;           // Vesting duration in seconds
-        uint256 cliff;              // Cliff period in seconds
+        uint256 totalAmount;
+        uint256 releasedAmount;
+        uint256 startTime;
+        uint256 duration;
+        uint256 cliff;
     }
 
-    // Events
     event RatesUpdated(uint256 burnRate, uint256 redistributionRate, uint256 stakingRewardsRate);
     event MaxSupplyUpdated(uint256 oldMaxSupply, uint256 newMaxSupply);
-    event VestingScheduleCreated(
-        address indexed beneficiary,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 duration,
-        uint256 cliff
-    );
+    event VestingScheduleCreated(address indexed beneficiary, uint256 totalAmount, uint256 startTime, uint256 duration, uint256 cliff);
     event TokensClaimed(address indexed beneficiary, uint256 amount);
     event VestingScheduleRevoked(address indexed beneficiary, uint256 amountRemaining);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
 
-    // Tokenomics Parameters
     function maxSupply() external view returns (uint256);
     function burnRate() external view returns (uint256);
     function redistributionRate() external view returns (uint256);
     function stakingRewardsRate() external view returns (uint256);
 
-    // Addresses for tokenomics
     function redistributionAddress() external view returns (address);
     function stakingRewardsAddress() external view returns (address);
 
-    // Initialization
     function initialize(
         string memory name_,
         string memory symbol_,
@@ -52,12 +40,10 @@ interface ITerraStakeToken {
         address admin
     ) external;
 
-    // Core Token Functions
     function mint(address to, uint256 amount) external;
     function burn(address from, uint256 amount) external;
     function transfer(address to, uint256 amount) external returns (bool);
 
-    // Vesting Functions
     function createVestingSchedule(
         address beneficiary,
         uint256 totalAmount,
@@ -70,11 +56,8 @@ interface ITerraStakeToken {
     function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory);
     function revokeVestingSchedule(address beneficiary) external;
 
-    // Tokenomics Management
     function setRates(uint256 _burnRate, uint256 _redistributionRate, uint256 _stakingRewardsRate) external;
     function setMaxSupply(uint256 newMaxSupply) external;
-
-    // Emergency and Pause Functions
     function pause() external;
     function unpause() external;
     function getPrice() external view returns (uint256);

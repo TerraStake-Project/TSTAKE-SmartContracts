@@ -36,8 +36,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
 
     ITOState public itoState;
 
-    address public constant ADMIN_ADDRESS = 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d;
-
     constructor(
         address _tStakeToken,
         address _usdcToken,
@@ -65,10 +63,10 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
         liquidityPercentage = _liquidityPercentage;
         itoState = ITOState.NotStarted;
 
-        _grantRole(DEFAULT_ADMIN_ROLE, ADMIN_ADDRESS);
-        _grantRole(GOVERNANCE_ROLE, ADMIN_ADDRESS);
-        _grantRole(PAUSER_ROLE, ADMIN_ADDRESS);
-        _grantRole(UNISWAP_MANAGER_ROLE, ADMIN_ADDRESS);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(GOVERNANCE_ROLE, msg.sender);
+        _grantRole(PAUSER_ROLE, msg.sender);
+        _grantRole(UNISWAP_MANAGER_ROLE, msg.sender);
     }
 
     function startITO() external override onlyRole(GOVERNANCE_ROLE) {
@@ -88,10 +86,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard, ITerraStakeI
         itoState = ITOState.Finalized;
 
         uint256 liquidityTokens = (tokensSold * liquidityPercentage) / 100;
-        require(
-            tStakeToken.transferFrom(ADMIN_ADDRESS, address(this), liquidityTokens),
-            "Token transfer failed"
-        );
+        require(tStakeToken.transferFrom(msg.sender, address(this), liquidityTokens), "Token transfer failed");
 
         emit ITOStateChanged(ITOState.Finalized, block.timestamp);
     }

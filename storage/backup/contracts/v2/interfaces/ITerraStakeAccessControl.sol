@@ -8,37 +8,36 @@ interface ITerraStakeAccessControl {
     // Custom Errors
     error Unauthorized();
     error InvalidAddress();
-    error RoleExpired(bytes32 role, address account);
+    error RoleExpired();
+    error InsufficientRequirement();
     error OracleValidationFailed();
 
     // Events
-    event RoleGrantedWithExpiration(bytes32 indexed role, address indexed account, uint256 expirationTime);
+    event MultiSigRoleGranted(bytes32 indexed role, address indexed account, uint256 timestamp);
     event RoleRequirementSet(bytes32 indexed role, uint256 requirement);
+    event RoleExpirationSet(bytes32 indexed role, address indexed account, uint256 expirationTime);
     event RoleRevoked(bytes32 indexed role, address indexed account);
-    event PriceBoundsUpdated(uint256 oldMinPrice, uint256 oldMaxPrice, uint256 newMinPrice, uint256 newMaxPrice);
-    event OracleUpdated(address indexed oldOracle, address indexed newOracle);
+    event PriceOracleUpdated(address indexed oldOracle, address indexed newOracle);
 
     // Role Identifiers
-    function MINTER_ROLE() external pure returns (bytes32);
-    function GOVERNANCE_ROLE() external pure returns (bytes32);
-    function EMERGENCY_ROLE() external pure returns (bytes32);
-    function LIQUIDITY_MANAGER_ROLE() external pure returns (bytes32);
-    function VESTING_MANAGER_ROLE() external pure returns (bytes32);
-    function UPGRADER_ROLE() external pure returns (bytes32);
-    function PAUSER_ROLE() external pure returns (bytes32);
-    function MULTISIG_ADMIN_ROLE() external pure returns (bytes32);
-    function REWARD_MANAGER_ROLE() external pure returns (bytes32);
-    function DISTRIBUTION_ROLE() external pure returns (bytes32);
+    function MINTER_ROLE() external view returns (bytes32);
+    function PROJECT_MANAGER_ROLE() external view returns (bytes32);
+    function GOVERNANCE_ROLE() external view returns (bytes32);
+    function VETO_ROLE() external view returns (bytes32);
+    function UPGRADER_ROLE() external view returns (bytes32);
+    function PAUSER_ROLE() external view returns (bytes32);
+    function MULTISIG_ADMIN_ROLE() external view returns (bytes32);
+    function REWARD_MANAGER_ROLE() external view returns (bytes32);
+    function DISTRIBUTION_ROLE() external view returns (bytes32);
+    function VESTING_MANAGER_ROLE() external view returns (bytes32);
+    function EMERGENCY_ROLE() external view returns (bytes32);
 
     // Administrative Functions
     function initialize(
         address admin,
         address priceOracle,
         address usdcToken,
-        address wethToken,
-        uint256 minimumLiquidity,
-        uint256 minimumPrice,
-        uint256 maximumPrice
+        address wethToken
     ) external;
 
     function grantRoleWithExpiration(bytes32 role, address account, uint256 duration) external;
@@ -55,8 +54,6 @@ interface ITerraStakeAccessControl {
 
     // Validation Functions
     function validateWithOracle(uint256 expectedPrice) external view;
-
-    function validateLiquidity() external view;
 
     // View Functions
     function roleRequirements(bytes32 role) external view returns (uint256);
