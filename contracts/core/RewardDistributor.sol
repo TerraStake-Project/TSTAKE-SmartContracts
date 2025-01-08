@@ -3,8 +3,9 @@ pragma solidity 0.8.26;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "../interfaces/IRewardDistributor.sol";
 
-contract RewardDistributor is AccessControl {
+contract RewardDistributor is AccessControl, IRewardDistributor {
     // Roles
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant STAKING_CONTRACT_ROLE = keccak256("STAKING_CONTRACT_ROLE");
@@ -18,11 +19,6 @@ contract RewardDistributor is AccessControl {
 
     uint256 public totalDistributed;      // Total rewards distributed
     uint256 public distributionLimit;     // Max rewards distributable per transaction
-
-    // Events
-    event RewardDistributed(address indexed user, uint256 amount);
-    event RewardSourceUpdated(address indexed oldSource, address indexed newSource);
-    event DistributionLimitUpdated(uint256 oldLimit, uint256 newLimit);
 
     /// @notice Constructor to initialize the RewardDistributor
     /// @param _rewardToken Address of the reward token
@@ -60,7 +56,7 @@ contract RewardDistributor is AccessControl {
     /// @notice Distributes rewards to a user
     /// @param user Address of the user to distribute rewards to
     /// @param amount Amount of rewards to distribute
-    function distributeReward(address user, uint256 amount) external onlyRole(STAKING_CONTRACT_ROLE) {
+    function distributeReward(address user, uint256 amount) external override onlyRole(STAKING_CONTRACT_ROLE) {
         require(user != address(0), "Invalid user address");
         require(amount > 0, "Amount must be greater than zero");
         require(amount <= distributionLimit, "Exceeds distribution limit");
@@ -82,7 +78,7 @@ contract RewardDistributor is AccessControl {
     }
 
     /// @notice Retrieves details of the current reward distribution state
-    function getRewardState() external view returns (
+    function getRewardState() external view override returns (
         address currentRewardSource,
         uint256 totalTokensDistributed,
         uint256 currentDistributionLimit
