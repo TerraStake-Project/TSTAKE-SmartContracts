@@ -10,6 +10,10 @@ interface ITerraStakeAccessControl {
     error InvalidAddress();
     error RoleExpired(bytes32 role, address account);
     error OracleValidationFailed();
+    error InsufficientRequirements(bytes32 role, address account);
+    error InvalidHierarchy(bytes32 role, bytes32 parentRole);
+    error InvalidDuration();
+    error PriceOutOfBounds(uint256 price, uint256 min, uint256 max);
 
     // Events
     event RoleGrantedWithExpiration(bytes32 indexed role, address indexed account, uint256 expirationTime);
@@ -17,6 +21,10 @@ interface ITerraStakeAccessControl {
     event RoleRevoked(bytes32 indexed role, address indexed account);
     event PriceBoundsUpdated(uint256 oldMinPrice, uint256 oldMaxPrice, uint256 newMinPrice, uint256 newMaxPrice);
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
+    event RoleHierarchyUpdated(bytes32 indexed role, bytes32 indexed parentRole);
+    event TokenConfigurationUpdated(address indexed token, string tokenType);
+    event RoleRequirementUpdated(bytes32 indexed role, uint256 oldRequirement, uint256 newRequirement);
+    event LiquidityThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
 
     // Role Identifiers
     function MINTER_ROLE() external pure returns (bytes32);
@@ -42,34 +50,25 @@ interface ITerraStakeAccessControl {
     ) external;
 
     function grantRoleWithExpiration(bytes32 role, address account, uint256 duration) external;
-
     function grantRoleBatch(bytes32[] calldata roles, address account) external;
-
     function setRoleRequirement(bytes32 role, uint256 requirement) external;
-
     function grantRole(bytes32 role, address account) external;
-
     function revokeRole(bytes32 role, address account) external;
-
     function updatePriceOracle(address newOracle) external;
+    function pause() external;
+    function unpause() external;
 
     // Validation Functions
     function validateWithOracle(uint256 expectedPrice) external view;
-
     function validateLiquidity() external view;
 
     // View Functions
     function roleRequirements(bytes32 role) external view returns (uint256);
-
     function roleExpirations(bytes32 role, address account) external view returns (uint256);
-
     function priceFeed() external view returns (AggregatorV3Interface);
-
     function usdc() external view returns (IERC20);
-
     function weth() external view returns (IERC20);
-
     function hasValidRole(bytes32 role, address account) external view returns (bool);
-
     function getRoleMemberCount(bytes32 role) external view returns (uint256);
+    function getRoleHierarchy(bytes32 role) external view returns (bytes32);
 }

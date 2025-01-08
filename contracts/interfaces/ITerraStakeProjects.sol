@@ -85,7 +85,6 @@ interface ITerraStakeProjects {
     // Events
     event Initialized(address admin, address tstakeToken);
     event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
-    event ProjectUpdated(uint256 indexed projectId, string name);
     event ProjectStateChanged(uint256 indexed projectId, ProjectState indexed oldState, ProjectState indexed newState);
     event DocumentationUpdated(uint256 indexed projectId, bytes32[] documentHashes);
     event ValidationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
@@ -95,7 +94,6 @@ interface ITerraStakeProjects {
     event ImpactRequirementUpdated(ProjectCategory indexed category, uint256 minimumImpact);
     event ContractsSet(address stakingContract, address rewardsContract);
     event CommentAdded(uint256 indexed projectId, address indexed commenter, string message);
-    event MethodologyUpdated(uint256 indexed projectId, string name, string version);
     event FeeStructureUpdated(uint256 registrationFee, uint256 verificationFee, uint256 categoryChangeFee);
 
     // Initialization
@@ -136,9 +134,7 @@ interface ITerraStakeProjects {
         uint256 minimumScale
     ) external;
 
-    function updateFeeStructure(uint256 _registrationFeeTStake, uint256 _categoryChangeFee, uint256 _verificationFeeTStake) external;
-
-    // function updateMethodology(uint256 projectId, string calldata name, string calldata description, string calldata version, bytes32 externalReference) external;
+    function updateFeeStructure(uint256 registrationFee, uint256 categoryChangeFee, uint256 verificationFee) external;
 
     function addComment(uint256 projectId, string calldata message) external;
 
@@ -157,14 +153,13 @@ interface ITerraStakeProjects {
 
     function getProjectCount() external view returns (uint256);
 
-    function getComments(uint256 projectId) external view returns (string[] memory messages, address[] memory commenters, uint256[] memory timestamps);
-
-    // function getMethodology(uint256 projectId) external view returns (string memory, string memory, string memory, bytes32);
+    function getComments(uint256 projectId) external view returns (
+        string[] memory messages, 
+        address[] memory commenters, 
+        uint256[] memory timestamps
+    );
 
     function getGeneralMetadata(uint256 projectId) external view returns (GeneralMetadata memory);
 
     function setGeneralMetadata(uint256 projectId, GeneralMetadata calldata data) external;
-
-    // Utility
-    // function listProjectCategories() external pure returns (string[] memory);
 }

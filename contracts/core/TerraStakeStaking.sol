@@ -1,272 +1,90 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "../interfaces/ITerraStakeStaking.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-interface IRewardDistributor {
-    function distributeReward(address user, uint256 amount) external;
-}
+contract StakingContract is Ownable {
+    IERC20 public stakingToken;
 
-contract TerraStakeStaking is
-    ITerraStakeStaking,
-    ReentrancyGuardUpgradeable,
-    PausableUpgradeable,
-    AccessControlUpgradeable
-{
-    // Constants
-    uint256 public constant SECONDS_IN_A_YEAR = 31536000; // Seconds in a year for APY calculation
-
-    // Errors
-    error InvalidStakeAmount();
-    error ProjectNotActive();
-    error NoStakeFound();
-    error RewardsAlreadyClaimed();
-    error UnauthorizedAction();
-
-    // State variables
-    IERC20 public stakingToken;                  // Token used for staking
-    address public rewardDistributor;            // Address of the RewardDistributor contract
-
-    uint256 public rewardRate;                   // Reward rate per second
-    uint256 public lockPeriod;                   // Lock period for staking (in seconds)
-    uint256 public maxStake;                     // Maximum stake amount per user
-    uint256 public gracePeriod;                  // Grace period for penalty-free unstaking
-
-    uint256 public totalStaked;                  // Total tokens staked across all projects
-    uint256[] private activeProjects;
-
-    // Mappings for user staking positions and project configurations
-    mapping(address => mapping(uint256 => StakingPosition)) public stakingPositions;
-    mapping(uint256 => ProjectData) public projects;
-
-    // Roles
-    bytes32 public constant PROJECT_MANAGER_ROLE = keccak256("PROJECT_MANAGER_ROLE");
-    bytes32 public constant STAKING_MANAGER_ROLE = keccak256("STAKING_MANAGER_ROLE");
-
-    // Contract initialization
-    function initialize(
-        InitializeParams calldata params,
-        address _rewardDistributor
-    ) external override initializer {
-        if (
-            params.stakingToken == address(0) ||
-            _rewardDistributor == address(0) ||
-            params.admin == address(0)
-        ) revert InvalidStakeAmount();
-
-        __ReentrancyGuard_init();
-        __Pausable_init();
-        __AccessControl_init();
-
-        stakingToken = IERC20(params.stakingToken);
-        rewardDistributor = _rewardDistributor;
-
-        rewardRate = params.rewardRate;
-        lockPeriod = params.lockPeriod;
-        maxStake = params.maxStake;
-        gracePeriod = params.gracePeriod;
-
-        _grantRole(DEFAULT_ADMIN_ROLE, params.admin);
-        _grantRole(PROJECT_MANAGER_ROLE, params.admin);
+    struct StakingPosition {
+        uint256 amount;        // Total staked amount
+        uint256 rewardDebt;    // Rewards already claimed
+        uint256 lastCheckpoint; // Last checkpoint for reward calculations
+        uint256 stakingStart;  // Timestamp when the staking started
     }
 
-    function configureProject(
-        uint256 projectId,
-        uint32 stakingMultiplier,
-        uint32 withdrawalLimit,
-        uint32 rewardUpdateInterval
-    ) external override onlyRole(PROJECT_MANAGER_ROLE) {
-        ITerraStakeStaking.ProjectData storage project = projects[projectId];
-        project.stakingMultiplier = stakingMultiplier;
-        project.withdrawalLimit = withdrawalLimit;
-        project.rewardUpdateInterval = rewardUpdateInterval;
-
-        if (!project.isActive) {
-            project.isActive = true;
-            activeProjects.push(projectId);
-        }
+    struct ProjectData {
+        bool isActive;         // Whether the project is active
+        uint256 totalStaked;   // Total staked in the project
+        uint32 penaltyRate;    // Penalty rate (in basis points, 1 bp = 0.01%)
     }
 
-    function updatePenaltyRate(uint256 projectId, uint32 newRate) external override onlyRole(PROJECT_MANAGER_ROLE) {
-        projects[projectId].penaltyRate = newRate;
-        emit PenaltyRateUpdated(projectId, newRate);
+    uint256 public gracePeriod;  // Grace period (in seconds)
+    mapping(address => mapping(uint256 => StakingPosition)) public stakingPositions; // User staking positions
+    mapping(uint256 => ProjectData) public projectData; // Project-specific staking data
+
+    event Staked(address indexed user, uint256 projectId, uint256 amount);
+    event Unstaked(address indexed user, uint256 projectId, uint256 amount, uint256 penalty);
+    event PenaltyRateUpdated(uint256 indexed projectId, uint32 newRate);
+
+    constructor(address _stakingToken, uint256 _gracePeriod) Ownable(msg.sender) {
+        require(_stakingToken != address(0), "Invalid token address");
+        stakingToken = IERC20(_stakingToken);
+        gracePeriod = _gracePeriod;
     }
 
-    function updateGracePeriod(uint256 newGracePeriod) external override onlyRole(STAKING_MANAGER_ROLE) {
-        gracePeriod = newGracePeriod;
-        emit GracePeriodUpdated(newGracePeriod);
-    }
-
-    /// @notice Adjust the staking multiplier for a project (Admin only).
-    function adjustMultiplier(uint256 projectId, uint32 newMultiplier) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        projects[projectId].stakingMultiplier = newMultiplier;
-        emit ProjectUpdated(projectId, newMultiplier);
-    }
-
-    function updateProjectStakingData(uint256 projectId, uint32 stakingMultiplier) external override onlyRole(PROJECT_MANAGER_ROLE) {
-        projects[projectId].stakingMultiplier = stakingMultiplier;
-        emit ProjectUpdated(projectId, stakingMultiplier);
-    }
-
-    /// @notice Stake tokens into a project (open to all users).
-    function stake(uint256 projectId, uint256 amount) external override nonReentrant whenNotPaused {
-        if (amount == 0 || amount > maxStake) revert InvalidStakeAmount();
-
-        ProjectData storage project = projects[projectId];
-        if (!project.isActive) revert ProjectNotActive();
+    function stake(uint256 projectId, uint256 amount) external {
+        require(amount > 0, "Stake amount must be greater than zero");
+        require(projectData[projectId].isActive, "Project is not active");
 
         StakingPosition storage position = stakingPositions[msg.sender][projectId];
 
-        _distributeRewards(msg.sender, projectId);
+        require(stakingToken.transferFrom(msg.sender, address(this), amount), "Transfer failed");
 
-        position.amount += uint128(amount);
-        position.lastCheckpoint = uint128(block.timestamp);
-
-        project.totalStaked += uint128(amount);
-        totalStaked += amount;
-
-        stakingToken.transferFrom(msg.sender, address(this), amount);
+        position.amount += amount;
+        position.stakingStart = block.timestamp;
+        projectData[projectId].totalStaked += amount;
 
         emit Staked(msg.sender, projectId, amount);
     }
 
-    /// @notice Unstake tokens from a project. Penalty is applied if unstaking within lock period.
-    function unstake(uint256 projectId) external override nonReentrant whenNotPaused {
+    function unstake(uint256 projectId) external {
         StakingPosition storage position = stakingPositions[msg.sender][projectId];
-        if (position.amount == 0) revert NoStakeFound();
+        require(position.amount > 0, "No tokens staked");
 
-        ProjectData storage project = projects[projectId];
         uint256 penalty = 0;
-        if (block.timestamp < position.lastCheckpoint + lockPeriod) {
-            penalty = (position.amount * project.penaltyRate) / 10000;
+        uint256 amount = position.amount;
+
+        if (block.timestamp > position.stakingStart + gracePeriod) {
+            penalty = (amount * projectData[projectId].penaltyRate) / 10000;
         }
 
-        uint256 finalAmount = position.amount - penalty;
-
-        _distributeRewards(msg.sender, projectId);
-
-        project.totalStaked -= uint128(position.amount);
-        totalStaked -= position.amount;
+        uint256 amountAfterPenalty = amount - penalty;
 
         position.amount = 0;
-        position.lastCheckpoint = uint128(block.timestamp);
+        projectData[projectId].totalStaked -= amount;
 
-        stakingToken.transfer(msg.sender, finalAmount);
+        require(stakingToken.transfer(msg.sender, amountAfterPenalty), "Transfer failed");
 
-        emit Unstaked(msg.sender, projectId, finalAmount, penalty);
+        emit Unstaked(msg.sender, projectId, amountAfterPenalty, penalty);
     }
 
-    /// @notice Claim accumulated rewards for a project.
-    function claimRewards(uint256 projectId) external override nonReentrant whenNotPaused {
-        uint256 rewards = _distributeRewards(msg.sender, projectId);
-        if (rewards == 0) revert RewardsAlreadyClaimed();
-
-        IRewardDistributor(rewardDistributor).distributeReward(msg.sender, rewards);
-
-        emit RewardsClaimed(msg.sender, projectId, rewards);
+    function updateGracePeriod(uint256 _gracePeriod) external onlyOwner {
+        gracePeriod = _gracePeriod;
     }
 
-    /// @dev Internal function to calculate and distribute rewards for a user.
-    function _distributeRewards(address user, uint256 projectId) internal returns (uint256) {
-        StakingPosition storage position = stakingPositions[user][projectId];
-        ProjectData storage project = projects[projectId];
-
-        if (position.amount == 0) return 0;
-
-        uint256 timeElapsed = block.timestamp - position.lastCheckpoint;
-        uint256 rewards = (position.amount * rewardRate * project.stakingMultiplier * timeElapsed) / (SECONDS_IN_A_YEAR * 10000);
-
-        position.lastCheckpoint = uint128(block.timestamp);
-
-        return rewards;
+    function updatePenaltyRate(uint256 projectId, uint32 penaltyRate) external onlyOwner {
+        require(penaltyRate <= 10000, "Penalty rate cannot exceed 100%");
+        projectData[projectId].penaltyRate = penaltyRate;
+        emit PenaltyRateUpdated(projectId, penaltyRate);
     }
 
-    /// @notice Update the reward distributor address (Admin only).
-    function updateRewardDistributor(address newDistributor) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newDistributor != address(0), "Invalid address");
-        address oldDistributor = rewardDistributor;
-        rewardDistributor = newDistributor;
-
-        emit RewardDistributorUpdated(oldDistributor, newDistributor);
+    function activateProject(uint256 projectId) external onlyOwner {
+        projectData[projectId].isActive = true;
     }
 
-    /// @notice Update the maximum stake amount (Admin only).
-    function updateMaxStake(uint256 newMaxStake) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        maxStake = newMaxStake;
-
-        emit MaxStakeUpdated(newMaxStake);
-    }
-
-    // View Functions
-    function getStakingPosition(address user, uint256 projectId)
-        external
-        view
-        override
-        returns (
-            uint128 amount,
-            uint128 rewardDebt,
-            uint128 lastCheckpoint,
-            uint48 stakingStart
-        )
-    {
-        ITerraStakeStaking.StakingPosition storage pos = stakingPositions[user][projectId];
-        return (pos.amount, pos.rewardDebt, pos.lastCheckpoint, pos.stakingStart);
-    }
-
-    function getProjectDetails(uint256 projectId)
-        external
-        view
-        override
-        returns (
-            uint32 stakingMultiplier,
-            uint32 withdrawalLimit,
-            uint32 penaltyRate,
-            uint32 rewardUpdateInterval,
-            uint128 totalStaked_,
-            uint128 rewardPool,
-            bool isActive,
-            bool isPaused
-        )
-    {
-        ITerraStakeStaking.ProjectData storage project = projects[projectId];
-        return (
-            project.stakingMultiplier,
-            project.withdrawalLimit,
-            project.penaltyRate,
-            project.rewardUpdateInterval,
-            project.totalStaked,
-            project.rewardPool,
-            project.isActive,
-            project.isPaused
-        );
-    }
-
-    function getRewardDistributor() external view override returns (address) {
-        return rewardDistributor;
-    }
-
-    function getTotalStaked() external view override returns (uint256) {
-        return totalStaked;
-    }
-
-    function totalStakedByUser(address user) external view override returns (uint256) {
-        return 0;
-    }
-
-    /// @notice View function to calculate projected rewards for a user over a duration.
-    function calculateProjectedRewards(
-        address user,
-        uint256 projectId,
-        uint256 duration
-    ) external view override returns (uint256 projectedRewards) {
-        StakingPosition storage position = stakingPositions[user][projectId];
-        if (position.amount == 0) return 0;
-
-        ProjectData storage project = projects[projectId];
-        projectedRewards = (position.amount * rewardRate * project.stakingMultiplier * duration) / (SECONDS_IN_A_YEAR * 10000);
+    function deactivateProject(uint256 projectId) external onlyOwner {
+        projectData[projectId].isActive = false;
     }
 }

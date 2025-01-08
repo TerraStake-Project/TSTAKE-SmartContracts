@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/ITerraStakeRewards.sol";
 
 contract TerraStakeRewards is
     ITerraStakeRewards,
-    ERC20Upgradeable,
+    AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable,
-    AccessControlUpgradeable
+    PausableUpgradeable
 {
     uint256 public constant MAX_MULTIPLIER = 10000; // Basis points
     uint256 public constant MIN_REWARD_RATE = 1;
@@ -23,32 +21,27 @@ contract TerraStakeRewards is
     uint256 public baseRewardRate;
     uint256 public totalRewardsDistributed;
     uint256 public rewardPoolCount;
-    uint256 public halvingInterval; // Number of blocks between halvings
-    uint256 public lastHalvingBlock; // Last block when halving occurred
-    uint256 public userRewardCap; // Maximum reward a user can claim
+
+    // Halving mechanism
+    uint256 public constant AVERAGE_BLOCK_TIME = 13; // Ethereum average block time in seconds
+    uint256 public constant TWO_YEARS_BLOCKS = (2 * 365 * 24 * 60 * 60) / AVERAGE_BLOCK_TIME; // Approx. 2 years in blocks
+    uint256 public halvingInterval;
+    uint256 public lastHalvingBlock;
+    uint256 public userRewardCap;
 
     mapping(uint256 => RewardPool) public rewardPools;
     mapping(address => mapping(uint256 => UserRewards)) public userRewards;
-
-    mapping(uint256 => uint256) public projectPools;
     mapping(uint256 => bool) public projectHasPool;
-
-    address public constant ADMIN_ADDRESS = 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d;
 
     modifier onlyStakingContract() {
         require(msg.sender == stakingContract, "Caller is not staking contract");
         _;
     }
 
-    event RewardRateHalved(uint256 newRate, uint256 halvingBlock);
-    event BaseRewardRateUpdated(uint256 oldRate, uint256 newRate);
-
-    // Initialization
     function initialize(
         address _rewardToken,
         address _stakingContract,
         uint256 _baseRewardRate,
-        uint256 _halvingInterval,
         uint256 _userRewardCap,
         address admin
     ) external initializer {
@@ -56,9 +49,7 @@ contract TerraStakeRewards is
         require(_stakingContract != address(0), "Invalid staking contract");
         require(admin != address(0), "Invalid admin address");
         require(_baseRewardRate >= MIN_REWARD_RATE, "Reward rate too low");
-        require(_halvingInterval > 0, "Invalid halving interval");
 
-        __ERC20_init("TSTAKE", "TSTAKE");
         __AccessControl_init();
         __ReentrancyGuard_init();
         __Pausable_init();
@@ -66,14 +57,14 @@ contract TerraStakeRewards is
         rewardToken = IERC20(_rewardToken);
         stakingContract = _stakingContract;
         baseRewardRate = _baseRewardRate;
-        halvingInterval = _halvingInterval;
+        halvingInterval = TWO_YEARS_BLOCKS; // Approx. blocks for 2 years
         lastHalvingBlock = block.number;
         userRewardCap = _userRewardCap;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
-    function setStakingContract(address _stakingContract) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setStakingContract(address _stakingContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_stakingContract != address(0), "Invalid staking contract");
         stakingContract = _stakingContract;
     }
@@ -82,7 +73,7 @@ contract TerraStakeRewards is
         uint256 amount,
         uint32 multiplier,
         uint48 duration
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 poolId) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 poolId) {
         require(amount > 0, "Invalid amount");
         require(multiplier > 0 && multiplier <= MAX_MULTIPLIER, "Invalid multiplier");
         require(duration > 0, "Invalid duration");
@@ -93,37 +84,59 @@ contract TerraStakeRewards is
         pool.multiplier = multiplier;
         pool.endBlock = uint48(block.number + duration);
         pool.isActive = true;
-        pool.lastUpdateBlock = uint48(block.number);
 
-        require(rewardToken.transferFrom(ADMIN_ADDRESS, address(this), amount), "Reward transfer failed");
+        require(rewardToken.transferFrom(msg.sender, address(this), amount), "Reward transfer failed");
         emit RewardPoolCreated(poolId, amount, multiplier);
-    }
-
-    function createProjectPool(
-        uint256 projectId,
-        uint256 verificationFee,
-        uint32 multiplier,
-        uint48 duration
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-
     }
 
     function fundProjectRewards(
         uint256 projectId,
-        uint256 verificationFee
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 amount
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(amount > 0, "Invalid amount");
+        require(projectHasPool[projectId], "Project does not have a pool");
 
+        RewardPool storage pool = rewardPools[projectId];
+        require(pool.isActive, "Inactive pool");
+
+        pool.available += uint128(amount);
+        require(rewardToken.transferFrom(msg.sender, address(this), amount), "Reward transfer failed");
+
+        emit RewardsFunded(projectId, amount);
     }
 
-    function applyHalving(uint256 poolId) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    function createProjectPool(
+        uint256 projectId,
+        uint256 amount,
+        uint32 multiplier,
+        uint48 duration
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(amount > 0, "Invalid amount");
+        require(multiplier > 0 && multiplier <= MAX_MULTIPLIER, "Invalid multiplier");
+        require(duration > 0, "Invalid duration");
+        require(!projectHasPool[projectId], "Project already has a pool");
+
+        projectHasPool[projectId] = true;
+
+        RewardPool storage pool = rewardPools[projectId];
+        pool.available = uint128(amount);
+        pool.multiplier = multiplier;
+        pool.endBlock = uint48(block.number + duration);
+        pool.isActive = true;
+
+        require(rewardToken.transferFrom(msg.sender, address(this), amount), "Reward transfer failed");
+        emit RewardPoolCreated(projectId, amount, multiplier);
+    }
+
+    function applyHalving(uint256 poolId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(block.number >= lastHalvingBlock + halvingInterval, "Halving interval not reached");
         RewardPool storage pool = rewardPools[poolId];
         require(pool.isActive, "Inactive pool");
 
         uint128 oldAvailable = pool.available;
         pool.available /= 2;
         pool.halvingCount++;
-        pool.lastHalvingTime = block.timestamp;
-
+        lastHalvingBlock = block.number;
         emit HalvingApplied(poolId, oldAvailable, pool.available, pool.halvingCount, block.timestamp);
     }
 
@@ -131,13 +144,10 @@ contract TerraStakeRewards is
         uint256 poolId,
         address[] calldata recipients,
         uint256[] calldata amounts
-    ) external override onlyStakingContract nonReentrant {
+    ) external onlyStakingContract nonReentrant {
         require(recipients.length == amounts.length, "Mismatched arrays");
         RewardPool storage pool = rewardPools[poolId];
         require(pool.isActive, "Inactive pool");
-        require(block.number <= pool.endBlock, "Pool ended");
-
-        _applyHalving();
 
         for (uint256 i = 0; i < recipients.length; i++) {
             require(pool.available >= amounts[i], "Insufficient pool balance");
@@ -148,48 +158,13 @@ contract TerraStakeRewards is
         }
     }
 
-    function _applyHalving() internal {
-        if (block.number >= lastHalvingBlock + halvingInterval) {
-            uint256 halvings = (block.number - lastHalvingBlock) / halvingInterval;
-            for (uint256 i = 0; i < halvings; i++) {
-                baseRewardRate = baseRewardRate / 2;
-                if (baseRewardRate < MIN_REWARD_RATE) {
-                    baseRewardRate = MIN_REWARD_RATE;
-                    break;
-                }
-            }
-            lastHalvingBlock = block.number;
-            emit RewardRateHalved(baseRewardRate, lastHalvingBlock);
-        }
-    }
-
-    function setBaseRewardRate(uint256 newRate) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newRate >= MIN_REWARD_RATE, "Reward rate too low");
-        uint256 oldRate = baseRewardRate;
-        baseRewardRate = newRate;
-        emit BaseRewardRateUpdated(oldRate, newRate);
-    }
-
-    function claimRewards(uint256 poolId) external override nonReentrant whenNotPaused {
+    function claimRewards(uint256 poolId) external nonReentrant whenNotPaused {
         uint256 rewards = _claimRewards(msg.sender, poolId);
         require(rewards > 0, "No rewards");
         require(rewards <= userRewardCap, "Reward exceeds cap");
 
         require(rewardToken.transfer(msg.sender, rewards), "Transfer failed");
         emit RewardsClaimed(msg.sender, poolId, rewards);
-    }
-
-    function batchClaimRewards(uint256[] calldata poolIds) external override nonReentrant whenNotPaused {
-        uint256 totalClaimed = 0;
-        for (uint256 i = 0; i < poolIds.length; i++) {
-            uint256 claimed = _claimRewards(msg.sender, poolIds[i]);
-            require(claimed <= userRewardCap, "Reward exceeds cap");
-            totalClaimed += claimed;
-        }
-        require(totalClaimed > 0, "No rewards");
-        require(rewardToken.transfer(msg.sender, totalClaimed), "Transfer failed");
-
-        emit RewardsClaimed(msg.sender, 0, totalClaimed);
     }
 
     function _claimRewards(address user, uint256 poolId) internal returns (uint256) {
@@ -207,24 +182,19 @@ contract TerraStakeRewards is
         return rewards;
     }
 
-    function updateHalvingInterval(uint256 newInterval) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newInterval > 0, "Invalid halving interval");
-        halvingInterval = newInterval;
-    }
-
-    function setUserRewardCap(uint256 cap) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        userRewardCap = cap;
-    }
-
-    function getPoolInfo(uint256 poolId) external view override returns (
-        uint128 available,
-        uint128 distributed,
-        uint48 lastUpdateBlock,
-        uint48 endBlock,
-        uint32 multiplier,
-        bool isActive,
-        uint256 halvingCount
-    ) {
+    function getPoolInfo(uint256 poolId)
+        external
+        view
+        returns (
+            uint128 available,
+            uint128 distributed,
+            uint48 lastUpdateBlock,
+            uint48 endBlock,
+            uint32 multiplier,
+            bool isActive,
+            uint256 halvingCount
+        )
+    {
         RewardPool storage pool = rewardPools[poolId];
         return (
             pool.available,
@@ -237,13 +207,10 @@ contract TerraStakeRewards is
         );
     }
 
-    function getPoolUtilization(uint256 poolId) external view returns (uint256 utilized, uint256 remaining) {
-        RewardPool storage pool = rewardPools[poolId];
-        utilized = pool.distributed;
-        remaining = pool.available;
-    }
-
-    function getUserRewardInfo(address user, uint256 poolId) external view override returns (
+    function getUserRewardInfo(
+        address user,
+        uint256 poolId
+    ) external view returns (
         uint128 pending,
         uint128 claimed,
         uint48 lastClaimBlock,
@@ -260,13 +227,63 @@ contract TerraStakeRewards is
         );
     }
 
-    function getTotalPendingRewards(address user) external view override returns (uint256 totalPending) {
-        for (uint256 i = 0; i < rewardPoolCount; i++) {
-            totalPending += userRewards[user][i].pending;
+    // ------------------------------------------------------------------------
+    // MISSING FUNCTIONS FROM ITerraStakeRewards INTERFACE
+    // ------------------------------------------------------------------------
+
+    /**
+     * @dev Claims rewards from multiple pools in a single call.
+     *      You can decide whether to do a single cumulative transfer
+     *      or do one per pool. This example does one per pool.
+     */
+    function batchClaimRewards(uint256[] calldata poolIds)
+        external
+        override
+        nonReentrant
+        whenNotPaused
+    {
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            uint256 rewards = _claimRewards(msg.sender, poolIds[i]);
+            if (rewards > 0) {
+                require(rewards <= userRewardCap, "Reward exceeds cap");
+                require(rewardToken.transfer(msg.sender, rewards), "Transfer failed");
+                emit RewardsClaimed(msg.sender, poolIds[i], rewards);
+            }
         }
     }
 
-    function isProjectHasPool(uint256 projectId) external view override returns (bool) {
+    /**
+     * @dev Returns the total pending (unclaimed) rewards for `user` across
+     *      all reward pools up to `rewardPoolCount - 1`. If you also use
+     *      `createProjectPool()` with IDs outside that range, consider
+     *      extending logic here accordingly.
+     */
+    function getTotalPendingRewards(address user)
+        external
+        view
+        override
+        returns (uint256 total)
+    {
+        // Summation of pending rewards in standard (non-project) pools
+        for (uint256 i = 0; i < rewardPoolCount; i++) {
+            total += userRewards[user][i].pending;
+        }
+
+        // If project-based pools have IDs outside [0..rewardPoolCount-1],
+        // you'll need logic here to include those as well.
+
+        return total;
+    }
+
+    /**
+     * @dev Returns whether a project already has a reward pool.
+     */
+    function isProjectHasPool(uint256 projectId)
+        external
+        view
+        override
+        returns (bool)
+    {
         return projectHasPool[projectId];
     }
 }

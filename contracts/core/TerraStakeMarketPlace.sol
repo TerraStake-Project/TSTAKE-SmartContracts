@@ -10,22 +10,46 @@ interface ITerraStakeToken is IERC20 {
     function transfer(address recipient, uint256 amount) external returns (bool);
 }
 
+/**
+ * @title TerraStakeMarketplace
+ * @notice A marketplace contract supporting direct sales and simple auctions
+ *         with TSTAKE reward distribution and a 5% royalty mechanism.
+ */
 contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
-    // Role definitions
+    // ------------------------------------------------------------------------
+    // Roles
+    // ------------------------------------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
 
-    // TerraStake royalty fee (in basis points) and reward settings
+    // ------------------------------------------------------------------------
+    // Fees and Addresses
+    // ------------------------------------------------------------------------
     uint256 public royaltyFee = 500; // 5%
     address public immutable royaltyRecipient;
     ITerraStakeToken public immutable tStakeToken;
 
-    // TSTAKE rewards
     uint256 public constant REWARD_AMOUNT = 10 * 10**18; // 10 TSTAKE tokens
 
-    // Supported payment tokens
+    // ------------------------------------------------------------------------
+    // Supported Payment Tokens
+    // ------------------------------------------------------------------------
     mapping(address => bool) public supportedPaymentTokens;
 
-    // Auction structure
+    // ------------------------------------------------------------------------
+    // Direct Listing Struct
+    // ------------------------------------------------------------------------
+    struct Listing {
+        address seller;
+        address paymentToken;
+        uint256 price;
+        bool active;
+    }
+
+    mapping(address => mapping(uint256 => Listing)) public listings;
+
+    // ------------------------------------------------------------------------
+    // Auction Struct
+    // ------------------------------------------------------------------------
     struct Auction {
         address seller;
         address highestBidder;
@@ -36,22 +60,55 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
         bool active;
     }
 
-    // Metadata for NFTs
+    mapping(address => mapping(uint256 => Auction)) public auctions;
+
+    // ------------------------------------------------------------------------
+    // NFT Metadata (Optional / Expandable)
+    // ------------------------------------------------------------------------
     struct ListingMetadata {
         uint256 projectId;
         uint256 impactValue;
     }
 
-    // Listings and auctions mappings
     mapping(address => mapping(uint256 => ListingMetadata)) public nftMetadata;
-    mapping(address => mapping(uint256 => Auction)) public auctions;
 
-    event NFTListed(address indexed nftContract, uint256 indexed tokenId, address indexed seller, uint256 price);
-    event NFTPurchased(address indexed nftContract, uint256 indexed tokenId, address indexed buyer, uint256 price);
+    // ------------------------------------------------------------------------
+    // Events
+    // ------------------------------------------------------------------------
+    event NFTListed(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address indexed seller,
+        uint256 price,
+        address paymentToken
+    );
+    event NFTPurchased(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address indexed buyer,
+        uint256 price
+    );
     event NFTDelisted(address indexed nftContract, uint256 indexed tokenId);
-    event AuctionCreated(address indexed nftContract, uint256 indexed tokenId, uint256 minBid, uint256 endTime);
-    event BidPlaced(address indexed nftContract, uint256 indexed tokenId, address indexed bidder, uint256 bid);
-    event AuctionFinalized(address indexed nftContract, uint256 indexed tokenId, address indexed winner, uint256 finalBid);
+
+    event AuctionCreated(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        uint256 minBid,
+        uint256 endTime,
+        address paymentToken
+    );
+    event BidPlaced(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address indexed bidder,
+        uint256 bid
+    );
+    event AuctionFinalized(
+        address indexed nftContract,
+        uint256 indexed tokenId,
+        address indexed winner,
+        uint256 finalBid
+    );
 
     constructor(address _tStakeToken, address _royaltyRecipient) {
         require(_tStakeToken != address(0), "Invalid TSTAKE token address");
@@ -64,15 +121,6 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
         _grantRole(GOVERNANCE_ROLE, msg.sender);
     }
 
-    /**
-     * @dev Create a direct NFT listing.
-     * @param nftContract Address of the NFT contract.
-     * @param tokenId Token ID of the NFT.
-     * @param price Sale price of the NFT.
-     * @param paymentToken Address of the payment token.
-     * @param projectId Associated project ID for metadata.
-     * @param impactValue Impact value for metadata.
-     */
     function listNFT(
         address nftContract,
         uint256 tokenId,
@@ -84,59 +132,65 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
         require(price > 0, "Price must be greater than zero");
         require(supportedPaymentTokens[paymentToken], "Unsupported payment token");
 
+        Auction memory existingAuction = auctions[nftContract][tokenId];
+        require(!existingAuction.active, "An active auction exists for this NFT");
+
         IERC721 nft = IERC721(nftContract);
         require(nft.ownerOf(tokenId) == msg.sender, "Caller is not the owner");
-        require(nft.isApprovedForAll(msg.sender, address(this)), "Marketplace not approved");
+        require(nft.isApprovedForAll(msg.sender, address(this)), "Marketplace not approved to transfer");
 
-        nftMetadata[nftContract][tokenId] = ListingMetadata({projectId: projectId, impactValue: impactValue});
+        listings[nftContract][tokenId] = Listing({
+            seller: msg.sender,
+            paymentToken: paymentToken,
+            price: price,
+            active: true
+        });
 
-        emit NFTListed(nftContract, tokenId, msg.sender, price);
+        nftMetadata[nftContract][tokenId] = ListingMetadata({
+            projectId: projectId,
+            impactValue: impactValue
+        });
+
+        emit NFTListed(nftContract, tokenId, msg.sender, price, paymentToken);
     }
 
-    /**
-     * @dev Purchase an NFT.
-     * @param nftContract Address of the NFT contract.
-     * @param tokenId Token ID of the NFT.
-     * @param price Sale price of the NFT.
-     * @param seller Seller's address.
-     * @param paymentToken Address of the payment token.
-     */
-    function purchaseNFT(
-        address nftContract,
-        uint256 tokenId,
-        uint256 price,
-        address seller,
-        address paymentToken
-    ) external nonReentrant {
+    function purchaseNFT(address nftContract, uint256 tokenId) external nonReentrant {
+        Listing storage listedItem = listings[nftContract][tokenId];
+        require(listedItem.active, "NFT not listed");
+        uint256 price = listedItem.price;
+        address seller = listedItem.seller;
+
         IERC721 nft = IERC721(nftContract);
         require(nft.ownerOf(tokenId) == seller, "Seller no longer owns the NFT");
 
-        IERC20 payment = IERC20(paymentToken);
+        IERC20 payment = IERC20(listedItem.paymentToken);
         uint256 royaltyAmount = (price * royaltyFee) / 10000;
         uint256 sellerAmount = price - royaltyAmount;
 
-        // Transfer payment
         require(payment.transferFrom(msg.sender, royaltyRecipient, royaltyAmount), "Royalty transfer failed");
         require(payment.transferFrom(msg.sender, seller, sellerAmount), "Payment to seller failed");
 
-        // Transfer NFT
         nft.safeTransferFrom(seller, msg.sender, tokenId);
 
-        // Distribute rewards
         tStakeToken.transfer(msg.sender, REWARD_AMOUNT);
         tStakeToken.transfer(seller, REWARD_AMOUNT);
+
+        listedItem.active = false;
 
         emit NFTPurchased(nftContract, tokenId, msg.sender, price);
     }
 
-    /**
-     * @dev Create an auction.
-     * @param nftContract Address of the NFT contract.
-     * @param tokenId Token ID of the NFT.
-     * @param minBid Minimum bid for the auction.
-     * @param duration Auction duration in seconds.
-     * @param paymentToken Address of the payment token.
-     */
+    function delistNFT(address nftContract, uint256 tokenId) external nonReentrant {
+        Listing storage listedItem = listings[nftContract][tokenId];
+        require(listedItem.active, "NFT not listed");
+        require(listedItem.seller == msg.sender || hasRole(GOVERNANCE_ROLE, msg.sender),
+                "Not seller or governance");
+
+        listedItem.active = false;
+
+        emit NFTDelisted(nftContract, tokenId);
+    }
+
     function createAuction(
         address nftContract,
         uint256 tokenId,
@@ -144,8 +198,11 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
         uint256 duration,
         address paymentToken
     ) external nonReentrant {
-        require(duration > 0, "Duration must be greater than zero");
+        require(duration > 0, "Duration must be > 0");
         require(supportedPaymentTokens[paymentToken], "Unsupported payment token");
+
+        Listing memory existingListing = listings[nftContract][tokenId];
+        require(!existingListing.active, "Already listed for direct sale");
 
         IERC721 nft = IERC721(nftContract);
         require(nft.ownerOf(tokenId) == msg.sender, "Caller is not the owner");
@@ -161,30 +218,24 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
             active: true
         });
 
-        emit AuctionCreated(nftContract, tokenId, minBid, block.timestamp + duration);
+        emit AuctionCreated(nftContract, tokenId, minBid, block.timestamp + duration, paymentToken);
     }
 
-    /**
-     * @dev Place a bid on an auction.
-     * @param nftContract Address of the NFT contract.
-     * @param tokenId Token ID of the NFT.
-     * @param bid Amount of the bid.
-     */
     function placeBid(
         address nftContract,
         uint256 tokenId,
         uint256 bid
     ) external nonReentrant {
         Auction storage auction = auctions[nftContract][tokenId];
-        require(auction.active, "Auction is not active");
-        require(block.timestamp < auction.endTime, "Auction has ended");
-        require(bid >= auction.minBid, "Bid is below minimum");
-        require(bid > auction.highestBid, "Bid is not higher than current highest");
+        require(auction.active, "Auction not active");
+        require(block.timestamp < auction.endTime, "Auction ended");
+        require(bid >= auction.minBid, "Bid below minimum");
+        require(bid > auction.highestBid, "Bid not higher than current");
 
         IERC20 payment = IERC20(auction.paymentToken);
+
         require(payment.transferFrom(msg.sender, address(this), bid), "Bid transfer failed");
 
-        // Refund previous highest bidder
         if (auction.highestBid > 0) {
             require(payment.transfer(auction.highestBidder, auction.highestBid), "Refund failed");
         }
@@ -195,42 +246,42 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard {
         emit BidPlaced(nftContract, tokenId, msg.sender, bid);
     }
 
-    /**
-     * @dev Finalize an auction.
-     * @param nftContract Address of the NFT contract.
-     * @param tokenId Token ID of the NFT.
-     */
     function finalizeAuction(address nftContract, uint256 tokenId) external nonReentrant {
         Auction storage auction = auctions[nftContract][tokenId];
-        require(auction.active, "Auction is not active");
-        require(block.timestamp >= auction.endTime, "Auction has not ended");
+        require(auction.active, "Auction not active");
+        require(block.timestamp >= auction.endTime, "Auction not ended yet");
 
         auction.active = false;
+
+        if (auction.highestBid == 0) {
+            emit AuctionFinalized(nftContract, tokenId, address(0), 0);
+            return;
+        }
 
         IERC20 payment = IERC20(auction.paymentToken);
         uint256 royaltyAmount = (auction.highestBid * royaltyFee) / 10000;
         uint256 sellerAmount = auction.highestBid - royaltyAmount;
 
-        // Transfer payment
         require(payment.transfer(royaltyRecipient, royaltyAmount), "Royalty transfer failed");
         require(payment.transfer(auction.seller, sellerAmount), "Payment to seller failed");
 
-        // Transfer NFT
         IERC721(nftContract).safeTransferFrom(auction.seller, auction.highestBidder, tokenId);
 
-        // Distribute rewards
         tStakeToken.transfer(auction.highestBidder, REWARD_AMOUNT);
         tStakeToken.transfer(auction.seller, REWARD_AMOUNT);
 
         emit AuctionFinalized(nftContract, tokenId, auction.highestBidder, auction.highestBid);
     }
 
-    /**
-     * @dev Set supported payment tokens.
-     * @param token Address of the payment token.
-     * @param isSupported Whether the token is supported.
-     */
-    function setSupportedPaymentToken(address token, bool isSupported) external onlyRole(GOVERNANCE_ROLE) {
+    function setSupportedPaymentToken(address token, bool isSupported)
+        external
+        onlyRole(GOVERNANCE_ROLE)
+    {
         supportedPaymentTokens[token] = isSupported;
+    }
+
+    function setRoyaltyFee(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
+        require(newFee <= 2000, "Fee cannot exceed 20%");
+        royaltyFee = newFee;
     }
 }
