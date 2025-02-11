@@ -7,12 +7,7 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 
-contract TerraStakeToken is
-    Initializable,
-    ERC20Upgradeable,
-    AccessControlUpgradeable,
-    PausableUpgradeable
-{
+contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgradeable, PausableUpgradeable {
     // Token Metadata
     string public constant TOKEN_NAME = "TerraStake Token";
     string public constant TOKEN_SYMBOL = "TSTAKE";
@@ -30,11 +25,11 @@ contract TerraStakeToken is
 
     // Vesting Schedule Mapping
     struct VestingSchedule {
-        uint256 totalAmount;        // Total tokens to vest
-        uint256 releasedAmount;     // Tokens already claimed
-        uint256 startTime;          // Vesting start time
-        uint256 duration;           // Vesting duration in seconds
-        uint256 cliff;              // Cliff period in seconds
+        uint256 totalAmount;
+        uint256 releasedAmount;
+        uint256 startTime;
+        uint256 duration;
+        uint256 cliff;
     }
     mapping(address => VestingSchedule) private vestingSchedules;
 
@@ -60,37 +55,28 @@ contract TerraStakeToken is
 
     /// @notice Initializes the contract
     function initialize(
-        string memory name_,
-        string memory symbol_,
         uint256 maxSupply_,
-        address admin
+        address admin,
+        address _redistributionAddress,
+        address _stakingRewardsAddress
     ) external initializer {
         require(admin != address(0), "Admin address cannot be zero");
-        require(keccak256(bytes(name_)) == keccak256(bytes(TOKEN_NAME)), "Invalid token name");
-        require(keccak256(bytes(symbol_)) == keccak256(bytes(TOKEN_SYMBOL)), "Invalid token symbol");
         require(maxSupply_ == MAX_CAP, "Invalid max supply");
+        require(_redistributionAddress != address(0) && _stakingRewardsAddress != address(0), "Invalid address");
 
         __ERC20_init(TOKEN_NAME, TOKEN_SYMBOL);
         __AccessControl_init();
         __Pausable_init();
 
         maxSupply = MAX_CAP;
+        redistributionAddress = _redistributionAddress;
+        stakingRewardsAddress = _stakingRewardsAddress;
 
-        address constantRoleHolder = 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d;
-
-        bytes32[4] memory roles = [
-            MINTER_ROLE,
-            GOVERNANCE_ROLE,
-            EMERGENCY_ROLE,
-            VESTING_MANAGER_ROLE
-        ];
-
-        for (uint256 i = 0; i < roles.length; i++) {
-            _grantRole(roles[i], admin);
-            _grantRole(roles[i], constantRoleHolder);
-        }
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(DEFAULT_ADMIN_ROLE, constantRoleHolder);
+        _grantRole(MINTER_ROLE, admin);
+        _grantRole(GOVERNANCE_ROLE, admin);
+        _grantRole(EMERGENCY_ROLE, admin);
+        _grantRole(VESTING_MANAGER_ROLE, admin);
     }
 
     /// @notice Mints tokens to a specified address
@@ -100,9 +86,9 @@ contract TerraStakeToken is
     }
 
     /// @notice Burns tokens from a specified address
-    function burn(address from, uint256 amount) external {
-        require(balanceOf(from) >= amount, "Burn exceeds balance");
-        _burn(from, amount);
+    function burn(uint256 amount) external {
+        require(balanceOf(msg.sender) >= amount, "Burn exceeds balance");
+        _burn(msg.sender, amount);
     }
 
     /// @notice Updates burn, redistribution, and staking rates
@@ -138,6 +124,7 @@ contract TerraStakeToken is
     ) external onlyRole(VESTING_MANAGER_ROLE) {
         require(vestingSchedules[beneficiary].totalAmount == 0, "Vesting schedule exists");
         require(totalAmount > 0 && duration > 0, "Invalid vesting parameters");
+        require(balanceOf(address(this)) >= totalAmount, "Insufficient balance to vest");  // Ensure contract has enough tokens
 
         vestingSchedules[beneficiary] = VestingSchedule({
             totalAmount: totalAmount,
@@ -160,7 +147,7 @@ contract TerraStakeToken is
         require(vestedAmount > 0, "No claimable tokens");
 
         schedule.releasedAmount += vestedAmount;
-        _mint(msg.sender, vestedAmount);
+        _transfer(address(this), msg.sender, vestedAmount);  // Transfer instead of minting
 
         emit TokensClaimed(msg.sender, vestedAmount);
     }
@@ -189,8 +176,23 @@ contract TerraStakeToken is
     /// @notice Emergency withdrawal of tokens
     function emergencyWithdraw(address token, address to, uint256 amount) external onlyRole(EMERGENCY_ROLE) {
         require(to != address(0), "Invalid address");
-        IERC20(token).transfer(to, amount);
+        require(token != address(this), "Cannot withdraw TSTAKE");
 
+        IERC20(token).transfer(to, amount);
         emit EmergencyWithdraw(token, to, amount);
+    }
+
+    /// @notice Transfers tokens for redistribution
+    function redistribute(uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        require(amount > 0, "Amount must be greater than zero");
+        require(balanceOf(address(this)) >= amount, "Insufficient balance for redistribution");
+        _transfer(address(this), redistributionAddress, amount);
+    }
+
+    /// @notice Transfers tokens for staking rewards
+    function sendToStakingRewards(uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        require(amount > 0, "Amount must be greater than zero");
+        require(balanceOf(address(this)) >= amount, "Insufficient balance for staking rewards");
+        _transfer(address(this), stakingRewardsAddress, amount);
     }
 }

@@ -13,11 +13,11 @@ interface ITerraStakeToken {
 
     // Structs
     struct VestingSchedule {
-        uint256 totalAmount;        // Total tokens to vest
-        uint256 releasedAmount;     // Tokens already claimed
-        uint256 startTime;          // Vesting start time
-        uint256 duration;           // Vesting duration in seconds
-        uint256 cliff;              // Cliff period in seconds
+        uint256 totalAmount;
+        uint256 releasedAmount;
+        uint256 startTime;
+        uint256 duration;
+        uint256 cliff;
     }
 
     // Events
@@ -33,6 +33,8 @@ interface ITerraStakeToken {
     event TokensClaimed(address indexed beneficiary, uint256 amount);
     event VestingScheduleRevoked(address indexed beneficiary, uint256 amountRemaining);
     event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
+    event TokensRedistributed(address indexed to, uint256 amount);
+    event StakingRewardsFunded(address indexed to, uint256 amount);
 
     // Tokenomics Parameters
     function maxSupply() external view returns (uint256);
@@ -46,16 +48,15 @@ interface ITerraStakeToken {
 
     // Initialization
     function initialize(
-        string memory name_,
-        string memory symbol_,
         uint256 maxSupply_,
-        address admin
+        address admin,
+        address _redistributionAddress,
+        address _stakingRewardsAddress
     ) external;
 
     // Core Token Functions
     function mint(address to, uint256 amount) external;
-    function burn(address from, uint256 amount) external;
-    function transfer(address to, uint256 amount) external returns (bool);
+    function burn(uint256 amount) external;
 
     // Vesting Functions
     function createVestingSchedule(
@@ -67,16 +68,20 @@ interface ITerraStakeToken {
     ) external;
 
     function claimVestedTokens() external;
-    function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory);
+     function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory);
     function revokeVestingSchedule(address beneficiary) external;
+
 
     // Tokenomics Management
     function setRates(uint256 _burnRate, uint256 _redistributionRate, uint256 _stakingRewardsRate) external;
     function setMaxSupply(uint256 newMaxSupply) external;
 
+    // Redistribution & Staking Rewards
+    function redistribute(uint256 amount) external;
+    function sendToStakingRewards(uint256 amount) external;
+
     // Emergency and Pause Functions
     function pause() external;
     function unpause() external;
-    function getPrice() external view returns (uint256);
     function emergencyWithdraw(address token, address to, uint256 amount) external;
 }
