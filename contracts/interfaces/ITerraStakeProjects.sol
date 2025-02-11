@@ -24,6 +24,15 @@ interface ITerraStakeProjects {
         Archived
     }
 
+    /**
+     * @notice Basic project data.
+     * @param name Project name.
+     * @param description Project description.
+     * @param location Project location.
+     * @param impactMetrics Impact metrics as a string.
+     * @param ipfsHash A legacy IPFS hash.
+     * @param exists Whether the project exists.
+     */
     struct ProjectData {
         string name;
         string description;
@@ -33,6 +42,21 @@ interface ITerraStakeProjects {
         bool exists;
     }
 
+    /**
+     * @notice Detailed project state data.
+     * @param category The project category.
+     * @param state The current project state.
+     * @param stakingMultiplier The staking multiplier.
+     * @param totalStaked Total amount staked.
+     * @param rewardPool Reward pool for stakers.
+     * @param isActive Whether staking is active.
+     * @param startBlock Starting block.
+     * @param endBlock Ending block.
+     * @param owner Project owner.
+     * @param lastReportedValue The last Chainlink reported value.
+     * @param lastRewardUpdate Timestamp of last reward distribution.
+     * @param accumulatedRewards Total rewards distributed.
+     */
     struct ProjectStateData {
         ProjectCategory category;
         ProjectState state;
@@ -43,11 +67,19 @@ interface ITerraStakeProjects {
         uint48 startBlock;
         uint48 endBlock;
         address owner;
-        int256 lastReportedValue;
+        int256 lastReportedValue; // Added to store Chainlink feed data
         uint256 lastRewardUpdate;
         uint256 accumulatedRewards;
     }
 
+    /**
+     * @notice Impact requirements for a project category.
+     * @param minimumImpact The minimum required impact value.
+     * @param verificationFrequency Maximum allowed time (in seconds) since the last verification.
+     * @param requiredDocuments An array of required document identifiers.
+     * @param qualityThreshold The quality threshold.
+     * @param minimumScale The minimum required staking amount.
+     */
     struct ImpactRequirement {
         uint256 minimumImpact;
         uint256 verificationFrequency;
@@ -56,6 +88,14 @@ interface ITerraStakeProjects {
         uint256 minimumScale;
     }
 
+    /**
+     * @notice General metadata for a project.
+     * @param startDate Project start date.
+     * @param endDate Project end date.
+     * @param budgetAllocation Allocated budget.
+     * @param riskAssessment Risk assessment summary.
+     * @param complianceDocumentation Compliance documents (legacy).
+     */
     struct GeneralMetadata {
         uint48 startDate;
         uint48 endDate;
@@ -64,18 +104,36 @@ interface ITerraStakeProjects {
         string complianceDocumentation;
     }
 
+    /**
+     * @notice Validation data.
+     * @param vvb Validator address.
+     * @param validationDate Timestamp of validation.
+     * @param validationReportHash Hash of the validation report.
+     */
     struct ValidationData {
         address vvb;
         uint256 validationDate;
         bytes32 validationReportHash;
     }
 
+    /**
+     * @notice Verification data.
+     * @param vvb Verifier address.
+     * @param verificationDate Timestamp of verification.
+     * @param verificationReportHash Hash of the verification report.
+     */
     struct VerificationData {
         address vvb;
         uint256 verificationDate;
         bytes32 verificationReportHash;
     }
 
+    /**
+     * @notice A comment on a project.
+     * @param commenter Commenter's address.
+     * @param message Comment text.
+     * @param timestamp Timestamp of comment.
+     */
     struct Comment {
         address commenter;
         string message;
@@ -95,6 +153,10 @@ interface ITerraStakeProjects {
     event ContractsSet(address stakingContract, address rewardsContract);
     event CommentAdded(uint256 indexed projectId, address indexed commenter, string message);
     event FeeStructureUpdated(uint256 registrationFee, uint256 verificationFee, uint256 categoryChangeFee);
+    event DocumentAdded(uint256 indexed projectId, bytes cid);
+    
+    // Added Event for Chainlink Data Feeds
+    event ProjectDataUpdated(uint256 indexed projectId, int256 newDataValue);
 
     // Initialization
     function initialize(address admin, address _tstakeToken) external;
@@ -121,6 +183,14 @@ interface ITerraStakeProjects {
     function submitVerification(uint256 projectId, bytes32 reportHash) external;
 
     function reportMetric(uint256 projectId, string calldata metricType, string calldata metricValue) external;
+
+    // Chainlink Data Feeder Integration
+    /**
+     * @notice Updates a project's last reported value using Chainlink.
+     * @param projectId The ID of the project to update.
+     * @param dataValue The new data value from Chainlink.
+     */
+    function updateProjectDataFromChainlink(uint256 projectId, int256 dataValue) external;
 
     // Governance Functions
     function setCategoryMultiplier(ProjectCategory category, uint256 multiplier) external;
