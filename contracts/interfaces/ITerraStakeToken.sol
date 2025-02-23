@@ -6,9 +6,9 @@ interface ITerraStakeToken {
     // 🔹 Token Metadata & Supply
     // ================================
 
-    function name() external pure returns (string memory);
-    
-    function symbol() external pure returns (string memory);
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
 
     function totalSupply() external view returns (uint256);
 
@@ -46,12 +46,15 @@ interface ITerraStakeToken {
 
     function executeProposal(uint256 proposalId) external;
 
-    function proposals(uint256 proposalId) external view returns (
-        address proposer,
-        uint256 newLiquidityFee,
-        uint256 endTime,
-        bool executed
-    );
+    function proposals(uint256 proposalId)
+        external
+        view
+        returns (
+            address proposer,
+            uint256 newLiquidityFee,
+            uint256 endTime,
+            bool executed
+        );
 
     // ================================
     // 🔹 Minting Control
@@ -83,9 +86,16 @@ interface ITerraStakeToken {
     // 🔹 Events
     // ================================
 
-    event LiquidityFeeUpdated(uint256 newFee);
     event LiquidityAdded(uint256 usdcAmount, uint256 tStakeAmount);
-    event ProposalCreated(uint256 proposalId, address proposer, uint256 newFee, uint256 endTime);
+    
+    event LiquidityFeeUpdated(uint256 newFee);
+
+    event ProposalCreated(
+        uint256 proposalId,
+        address proposer,
+        uint256 newFee,
+        uint256 endTime
+    );
+
     event ProposalExecuted(uint256 proposalId, uint256 newFee);
-    event GovernanceFailed(uint256 proposalId, string reason);
 }
