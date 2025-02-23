@@ -1,153 +1,125 @@
 import hre from "hardhat";
 
 async function main() {
-  // Contracts are deployed using the first signer/account by default
   const [deployer] = await hre.ethers.getSigners();
+  console.log("🚀 Deploying contracts with the account:", deployer.address);
 
-  console.log("Deploying contracts with the account:", deployer.address);
+  ////////////////////////////// Deploy ProxyAdmin //////////////////////////////
+  const ProxyAdmin = await hre.ethers.getContractFactory("ProxyAdmin");
+  const proxyAdmin = await ProxyAdmin.deploy();
+  await proxyAdmin.waitForDeployment();
+  console.log("✅ ProxyAdmin deployed at:", await proxyAdmin.getAddress());
 
-  //////////////////////////////   Deploy TerraStakeToken   //////////////////////////////////////
-  const TerraStakeToken = await hre.ethers.deployContract(
-    "TerraStakeToken",
-    []
-  );
-  await TerraStakeToken.waitForDeployment();
-  console.log(
-    "TerraStakeToken is deployed to:",
-    await TerraStakeToken.getAddress()
-  );
+  ////////////////////////////// Deploy TerraStakeToken //////////////////////////////
+  const TerraStakeToken = await hre.ethers.getContractFactory("TerraStakeToken");
+  const terraStakeToken = await TerraStakeToken.deploy();
+  await terraStakeToken.waitForDeployment();
+  console.log("✅ TerraStakeToken deployed at:", await terraStakeToken.getAddress());
 
-  //////////////////////////////   Deploy TerraStakeGovernance   //////////////////////////////////////
-  const TerraStakeGovernance = await hre.ethers.deployContract(
-    "TerraStakeGovernance",
-    []
+  ////////////////////////////// Deploy Proxy for TerraStakeToken //////////////////////////////
+  const TransparentProxy = await hre.ethers.getContractFactory("TransparentUpgradeableProxy");
+  const terraStakeTokenProxy = await TransparentProxy.deploy(
+    await terraStakeToken.getAddress(),
+    await proxyAdmin.getAddress(),
+    "0x"
   );
-  await TerraStakeGovernance.waitForDeployment();
-  console.log(
-    "TerraStakeGovernance is deployed to:",
-    await TerraStakeGovernance.getAddress()
-  );
+  await terraStakeTokenProxy.waitForDeployment();
+  console.log("✅ Proxy of TerraStakeToken deployed at:", await terraStakeTokenProxy.getAddress());
 
-  //////////////////////////////   Deploy TerraStakeAccessControl   //////////////////////////////////////
-  const TerraStakeAccessControl = await hre.ethers.deployContract(
-    "TerraStakeAccessControl",
-    []
-  );
-  await TerraStakeAccessControl.waitForDeployment();
-  console.log(
-    "TerraStakeAccessControl is deployed to:",
-    await TerraStakeAccessControl.getAddress()
-  );
+  ////////////////////////////// Initialize TerraStakeToken //////////////////////////////
+  const initializedToken = TerraStakeToken.attach(await terraStakeTokenProxy.getAddress());
+  await initializedToken.initialize(deployer.address, "TerraStake Token", "TSTAKE", 18);
+  console.log("✅ TerraStakeToken initialized");
 
-  //////////////////////////////   Deploy TerraStakeProjects   //////////////////////////////////////
-  const TerraStakeProjects = await hre.ethers.deployContract(
-    "TerraStakeProjects",
-    []
-  );
-  await TerraStakeProjects.waitForDeployment();
-  console.log(
-    "TerraStakeProjects is deployed to:",
-    await TerraStakeProjects.getAddress()
-  );
+  ////////////////////////////// Deploy TerraStakeGovernance //////////////////////////////
+  const TerraStakeGovernance = await hre.ethers.getContractFactory("TerraStakeGovernance");
+  const terraStakeGovernance = await TerraStakeGovernance.deploy();
+  await terraStakeGovernance.waitForDeployment();
+  console.log("✅ TerraStakeGovernance deployed at:", await terraStakeGovernance.getAddress());
 
-  //////////////////////////////   Deploy TerraStakeStaking   //////////////////////////////////////
-  const TerraStakeStaking = await hre.ethers.deployContract(
-    "TerraStakeStaking",
-    []
+  ////////////////////////////// Deploy Proxy for TerraStakeGovernance //////////////////////////////
+  const terraStakeGovernanceProxy = await TransparentProxy.deploy(
+    await terraStakeGovernance.getAddress(),
+    await proxyAdmin.getAddress(),
+    "0x"
   );
-  await TerraStakeStaking.waitForDeployment();
-  console.log(
-    "TerraStakeStaking is deployed to:",
-    await TerraStakeStaking.getAddress()
-  );
+  await terraStakeGovernanceProxy.waitForDeployment();
+  console.log("✅ Proxy of TerraStakeGovernance deployed at:", await terraStakeGovernanceProxy.getAddress());
 
-  //////////////////////////////   Deploy TerraStakeRewards   //////////////////////////////////////
-  const TerraStakeRewards = await hre.ethers.deployContract(
-    "TerraStakeRewards",
-    []
+  ////////////////////////////// Initialize TerraStakeGovernance //////////////////////////////
+  const initializedGovernance = TerraStakeGovernance.attach(await terraStakeGovernanceProxy.getAddress());
+  await initializedGovernance.initialize(
+    deployer.address, await terraStakeTokenProxy.getAddress()
   );
-  await TerraStakeRewards.waitForDeployment();
-  console.log(
-    "TerraStakeRewards is deployed to:",
-    await TerraStakeRewards.getAddress()
-  );
+  console.log("✅ TerraStakeGovernance initialized");
 
-  //////////////////////////////   Deploy ChainlinkDataFeeder   //////////////////////////////////////
-  const ChainlinkDataFeeder = await hre.ethers.deployContract(
-    "ChainlinkDataFeeder",
-    [await TerraStakeProjects.getAddress(), deployer.address, 0]
-  );
-  await ChainlinkDataFeeder.waitForDeployment();
-  console.log(
-    "ChainlinkDataFeeder is deployed to:",
-    await ChainlinkDataFeeder.getAddress()
-  );
+  ////////////////////////////// Deploy TerraStakeProjects //////////////////////////////
+  const TerraStakeProjects = await hre.ethers.getContractFactory("TerraStakeProjects");
+  const terraStakeProjects = await TerraStakeProjects.deploy();
+  await terraStakeProjects.waitForDeployment();
+  console.log("✅ TerraStakeProjects deployed at:", await terraStakeProjects.getAddress());
 
-  //////////////////////////////   Deploy Proxy of TerraStakeToken   //////////////////////////////////////
-  const ProxyOfTerraStakeToken = await hre.ethers.deployContract(
-    "TerraStakeProxy",
-    [await TerraStakeToken.getAddress(), deployer, "0x"]
+  ////////////////////////////// Deploy Proxy for TerraStakeProjects //////////////////////////////
+  const terraStakeProjectsProxy = await TransparentProxy.deploy(
+    await terraStakeProjects.getAddress(),
+    await proxyAdmin.getAddress(),
+    "0x"
   );
-  await ProxyOfTerraStakeToken.waitForDeployment();
-  console.log(
-    "UpgradeableProxy of TerraStakeToken is deployed to:",
-    await ProxyOfTerraStakeToken.getAddress()
-  );
+  await terraStakeProjectsProxy.waitForDeployment();
+  console.log("✅ Proxy of TerraStakeProjects deployed at:", await terraStakeProjectsProxy.getAddress());
 
-  //////////////////////////////   Deploy Proxy of TerraStakeToken   //////////////////////////////////////
-  const ProxyOfTerraStakeGovernance = await hre.ethers.deployContract(
-    "TerraStakeProxy",
-    [await TerraStakeGovernance.getAddress(), deployer, "0x"]
-  );
-  await ProxyOfTerraStakeGovernance.waitForDeployment();
-  console.log(
-    "UpgradeableProxy of TerraStakeGovernance is deployed to:",
-    await ProxyOfTerraStakeGovernance.getAddress()
-  );
+  ////////////////////////////// Initialize TerraStakeProjects //////////////////////////////
+  const initializedProjects = TerraStakeProjects.attach(await terraStakeProjectsProxy.getAddress());
+  await initializedProjects.initialize(deployer.address);
+  console.log("✅ TerraStakeProjects initialized");
 
-  //////////////////////////////   Deploy Proxy of TerraStakeToken   //////////////////////////////////////
-  const ProxyOfTerraStakeAccessControl = await hre.ethers.deployContract(
-    "TerraStakeProxy",
-    [await TerraStakeAccessControl.getAddress(), deployer, "0x"]
-  );
-  await ProxyOfTerraStakeAccessControl.waitForDeployment();
-  console.log(
-    "UpgradeableProxy of TerraStakeAccessControl is deployed to:",
-    await ProxyOfTerraStakeAccessControl.getAddress()
-  );
+  ////////////////////////////// Deploy TerraStakeStaking //////////////////////////////
+  const TerraStakeStaking = await hre.ethers.getContractFactory("TerraStakeStaking");
+  const terraStakeStaking = await TerraStakeStaking.deploy();
+  await terraStakeStaking.waitForDeployment();
+  console.log("✅ TerraStakeStaking deployed at:", await terraStakeStaking.getAddress());
 
-  //////////////////////////////   Deploy Proxy of TerraStakeToken   //////////////////////////////////////
-  const ProxyOfTerraStakeProjects = await hre.ethers.deployContract(
-    "TerraStakeProxy",
-    [await TerraStakeProjects.getAddress(), deployer, "0x"]
+  ////////////////////////////// Deploy Proxy for TerraStakeStaking //////////////////////////////
+  const terraStakeStakingProxy = await TransparentProxy.deploy(
+    await terraStakeStaking.getAddress(),
+    await proxyAdmin.getAddress(),
+    "0x"
   );
-  await ProxyOfTerraStakeProjects.waitForDeployment();
-  console.log(
-    "UpgradeableProxy of TerraStakeProjects is deployed to:",
-    await ProxyOfTerraStakeProjects.getAddress()
-  );
+  await terraStakeStakingProxy.waitForDeployment();
+  console.log("✅ Proxy of TerraStakeStaking deployed at:", await terraStakeStakingProxy.getAddress());
 
-  //////////////////////////////   Deploy Proxy of TerraStakeToken   //////////////////////////////////////
-  const ProxyOfTerraStakeStaking = await hre.ethers.deployContract(
-    "TerraStakeProxy",
-    [await TerraStakeStaking.getAddress(), deployer, "0x"]
+  ////////////////////////////// Initialize TerraStakeStaking //////////////////////////////
+  const initializedStaking = TerraStakeStaking.attach(await terraStakeStakingProxy.getAddress());
+  await initializedStaking.initialize(
+    deployer.address, await terraStakeTokenProxy.getAddress(), await terraStakeProjectsProxy.getAddress()
   );
-  await ProxyOfTerraStakeStaking.waitForDeployment();
-  console.log(
-    "UpgradeableProxy of TerraStakeStaking is deployed to:",
-    await ProxyOfTerraStakeStaking.getAddress()
-  );
+  console.log("✅ TerraStakeStaking initialized");
 
-  //////////////////////////////   Deploy Proxy of TerraStakeToken   //////////////////////////////////////
-  const ProxyOfTerraStakeRewards = await hre.ethers.deployContract(
-    "TerraStakeProxy",
-    [await TerraStakeRewards.getAddress(), deployer, "0x"]
+  ////////////////////////////// Deploy ChainlinkDataFeeder //////////////////////////////
+  const ChainlinkDataFeeder = await hre.ethers.getContractFactory("ChainlinkDataFeeder");
+  const chainlinkDataFeeder = await ChainlinkDataFeeder.deploy(
+    await terraStakeProjectsProxy.getAddress(),
+    deployer.address
   );
-  await ProxyOfTerraStakeRewards.waitForDeployment();
-  console.log(
-    "UpgradeableProxy of TerraStakeRewards is deployed to:",
-    await ProxyOfTerraStakeRewards.getAddress()
+  await chainlinkDataFeeder.waitForDeployment();
+  console.log("✅ ChainlinkDataFeeder deployed at:", await chainlinkDataFeeder.getAddress());
+
+  ////////////////////////////// Deploy TerraStakeRewards //////////////////////////////
+  const TerraStakeRewards = await hre.ethers.getContractFactory("TerraStakeRewards");
+  const terraStakeRewards = await TerraStakeRewards.deploy();
+  await terraStakeRewards.waitForDeployment();
+  console.log("✅ TerraStakeRewards deployed at:", await terraStakeRewards.getAddress());
+
+  ////////////////////////////// Deploy Proxy for TerraStakeRewards //////////////////////////////
+  const terraStakeRewardsProxy = await TransparentProxy.deploy(
+    await terraStakeRewards.getAddress(),
+    await proxyAdmin.getAddress(),
+    "0x"
   );
+  await terraStakeRewardsProxy.waitForDeployment();
+  console.log("✅ Proxy of TerraStakeRewards deployed at:", await terraStakeRewardsProxy.getAddress());
+
+  console.log("🚀 All contracts deployed successfully!");
 }
 
 main()
