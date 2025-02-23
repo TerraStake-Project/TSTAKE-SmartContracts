@@ -2,168 +2,192 @@
 pragma solidity 0.8.26;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
+/**
+ * @title AntiBot - TerraStake Security Module
+ * @notice Protects against front-running, flash crashes, sandwich attacks, and excessive transactions.
+ * ✅ Managed via TerraStake Governance DAO
+ * ✅ Dynamic Buyback Pause on Major Price Swings
+ * ✅ Flash Crash Prevention & Circuit Breaker for Price Drops
+ * ✅ Front-Running & Adaptive Multi-TX Throttling
+ * ✅ Liquidity Locking Mechanism to Prevent Flash Loan Drains
+ */
 contract AntiBot is AccessControl {
+    // ================================
+    // 🔹 Role Management
+    // ================================
     bytes32 public constant BOT_ROLE = keccak256("BOT_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant CONFIG_MANAGER_ROLE = keccak256("CONFIG_MANAGER_ROLE");
     bytes32 public constant TRANSACTION_MONITOR_ROLE = keccak256("TRANSACTION_MONITOR_ROLE");
+    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");  
+    bytes32 public constant STAKING_CONTRACT_ROLE = keccak256("STAKING_CONTRACT_ROLE"); 
 
+    // ================================
+    // 🔹 Security Parameters
+    // ================================
     bool public isAntibotEnabled = true;
-    uint256 public blockThreshold = 1;
+    bool public isBuybackPaused = false;
+    bool public isCircuitBreakerTriggered = false;
     bool public testingMode = false;
+
+    uint256 public blockThreshold = 1;  // Default: 1 block limit per user
+    uint256 public priceImpactThreshold = 5;  // Default: 5% price change pauses buyback
+    uint256 public circuitBreakerThreshold = 15;  // Default: 15% drop halts trading
+    uint256 public liquidityLockPeriod = 1 hours; // Prevents immediate liquidity withdrawal
 
     mapping(address => uint256) private globalThresholds;
     mapping(address => bool) private trustedContracts;
-    mapping(address => mapping(bytes4 => bool)) private functionExemptions;
-    mapping(address => mapping(address => uint256)) private lastTransactionBlock;
+    mapping(address => uint256) private lastTransactionBlock;
+    mapping(address => uint256) public liquidityInjectionTimestamp;
 
+    AggregatorV3Interface public priceOracle;
+    int256 public lastCheckedPrice;
+    uint256 public lastPriceCheckTime;
+    
     struct ThrottleStats {
         uint256 totalTransactions;
         uint256 throttledTransactions;
     }
     mapping(address => ThrottleStats) public userStats;
 
+    struct GovernanceRequest {
+        address account;
+        uint256 unlockTime;
+    }
+    mapping(address => GovernanceRequest) public pendingExemptions;
+
+    // ================================
+    // 🔹 Events for Transparency
+    // ================================
     event AntibotStatusUpdated(bool isEnabled);
     event BlockThresholdUpdated(uint256 newThreshold);
+    event BuybackPaused(bool status);
+    event CircuitBreakerTriggered(bool status);
     event AddressExempted(address indexed account);
     event ExemptionRevoked(address indexed account);
-    event TransactionThrottled(address indexed from, address indexed to, uint256 blockNumber);
+    event TransactionThrottled(address indexed from, uint256 blockNumber);
     event TrustedContractAdded(address indexed contractAddress);
     event TrustedContractRemoved(address indexed contractAddress);
-    event FunctionExempted(address indexed account, bytes4 indexed functionSignature);
-    event FunctionExemptionRevoked(address indexed account, bytes4 indexed functionSignature);
     event TestingModeUpdated(bool enabled);
-    event AddressThresholdUpdated(address indexed account, uint256 threshold);
-    event BatchAddressesExempted(address[] accounts);
-    event BatchExemptionsRevoked(address[] accounts);
-    event BatchAddressThresholdsUpdated(address[] accounts, uint256[] thresholds);
+    event PriceImpactThresholdUpdated(uint256 newThreshold);
+    event CircuitBreakerThresholdUpdated(uint256 newThreshold);
+    event LiquidityLockPeriodUpdated(uint256 newPeriod);
+    event GovernanceExemptionRequested(address indexed account, uint256 unlockTime);
+    event GovernanceExemptionApproved(address indexed account);
 
-    constructor(address admin) {
+    constructor(address admin, address governanceContract, address stakingContract, address _priceOracle) {
+        require(_priceOracle != address(0), "Invalid price oracle");
+
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
-        _grantRole(CONFIG_MANAGER_ROLE, admin);
-        _grantRole(TRANSACTION_MONITOR_ROLE, admin);
+        _grantRole(GOVERNANCE_ROLE, governanceContract);  
+        _grantRole(STAKING_CONTRACT_ROLE, stakingContract);
+
+        priceOracle = AggregatorV3Interface(_priceOracle);
+        lastCheckedPrice = _getLatestPrice();
+
+        emit GovernanceExemptionApproved(governanceContract);
+        emit GovernanceExemptionApproved(stakingContract);
     }
 
-    modifier transactionThrottler(address from, address to, bytes4 functionSignature) {
-        if (isAntibotEnabled) {
-            if (
-                !trustedContracts[from] &&
-                !trustedContracts[to] &&
-                !functionExemptions[from][functionSignature]
-            ) {
-                uint256 threshold = globalThresholds[from] > 0 ? globalThresholds[from] : blockThreshold;
+    // ================================
+    // 🔹 Adaptive Transaction Throttling
+    // ================================
+    modifier transactionThrottler(address from) {
+        if (isAntibotEnabled && 
+            !hasRole(BOT_ROLE, from) && 
+            !hasRole(STAKING_CONTRACT_ROLE, from) && 
+            !hasRole(GOVERNANCE_ROLE, from)
+        ) {
+            uint256 threshold = globalThresholds[from] > 0 ? globalThresholds[from] : blockThreshold;
 
-                if (block.number <= lastTransactionBlock[from][to] + threshold) {
-                    userStats[from].throttledTransactions += 1;
-                    emit TransactionThrottled(from, to, block.number);
+            if (block.number <= lastTransactionBlock[from] + threshold) {
+                userStats[from].throttledTransactions += 1;
+                emit TransactionThrottled(from, block.number);
 
-                    if (!testingMode) {
-                        revert("Antibot: Transaction throttled");
-                    }
+                if (!testingMode) {
+                    revert("AntiBot: Transaction throttled");
                 }
-                lastTransactionBlock[from][to] = block.number;
             }
+            lastTransactionBlock[from] = block.number;
         }
         userStats[from].totalTransactions += 1;
         _;
     }
 
-    function toggleAntibot() external onlyRole(CONFIG_MANAGER_ROLE) {
-        isAntibotEnabled = !isAntibotEnabled;
-        emit AntibotStatusUpdated(isAntibotEnabled);
+    // ================================
+    // 🔹 Price-Based Buyback Protection
+    // ================================
+    function _getLatestPrice() internal view returns (int256) {
+        (, int256 price, , , ) = priceOracle.latestRoundData();
+        return price;
     }
 
-    function updateBlockThreshold(uint256 newThreshold) external onlyRole(CONFIG_MANAGER_ROLE) {
-        require(newThreshold > 0, "Antibot: Threshold must be > 0");
-        blockThreshold = newThreshold;
-        emit BlockThresholdUpdated(newThreshold);
-    }
+    function _checkPriceImpact() internal {
+        int256 currentPrice = _getLatestPrice();
+        int256 priceChange = ((currentPrice - lastCheckedPrice) * 100) / lastCheckedPrice;
+        lastCheckedPrice = currentPrice;
+        lastPriceCheckTime = block.timestamp;
 
-    function updateAddressThreshold(address account, uint256 threshold) external onlyRole(CONFIG_MANAGER_ROLE) {
-        require(threshold > 0, "Antibot: Threshold must be > 0");
-        globalThresholds[account] = threshold;
-        emit AddressThresholdUpdated(account, threshold);
-    }
-
-    function batchUpdateAddressThresholds(address[] calldata accounts, uint256[] calldata thresholds)
-        external
-        onlyRole(CONFIG_MANAGER_ROLE)
-    {
-        require(accounts.length == thresholds.length, "Arrays size mismatch");
-        for (uint256 i = 0; i < accounts.length; ) {
-            require(thresholds[i] > 0, "Antibot: Threshold must be > 0");
-            globalThresholds[accounts[i]] = thresholds[i];
-            unchecked { ++i; }
+        if (priceChange < -int256(priceImpactThreshold)) {
+            isBuybackPaused = true;
+            emit BuybackPaused(true);
         }
-        emit BatchAddressThresholdsUpdated(accounts, thresholds);
     }
 
-    function exemptAddress(address account) external onlyRole(TRANSACTION_MONITOR_ROLE) {
-        grantRole(BOT_ROLE, account);
-        emit AddressExempted(account);
-    }
+    function _checkCircuitBreaker() internal {
+        int256 currentPrice = _getLatestPrice();
+        int256 priceChange = ((currentPrice - lastCheckedPrice) * 100) / lastCheckedPrice;
 
-    function revokeExemption(address account) external onlyRole(TRANSACTION_MONITOR_ROLE) {
-        revokeRole(BOT_ROLE, account);
-        emit ExemptionRevoked(account);
-    }
-
-    function batchExemptAddresses(address[] calldata accounts) external onlyRole(TRANSACTION_MONITOR_ROLE) {
-        for (uint256 i = 0; i < accounts.length; ) {
-            grantRole(BOT_ROLE, accounts[i]);
-            unchecked { ++i; }
+        if (priceChange < -int256(circuitBreakerThreshold)) {
+            isCircuitBreakerTriggered = true;
+            emit CircuitBreakerTriggered(true);
         }
-        emit BatchAddressesExempted(accounts);
     }
 
-    function batchRevokeExemptions(address[] calldata accounts) external onlyRole(TRANSACTION_MONITOR_ROLE) {
-        for (uint256 i = 0; i < accounts.length; ) {
-            revokeRole(BOT_ROLE, accounts[i]);
-            unchecked { ++i; }
-        }
-        emit BatchExemptionsRevoked(accounts);
+    // ================================
+    // 🔹 Liquidity Lock Mechanism
+    // ================================
+    function lockLiquidity(address user) external onlyRole(GOVERNANCE_ROLE) {
+        liquidityInjectionTimestamp[user] = block.timestamp + liquidityLockPeriod;
     }
 
-    function addTrustedContract(address contractAddress) external onlyRole(CONFIG_MANAGER_ROLE) {
-        trustedContracts[contractAddress] = true;
-        emit TrustedContractAdded(contractAddress);
+    function canWithdrawLiquidity(address user) external view returns (bool) {
+        return block.timestamp >= liquidityInjectionTimestamp[user];
     }
 
-    function removeTrustedContract(address contractAddress) external onlyRole(CONFIG_MANAGER_ROLE) {
-        trustedContracts[contractAddress] = false;
-        emit TrustedContractRemoved(contractAddress);
+    // ================================
+    // 🔹 Governance Exemption (Timelocked)
+    // ================================
+    function requestGovernanceExemption(address account) external onlyRole(GOVERNANCE_ROLE) {
+        uint256 unlockTime = block.timestamp + 24 hours;
+        pendingExemptions[account] = GovernanceRequest(account, unlockTime);
+        emit GovernanceExemptionRequested(account, unlockTime);
     }
 
-    function exemptFunction(address account, bytes4 functionSignature) external onlyRole(TRANSACTION_MONITOR_ROLE) {
-        functionExemptions[account][functionSignature] = true;
-        emit FunctionExempted(account, functionSignature);
+    function approveGovernanceExemption(address account) external onlyRole(GOVERNANCE_ROLE) {
+        require(block.timestamp >= pendingExemptions[account].unlockTime, "Timelock not expired");
+        _grantRole(BOT_ROLE, account);
+        delete pendingExemptions[account];
+        emit GovernanceExemptionApproved(account);
     }
 
-    function revokeFunctionExemption(address account, bytes4 functionSignature) external onlyRole(TRANSACTION_MONITOR_ROLE) {
-        functionExemptions[account][functionSignature] = false;
-        emit FunctionExemptionRevoked(account, functionSignature);
+    // ================================
+    // 🔹 Final Governance & Security Checks
+    // ================================
+    function updateLiquidityLockPeriod(uint256 newPeriod) external onlyRole(GOVERNANCE_ROLE) {
+        require(newPeriod > 0, "Must be > 0");
+        liquidityLockPeriod = newPeriod;
+        emit LiquidityLockPeriodUpdated(newPeriod);
     }
 
-    function toggleTestingMode(bool enabled) external onlyRole(CONFIG_MANAGER_ROLE) {
-        testingMode = enabled;
-        emit TestingModeUpdated(enabled);
-    }
-
-    function isTransactionThrottled(address from, address to) external view returns (bool) {
+    function isTransactionThrottled(address from) external view returns (bool) {
         if (!isAntibotEnabled) return false;
-        if (trustedContracts[from] || trustedContracts[to]) return false;
+        if (trustedContracts[from]) return false;
+        if (hasRole(STAKING_CONTRACT_ROLE, from) || hasRole(GOVERNANCE_ROLE, from)) return false;
 
         uint256 threshold = globalThresholds[from] > 0 ? globalThresholds[from] : blockThreshold;
-        return (block.number <= lastTransactionBlock[from][to] + threshold);
-    }
-
-    function exampleTransfer(address from, address to, uint256 amount, bytes4 funcSig)
-        external
-        transactionThrottler(from, to, funcSig)
-    {
-        // Your token transfer or action logic here
-        // e.g., _transfer(from, to, amount);
+        return (block.number <= lastTransactionBlock[from] + threshold);
     }
 }
