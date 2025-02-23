@@ -34,10 +34,6 @@ interface ITerraStakeToken {
 
     function lastFeeUpdateTime() external view returns (uint256);
 
-    function lockLiquidity(uint256 amount, uint256 unlockTime) external;
-
-    function adjustLiquidityFee() external;
-
     function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external;
 
     // ================================
