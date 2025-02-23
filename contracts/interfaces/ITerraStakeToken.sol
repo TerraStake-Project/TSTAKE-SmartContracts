@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.26;
 
 interface ITerraStakeToken {
     // ================================
@@ -7,7 +7,7 @@ interface ITerraStakeToken {
     // ================================
 
     function name() external view returns (string memory);
-    
+
     function symbol() external view returns (string memory);
 
     function totalSupply() external view returns (uint256);
@@ -26,13 +26,11 @@ interface ITerraStakeToken {
 
     function liquidityFee() external view returns (uint256);
 
-    function minLiquidityFee() external view returns (uint256);
-
-    function maxLiquidityFee() external view returns (uint256);
-
     function tradingVolume() external view returns (uint256);
 
     function lastFeeUpdateTime() external view returns (uint256);
+
+    function getLiquidityReserves() external view returns (uint256);
 
     function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external;
 
@@ -46,12 +44,15 @@ interface ITerraStakeToken {
 
     function executeProposal(uint256 proposalId) external;
 
-    function proposals(uint256 proposalId) external view returns (
-        address proposer,
-        uint256 newLiquidityFee,
-        uint256 endTime,
-        bool executed
-    );
+    function proposals(uint256 proposalId)
+        external
+        view
+        returns (
+            address proposer,
+            uint256 newLiquidityFee,
+            uint256 endTime,
+            bool executed
+        );
 
     // ================================
     // 🔹 Security & Emergency Functions
