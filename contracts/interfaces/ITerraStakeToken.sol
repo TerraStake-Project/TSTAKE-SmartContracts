@@ -2,86 +2,86 @@
 pragma solidity 0.8.26;
 
 interface ITerraStakeToken {
-    // Custom Errors
-    error MintAmountExceedsMaxSupply();
-    error BurnAmountExceedsBalance();
-    error ZeroAddress();
-    error NewMaxSupplyBelowTotalSupply();
-    error NoVestingSchedule();
-    error CliffNotReached();
-    error NoClaimableTokens();
+    // ================================
+    // 🔹 Token Metadata & Supply
+    // ================================
 
-    // Structs
-    struct VestingSchedule {
-        uint256 totalAmount;
-        uint256 releasedAmount;
-        uint256 startTime;
-        uint256 duration;
-        uint256 cliff;
-    }
+    function name() external view returns (string memory);
+    
+    function symbol() external view returns (string memory);
 
-    // Events
-    event RatesUpdated(uint256 burnRate, uint256 redistributionRate, uint256 stakingRewardsRate);
-    event MaxSupplyUpdated(uint256 oldMaxSupply, uint256 newMaxSupply);
-    event VestingScheduleCreated(
-        address indexed beneficiary,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 duration,
-        uint256 cliff
+    function totalSupply() external view returns (uint256);
+
+    function MAX_CAP() external view returns (uint256);
+
+    // ================================
+    // 🔹 Liquidity Management
+    // ================================
+
+    function liquidityPool() external view returns (address);
+
+    function uniswapRouter() external view returns (address);
+
+    function usdcToken() external view returns (address);
+
+    function liquidityFee() external view returns (uint256);
+
+    function minLiquidityFee() external view returns (uint256);
+
+    function maxLiquidityFee() external view returns (uint256);
+
+    function tradingVolume() external view returns (uint256);
+
+    function lastFeeUpdateTime() external view returns (uint256);
+
+    function lockLiquidity(uint256 amount, uint256 unlockTime) external;
+
+    function adjustLiquidityFee() external;
+
+    function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external;
+
+    // ================================
+    // 🔹 Governance & Voting System
+    // ================================
+
+    function governanceThreshold() external view returns (uint256);
+
+    function proposeFeeAdjustment(uint256 newFee) external;
+
+    function executeProposal(uint256 proposalId) external;
+
+    function proposals(uint256 proposalId) external view returns (
+        address proposer,
+        uint256 newLiquidityFee,
+        uint256 endTime,
+        bool executed
     );
-    event TokensClaimed(address indexed beneficiary, uint256 amount);
-    event VestingScheduleRevoked(address indexed beneficiary, uint256 amountRemaining);
-    event EmergencyWithdraw(address indexed token, address indexed to, uint256 amount);
-    event TokensRedistributed(address indexed to, uint256 amount);
-    event StakingRewardsFunded(address indexed to, uint256 amount);
 
-    // Tokenomics Parameters
-    function maxSupply() external view returns (uint256);
-    function burnRate() external view returns (uint256);
-    function redistributionRate() external view returns (uint256);
-    function stakingRewardsRate() external view returns (uint256);
+    // ================================
+    // 🔹 Security & Emergency Functions
+    // ================================
 
-    // Addresses for tokenomics
-    function redistributionAddress() external view returns (address);
-    function stakingRewardsAddress() external view returns (address);
-
-    // Initialization
-    function initialize(
-        uint256 maxSupply_,
-        address admin,
-        address _redistributionAddress,
-        address _stakingRewardsAddress
-    ) external;
-
-    // Core Token Functions
-    function mint(address to, uint256 amount) external;
-    function burn(uint256 amount) external;
-
-    // Vesting Functions
-    function createVestingSchedule(
-        address beneficiary,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 duration,
-        uint256 cliff
-    ) external;
-
-    function claimVestedTokens() external;
-     function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory);
-    function revokeVestingSchedule(address beneficiary) external;
-
-
-    // Tokenomics Management
-    function setRates(uint256 _burnRate, uint256 _redistributionRate, uint256 _stakingRewardsRate) external;
-    function setMaxSupply(uint256 newMaxSupply) external;
-
-    // Redistribution & Staking Rewards
-    function redistribute(uint256 amount) external;
-    function sendToStakingRewards(uint256 amount) external;
-
-    // Emergency and Pause Functions
     function pause() external;
+
     function unpause() external;
-    function emergencyWithdraw(address token, address to, uint256 amount) external;
+
+    function hasRole(bytes32 role, address account) external view returns (bool);
+
+    // ================================
+    // 🔹 Verification Functions
+    // ================================
+
+    function officialInfo() external pure returns (string memory);
+
+    function verifyOwner() external pure returns (string memory);
+
+    // ================================
+    // 🔹 Events
+    // ================================
+
+    event LiquidityFeeUpdated(uint256 newFee);
+    event LiquidityAdded(uint256 usdcAmount, uint256 tStakeAmount);
+    event ProposalCreated(uint256 proposalId, address proposer, uint256 newFee, uint256 endTime);
+    event ProposalExecuted(uint256 proposalId, uint256 newFee);
+    event GovernanceFailed(uint256 proposalId, string reason);
 }
