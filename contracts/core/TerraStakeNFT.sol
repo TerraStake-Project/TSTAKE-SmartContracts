@@ -25,6 +25,10 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
     ITerraStakeProjects public immutable terraStakeProjects;
     address public immutable TERRA_POOL;
 
+    // Fallback data source
+    ITerraStakeProjects public fallbackProjectsContract;
+    bool public useFallback;
+    
     INonfungiblePositionManager public immutable positionManager;
     IUniswapV3Pool public immutable uniswapPool;
     uint24 public constant POOL_FEE = 3000;
@@ -67,6 +71,11 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
     mapping(uint256 => LiquidityLock) private _liquidityLocks;
     mapping(address => bool) public liquidityWhitelist;
     mapping(uint256 => NFTMetadata[]) public metadataHistory; // Metadata versioning
+    
+    // Cache for project data in case both primary and fallback sources fail
+    mapping(uint256 => uint256) private _cachedProjectImpact;
+    uint256 private constant CACHE_VALIDITY_PERIOD = 7 days;
+    mapping(uint256 => uint256) private _lastCacheUpdate;
 
     VRFCoordinatorV2Interface internal vrfCoordinator;
     bytes32 public keyHash;
@@ -90,12 +99,14 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
     );
 
     event BatchNFTMinted(address indexed to, uint256[] tokenIds);
-
     event NFTFractionalized(uint256 indexed tokenId, address indexed owner, uint256 amount);
     event NFTBurned(uint256 indexed tokenId);
     event MetadataUpdated(uint256 indexed tokenId, string newUri, uint256 version);
     event PerformanceMetricsUpdated(uint256 indexed tokenId, uint256 totalImpact, uint256 carbonOffset, uint256 efficiencyScore);
     event ImpactValueSynced(uint256 indexed tokenId, uint256 newImpactValue);
+    event FallbackSourceUpdated(address indexed newFallbackSource);
+    event FallbackActivated(bool activated);
+    event ProjectDataCached(uint256 indexed projectId, uint256 impactValue);
 
     // ====================================================
     // 🔹 Constructor
@@ -128,6 +139,47 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         vrfCoordinator = VRFCoordinatorV2Interface(_vrfCoordinator);
         keyHash = _keyHash;
         subscriptionId = _subscriptionId;
+    }
+
+    // ====================================================
+    // 🔹 Fallback Management
+    // ====================================================
+    function setFallbackProjectsContract(address _fallbackContract) external onlyRole(GOVERNANCE_ROLE) {
+        require(_fallbackContract != address(0), "Invalid fallback contract");
+        fallbackProjectsContract = ITerraStakeProjects(_fallbackContract);
+        emit FallbackSourceUpdated(_fallbackContract);
+    }
+
+    function toggleFallback(bool _useFallback) external onlyRole(GOVERNANCE_ROLE) {
+        useFallback = _useFallback;
+        emit FallbackActivated(_useFallback);
+    }
+
+    function updateProjectDataCache(uint256 projectId, uint256 impactValue) private {
+        _cachedProjectImpact[projectId] = impactValue;
+        _lastCacheUpdate[projectId] = block.timestamp;
+        emit ProjectDataCached(projectId, impactValue);
+    }
+
+    function getProjectImpact(uint256 projectId) private view returns (uint256) {
+        // Try primary source
+        try terraStakeProjects.getProjectAnalytics(projectId) returns (ITerraStakeProjects.ProjectAnalytics memory analytics) {
+            return analytics.totalImpact;
+        } catch {
+            // Try fallback if enabled
+            if (useFallback && address(fallbackProjectsContract) != address(0)) {
+                try fallbackProjectsContract.getProjectAnalytics(projectId) returns (ITerraStakeProjects.ProjectAnalytics memory analytics) {
+                    return analytics.totalImpact;
+                } catch {
+                    // Use cached data if within validity period
+                    if (block.timestamp - _lastCacheUpdate[projectId] <= CACHE_VALIDITY_PERIOD) {
+                        return _cachedProjectImpact[projectId];
+                    }
+                }
+            }
+            // Return cached data even if expired as last resort
+            return _cachedProjectImpact[projectId];
+        }
     }
 
     // ====================================================
@@ -168,14 +220,21 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         _nftMetadata[tokenId] = newMetadata;
         metadataHistory[tokenId].push(newMetadata);
 
+        // Cache the initial impact value
+        updateProjectDataCache(projectId, impactValue);
+
         emit NFTMinted(to, tokenId, projectId, impactValue, uri, isTradable, location, capacity, certificationDate, projectType, isVerified);
     }
 
     function syncImpactValue(uint256 tokenId) external {
         require(_uniqueOwners[tokenId] != address(0), "NFT does not exist");
 
-        uint256 newImpact = terraStakeProjects.getProjectAnalytics(_nftMetadata[tokenId].projectId).totalImpact;
+        uint256 newImpact = getProjectImpact(_nftMetadata[tokenId].projectId);
         _nftMetadata[tokenId].impactValue = newImpact;
+        
+        // Update cache with new value
+        updateProjectDataCache(_nftMetadata[tokenId].projectId, newImpact);
+        
         emit ImpactValueSynced(tokenId, newImpact);
     }
 
