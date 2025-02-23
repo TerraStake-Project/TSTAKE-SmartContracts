@@ -1,65 +1,106 @@
-# Ignore Node.js dependencies
+# ================================
+# 🔹 Node.js & Package Management
+# ================================
 node_modules/
 .npm/
 .yarn/
 .pnpm-store/
+forge.lock
+yarn.lock
+pnpm-lock.yaml
+package-lock.json
 
-# Ignore environment variables and secrets
+# ================================
+# 🔹 Environment & Secret Files
+# ================================
 .env
 .env.local
 .env.development.local
 .env.production.local
 .env.test.local
 .env.example
+.secret
+.secrets.json
 
-# Ignore Hardhat artifacts and cache
+# ================================
+# 🔹 Hardhat & Foundry Artifacts
+# ================================
 artifacts/
 cache/
 typechain/
 typechain-types/
-
-# Ignore Foundry build files
 out/
 lib/
-foundry.toml.lock
+build/
+contracts/*.json  # Prevent accidental ABI & metadata leaks
 
-# Ignore OpenZeppelin upgrades cache
+# ================================
+# 🔹 OpenZeppelin Upgrades Cache
+# ================================
 openzeppelin-upgrades.json
 
-# Ignore Hardhat test reports
+# ================================
+# 🔹 Coverage & Testing Reports
+# ================================
 coverage/
 coverage.json
 test-coverage/
 coverage-final.json
 lcov-report/
+*.lcov
+*.cover
 
-# Ignore editor-specific files
+# ================================
+# 🔹 Debugging & Logs
+# ================================
+debug.log
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+*.log
+*.err
+
+# ================================
+# 🔹 Editor & OS-Specific Files
+# ================================
 .vscode/
 .idea/
 .DS_Store
 *.swp
 *.swo
+*.iml
+*.sublime-project
+*.sublime-workspace
 
-# Ignore Solidity dependency lock files
-forge.lock
-yarn.lock
-pnpm-lock.yaml
-package-lock.json
-
-# Ignore compiled contracts & ABIs
-abis/
-build/
-
-# Ignore logs and debug files
-*.log
-debug.log
-npm-debug.log
-yarn-debug.log
-yarn-error.log
-
-# Ignore Remix IDE artifacts
+# ================================
+# 🔹 Remix IDE Artifacts (Optional)
+# ================================
 remix-compiler.json
 remix.debug
 
-# Ignore GitHub workflows cache (optional)
+# ================================
+# 🔹 GitHub Workflows Cache (Optional)
+# ================================
 .github/workflows/*.cache
+
+# ================================
+# 🔹 Hardhat Node & Local Chains
+# ================================
+hardhat-network*
+localhost-*
+temporary-chain-data/
+node_modules/.cache
+
+# ================================
+# 🔹 IPFS & Metadata (Optional)
+# ================================
+ipfs_cache/
+.ipfs/
+*.ipfs
+
+# ================================
+# 🔹 Multisig & Security Keys (Critical)
+# ================================
+keys/
+keystore/
+multisig-config.json
