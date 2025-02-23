@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-/**
- * @title ITerraStakeToken
- * @notice Interface for the TerraStake Token (TSTAKE) contract
- */
 interface ITerraStakeToken {
     // ================================
     // 🔹 Token Metadata & Supply
     // ================================
 
     function name() external pure returns (string memory);
-
+    
     function symbol() external pure returns (string memory);
 
     function totalSupply() external view returns (uint256);
@@ -19,7 +15,7 @@ interface ITerraStakeToken {
     function MAX_CAP() external pure returns (uint256);
 
     // ================================
-    // 🔹 Liquidity Management
+    // 🔹 Liquidity & Fee Management
     // ================================
 
     function liquidityPool() external view returns (address);
@@ -58,6 +54,12 @@ interface ITerraStakeToken {
     );
 
     // ================================
+    // 🔹 Minting Control
+    // ================================
+
+    function mint(address to, uint256 amount) external;
+
+    // ================================
     // 🔹 Security & Emergency Functions
     // ================================
 
@@ -68,12 +70,14 @@ interface ITerraStakeToken {
     function hasRole(bytes32 role, address account) external view returns (bool);
 
     // ================================
-    // 🔹 Verification Functions
+    // 🔹 Verification & Utility Functions
     // ================================
 
     function officialInfo() external pure returns (string memory);
 
     function verifyOwner() external view returns (address);
+
+    function safeIncreaseAllowance(address spender, uint256 addedValue) external;
 
     // ================================
     // 🔹 Events
