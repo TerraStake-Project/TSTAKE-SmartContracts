@@ -23,16 +23,20 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
     // Tracks scheduled upgrades and unpause requests
     mapping(address => uint256) public pendingUpgrades;
     mapping(uint256 => uint256) public pendingUnpause;
+    
+    // Store implementation bytecode hashes
+    mapping(address => bytes32) public implementationBytecodeHashes;
 
     uint256 public version; // Tracks the current version of the implementation
 
     /// Events
-    event UpgradeScheduled(address indexed newImplementation, uint256 effectiveTime, uint256 version);
-    event UpgradeExecuted(address indexed oldImplementation, address indexed newImplementation, uint256 version);
+    event UpgradeScheduled(address indexed newImplementation, uint256 effectiveTime, uint256 version, bytes32 bytecodeHash);
+    event UpgradeExecuted(address indexed oldImplementation, address indexed newImplementation, uint256 version, bytes32 oldHash, bytes32 newHash);
     event UpgradeCancelled(address indexed newImplementation, address indexed actor, uint256 timestamp);
     event ProxyPaused(address indexed actor, uint256 timestamp);
     event ProxyUnpauseRequested(address indexed actor, uint256 effectiveTime);
     event ProxyUnpaused(address indexed actor, uint256 timestamp);
+    event BytecodeMismatch(address indexed implementation, bytes32 expectedHash, bytes32 actualHash);
 
     /// @notice Initialize the proxy with implementation, admin, and roles
     /// @param _logic Address of the initial implementation contract
@@ -51,6 +55,9 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         _grantRole(MULTISIG_ADMIN_ROLE, 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d);
 
         version = 1; // Initialize the version
+        
+        // Store initial implementation bytecode hash
+        implementationBytecodeHashes[_logic] = _getBytecodeHash(_logic);
     }
 
     /// @notice Schedule an upgrade to a new implementation
@@ -61,11 +68,17 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         require(pendingUpgrades[newImplementation] == 0, "Already scheduled");
 
         _validateImplementation(newImplementation);
+        
+        // Get and validate bytecode hash
+        bytes32 newBytecodeHash = _getBytecodeHash(newImplementation);
+        bytes32 currentHash = implementationBytecodeHashes[_implementation()];
+        require(newBytecodeHash != currentHash, "Identical bytecode");
 
         uint256 effectiveTime = block.timestamp + UPGRADE_TIMELOCK;
         pendingUpgrades[newImplementation] = effectiveTime;
+        implementationBytecodeHashes[newImplementation] = newBytecodeHash;
 
-        emit UpgradeScheduled(newImplementation, effectiveTime, version);
+        emit UpgradeScheduled(newImplementation, effectiveTime, version, newBytecodeHash);
     }
 
     /// @notice Execute a scheduled upgrade
@@ -77,11 +90,25 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         address oldImplementation = _implementation();
         require(newImplementation != oldImplementation, "Same implementation");
 
+        // Verify bytecode hasn't changed since scheduling
+        bytes32 storedHash = implementationBytecodeHashes[newImplementation];
+        bytes32 currentHash = _getBytecodeHash(newImplementation);
+        require(storedHash == currentHash, "Implementation modified");
+
+        bytes32 oldHash = implementationBytecodeHashes[oldImplementation];
         _upgradeTo(newImplementation);
         delete pendingUpgrades[newImplementation];
 
         version++;
-        emit UpgradeExecuted(oldImplementation, newImplementation, version);
+        emit UpgradeExecuted(oldImplementation, newImplementation, version, oldHash, currentHash);
+    }
+
+    /// @notice Get the bytecode hash of a contract
+    /// @param implementation Address of the contract to hash
+    /// @return Hash of the contract's bytecode
+    function _getBytecodeHash(address implementation) internal view returns (bytes32) {
+        bytes memory bytecode = implementation.code;
+        return keccak256(bytecode);
     }
 
     /// @notice Cancel a scheduled upgrade
@@ -89,6 +116,7 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
     function clearScheduledUpgrade(address newImplementation) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
         require(pendingUpgrades[newImplementation] != 0, "No scheduled upgrade");
         delete pendingUpgrades[newImplementation];
+        delete implementationBytecodeHashes[newImplementation];
         emit UpgradeCancelled(newImplementation, msg.sender, block.timestamp);
     }
 
