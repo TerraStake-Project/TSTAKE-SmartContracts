@@ -14,6 +14,19 @@ interface IERC20Burnable {
     function burn(uint256 amount) external;
 }
 
+interface AggregatorV3Interface {
+    function latestRoundData()
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        );
+}
+
 /**
  * @title TerraStakeSlashing (3B Cap Governance Secured)
  * @notice Handles governance penalties, security breaches, and stake redistributions.
@@ -21,6 +34,7 @@ interface IERC20Burnable {
  * ✅ **Quadratic Voting Protected Against Whale Control**
  * ✅ **Slash Enforcement via Permit-Based Approval (EIP-2612)**
  * ✅ **Liquidity & Buyback Exploit Protection**
+ * ✅ **TWAP-Based Price Validation via Chainlink**
  */
 contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -38,11 +52,14 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
     ITerraStakeStaking public stakingContract;
     IRewardDistributor public rewardDistributor;
     ITerraStakeLiquidityGuard public liquidityGuard;
+    AggregatorV3Interface public priceOracle;
 
     uint256 public constant GOVERNANCE_DELAY = 2 days;
     uint256 public constant EMERGENCY_WITHDRAW_DELAY = 2 days; // Increased for security
     uint256 public constant SLASHING_LOCK_PERIOD = 3 days; // Protects against mass slashing abuse
     uint256 public constant REDISTRIBUTION_CHANGE_LOCK = 2 days; // Time-lock for redistribution updates
+    uint256 public constant PRICE_VALIDITY_PERIOD = 1 hours; // Maximum age of price feed data
+    uint256 public constant PRICE_DEVIATION_THRESHOLD = 10; // 10% maximum deviation from TWAP
 
     // ================================
     // 🔹 State Variables
@@ -51,6 +68,8 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
     uint256 public redistributionPercentage;
     uint256 public totalSlashed;
     bool public paused;
+    uint256 public lastTWAPPrice;
+    uint256 public lastTWAPTimestamp;
 
     mapping(address => bool) public isSlashed;
     mapping(bytes32 => uint256) public pendingChanges;
@@ -79,6 +98,7 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
     event EmergencyWithdrawalExecuted(address indexed admin, uint256 amount);
     event PenaltyUpdated(address indexed participant, uint256 newPenalty);
     event StakeLocked(address indexed participant, uint256 amount, uint256 lockUntil);
+    event PriceValidationFailed(uint256 currentPrice, uint256 twapPrice, uint256 deviationPercentage);
 
     // ================================
     // 🔹 Constructor
@@ -89,13 +109,15 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         address _rewardDistributor,
         address _liquidityGuard,
         address _redistributionPool,
-        uint256 _redistributionPercentage
+        uint256 _redistributionPercentage,
+        address _priceOracle
     ) {
         require(_tStakeToken != address(0), "Invalid TSTAKE token address");
         require(_stakingContract != address(0), "Invalid staking contract address");
         require(_rewardDistributor != address(0), "Invalid reward distributor address");
         require(_liquidityGuard != address(0), "Invalid liquidity guard");
         require(_redistributionPool != address(0), "Invalid redistribution pool");
+        require(_priceOracle != address(0), "Invalid price oracle address");
         require(_redistributionPercentage <= 10000, "Percentage exceeds 100%");
 
         tStakeToken = IERC20(_tStakeToken);
@@ -104,11 +126,51 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
         redistributionPool = _redistributionPool;
         redistributionPercentage = _redistributionPercentage;
+        priceOracle = AggregatorV3Interface(_priceOracle);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(GOVERNANCE_ROLE, msg.sender);
         _grantRole(SLASHER_ROLE, msg.sender);
         _grantRole(EMERGENCY_ROLE, msg.sender);
+    }
+
+    // ================================
+    // 🔹 Price Validation
+    // ================================
+    function validatePrice() internal view returns (bool) {
+        (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        ) = priceOracle.latestRoundData();
+        
+        require(answer > 0, "Invalid price feed response");
+        require(updatedAt >= block.timestamp - PRICE_VALIDITY_PERIOD, "Stale price data");
+        require(answeredInRound >= roundId, "Price round not complete");
+        
+        uint256 currentPrice = uint256(answer);
+        
+        // Check if price has deviated too much from TWAP
+        if (lastTWAPPrice > 0) {
+            uint256 deviationPercentage = currentPrice > lastTWAPPrice 
+                ? ((currentPrice - lastTWAPPrice) * 100) / lastTWAPPrice
+                : ((lastTWAPPrice - currentPrice) * 100) / lastTWAPPrice;
+                
+            if (deviationPercentage > PRICE_DEVIATION_THRESHOLD) {
+                emit PriceValidationFailed(currentPrice, lastTWAPPrice, deviationPercentage);
+                return false;
+            }
+        }
+        
+        // Update TWAP state
+        if (block.timestamp >= lastTWAPTimestamp + 1 hours) {
+            lastTWAPPrice = currentPrice;
+            lastTWAPTimestamp = block.timestamp;
+        }
+        
+        return true;
     }
 
     // ================================
@@ -143,6 +205,7 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         require(amount > 0, "Slashing amount must be > 0");
         require(!isSlashed[participant], "Already slashed");
         require(block.timestamp >= lastSlashingTime[participant] + SLASHING_LOCK_PERIOD, "Slashing cooldown active");
+        require(validatePrice(), "Price validation failed");
 
         IERC20Permit(address(tStakeToken)).permit(participant, address(this), amount, deadline, v, r, s);
 
