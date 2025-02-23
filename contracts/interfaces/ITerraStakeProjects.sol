@@ -2,17 +2,22 @@
 pragma solidity 0.8.26;
 
 interface ITerraStakeProjects {
+    // ====================================================
+    // 🔹 Project Categories (DO NOT CHANGE ORDER)
+    // ====================================================
     enum ProjectCategory {
-        CarbonCredit,
-        RenewableEnergy,
-        OceanCleanup,
-        Reforestation,
-        Biodiversity,
-        SustainableAg,
-        WasteManagement,
-        WaterConservation,
-        PollutionControl,
-        HabitatRestoration
+        CarbonCredit,        // Carbon offset and reduction projects
+        RenewableEnergy,     // Solar, wind, hydro, including RECs
+        OceanCleanup,        // Marine conservation and plastic removal
+        Reforestation,       // Tree planting and forest protection
+        Biodiversity,        // Species and ecosystem protection
+        SustainableAg,       // Regenerative farming practices
+        WasteManagement,     // Recycling and waste reduction
+        WaterConservation,   // Water efficiency and protection
+        PollutionControl,    // Air and environmental quality
+        HabitatRestoration,  // Ecosystem recovery projects
+        GreenBuilding,       // Energy-efficient infrastructure & sustainable construction
+        CircularEconomy      // Waste-to-energy, recycling loops, regenerative economy
     }
 
     enum ProjectState {
@@ -24,15 +29,11 @@ interface ITerraStakeProjects {
         Archived
     }
 
-    /**
-     * @notice Basic project data.
-     * @param name Project name.
-     * @param description Project description.
-     * @param location Project location.
-     * @param impactMetrics Impact metrics as a string.
-     * @param ipfsHash A legacy IPFS hash.
-     * @param exists Whether the project exists.
-     */
+    // ====================================================
+    // 🔹 Data Structures
+    // ====================================================
+
+    /// @dev Core project data including metadata and identification
     struct ProjectData {
         string name;
         string description;
@@ -42,21 +43,7 @@ interface ITerraStakeProjects {
         bool exists;
     }
 
-    /**
-     * @notice Detailed project state data.
-     * @param category The project category.
-     * @param state The current project state.
-     * @param stakingMultiplier The staking multiplier.
-     * @param totalStaked Total amount staked.
-     * @param rewardPool Reward pool for stakers.
-     * @param isActive Whether staking is active.
-     * @param startBlock Starting block.
-     * @param endBlock Ending block.
-     * @param owner Project owner.
-     * @param lastReportedValue The last Chainlink reported value.
-     * @param lastRewardUpdate Timestamp of last reward distribution.
-     * @param accumulatedRewards Total rewards distributed.
-     */
+    /// @dev Stores staking and status details for each project
     struct ProjectStateData {
         ProjectCategory category;
         ProjectState state;
@@ -67,19 +54,12 @@ interface ITerraStakeProjects {
         uint48 startBlock;
         uint48 endBlock;
         address owner;
-        int256 lastReportedValue; // Added to store Chainlink feed data
+        int256 lastReportedValue;
         uint256 lastRewardUpdate;
         uint256 accumulatedRewards;
     }
 
-    /**
-     * @notice Impact requirements for a project category.
-     * @param minimumImpact The minimum required impact value.
-     * @param verificationFrequency Maximum allowed time (in seconds) since the last verification.
-     * @param requiredDocuments An array of required document identifiers.
-     * @param qualityThreshold The quality threshold.
-     * @param minimumScale The minimum required staking amount.
-     */
+    /// @dev Defines impact tracking requirements for project validation
     struct ImpactRequirement {
         uint256 minimumImpact;
         uint256 verificationFrequency;
@@ -88,14 +68,7 @@ interface ITerraStakeProjects {
         uint256 minimumScale;
     }
 
-    /**
-     * @notice General metadata for a project.
-     * @param startDate Project start date.
-     * @param endDate Project end date.
-     * @param budgetAllocation Allocated budget.
-     * @param riskAssessment Risk assessment summary.
-     * @param complianceDocumentation Compliance documents (legacy).
-     */
+    /// @dev General project metadata for governance and compliance
     struct GeneralMetadata {
         uint48 startDate;
         uint48 endDate;
@@ -104,64 +77,100 @@ interface ITerraStakeProjects {
         string complianceDocumentation;
     }
 
-    /**
-     * @notice Validation data.
-     * @param vvb Validator address.
-     * @param validationDate Timestamp of validation.
-     * @param validationReportHash Hash of the validation report.
-     */
+    /// @dev Stores validation reports and timestamps for project approvals
     struct ValidationData {
         address vvb;
         uint256 validationDate;
         bytes32 validationReportHash;
     }
 
-    /**
-     * @notice Verification data.
-     * @param vvb Verifier address.
-     * @param verificationDate Timestamp of verification.
-     * @param verificationReportHash Hash of the verification report.
-     */
+    /// @dev Verification reports for projects to ensure compliance and updates
     struct VerificationData {
         address vvb;
         uint256 verificationDate;
         bytes32 verificationReportHash;
     }
 
-    /**
-     * @notice A comment on a project.
-     * @param commenter Commenter's address.
-     * @param message Comment text.
-     * @param timestamp Timestamp of comment.
-     */
+    /// @dev Governance comments and discussions on project progress
     struct Comment {
         address commenter;
         string message;
         uint256 timestamp;
     }
 
-    // Events
+    /// @dev Analytics structure for evaluating project success and efficiency
+    struct ProjectAnalytics {
+        uint256 totalImpact;
+        uint256 carbonOffset;
+        uint256 stakingEfficiency;
+        uint256 communityEngagement;
+    }
+
+    /// @dev Detailed impact reports for long-term tracking
+    struct ImpactReport {
+        uint256 periodStart;
+        uint256 periodEnd;
+        uint256[] metrics;
+        bytes32 reportHash;
+    }
+
+    /// @dev Renewable Energy Certificates (REC) tracking
+    struct RECData {
+        bytes32 recId;
+        uint256 vintage;
+        uint256 serialNumber;
+        uint256 mWhGenerated;
+        uint256 startTime;
+        uint256 endTime;
+        string facilityId;
+        string gridRegion;
+        uint256 capacity;
+        string certifier;
+        bytes32 certHash;
+        uint256 validUntil;
+        uint8 resourceType;
+        bool isRetired;
+    }
+
+    // ====================================================
+    // 🔹 Events
+    // ====================================================
+
+    /// @dev Contract initialization event
     event Initialized(address admin, address tstakeToken);
+
+    /// @dev Project management events
     event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
     event ProjectStateChanged(uint256 indexed projectId, ProjectState indexed oldState, ProjectState indexed newState);
-    event DocumentationUpdated(uint256 indexed projectId, bytes32[] documentHashes);
+    event DocumentationUpdated(uint256 indexed projectId, string[] ipfsHashes);
+    event CommentAdded(uint256 indexed projectId, address indexed commenter, string message);
+
+    /// @dev Governance-related events
     event ValidationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
     event VerificationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
     event MetricsReported(uint256 indexed projectId, string metricType, string metricValue);
     event CategoryMultiplierUpdated(ProjectCategory indexed category, uint256 multiplier);
     event ImpactRequirementUpdated(ProjectCategory indexed category, uint256 minimumImpact);
-    event ContractsSet(address stakingContract, address rewardsContract);
-    event CommentAdded(uint256 indexed projectId, address indexed commenter, string message);
     event FeeStructureUpdated(uint256 registrationFee, uint256 verificationFee, uint256 categoryChangeFee);
-    event DocumentAdded(uint256 indexed projectId, bytes cid);
-    
-    // Added Event for Chainlink Data Feeds
-    event ProjectDataUpdated(uint256 indexed projectId, int256 newDataValue);
+    event ContractsSet(address stakingContract, address rewardsContract);
 
-    // Initialization
+    /// @dev Analytics & reporting events
+    event ProjectDataUpdated(uint256 indexed projectId, int256 newDataValue);
+    event AnalyticsUpdated(uint256 indexed projectId, uint256 totalImpact);
+    event ImpactReportSubmitted(uint256 indexed projectId, bytes32 reportHash);
+
+    /// @dev REC Management events
+    event RECReportSubmitted(uint256 indexed projectId, bytes32 recId);
+    event RECVerified(bytes32 indexed recId, bool valid);
+
+    // ====================================================
+    // 🔹 Functions
+    // ====================================================
+
+    // 🔹 Initialization
     function initialize(address admin, address _tstakeToken) external;
 
-    // Project Management
+    // 🔹 Project Management
     function addProject(
         string memory name,
         string memory description,
@@ -175,24 +184,18 @@ interface ITerraStakeProjects {
     ) external;
 
     function updateProjectState(uint256 projectId, ProjectState newState) external;
+    
+    function uploadProjectDocuments(uint256 projectId, string[] calldata ipfsHashes) external;
+    
+    function getProjectDocuments(uint256 projectId) external view returns (string[] memory);
 
-    function updateProjectDocumentation(uint256 projectId, bytes32[] calldata documentHashes) external;
-
+    // 🔹 Governance Functions
     function submitValidation(uint256 projectId, bytes32 reportHash) external;
 
     function submitVerification(uint256 projectId, bytes32 reportHash) external;
 
     function reportMetric(uint256 projectId, string calldata metricType, string calldata metricValue) external;
 
-    // Chainlink Data Feeder Integration
-    /**
-     * @notice Updates a project's last reported value using Chainlink.
-     * @param projectId The ID of the project to update.
-     * @param dataValue The new data value from Chainlink.
-     */
-    function updateProjectDataFromChainlink(uint256 projectId, int256 dataValue) external;
-
-    // Governance Functions
     function setCategoryMultiplier(ProjectCategory category, uint256 multiplier) external;
 
     function setImpactRequirement(
@@ -208,28 +211,31 @@ interface ITerraStakeProjects {
 
     function addComment(uint256 projectId, string calldata message) external;
 
-    // View Functions
-    function getProjectDetails(uint256 projectId) external view returns (ProjectData memory);
+    // 🔹 Project Analytics & Reporting
+    function updateProjectAnalytics(
+        uint256 projectId,
+        uint256 totalImpact,
+        uint256 carbonOffset,
+        uint256 stakingEfficiency,
+        uint256 communityEngagement
+    ) external;
 
-    function getProjectState(uint256 projectId) external view returns (ProjectStateData memory);
+    function submitImpactReport(
+        uint256 projectId,
+        uint256 periodStart,
+        uint256 periodEnd,
+        uint256[] memory metrics,
+        bytes32 reportHash
+    ) external;
 
-    function getCategoryRequirements(ProjectCategory category) external view returns (ImpactRequirement memory);
+    function getProjectAnalytics(uint256 projectId) external view returns (ProjectAnalytics memory);
 
-    function getValidationReport(uint256 projectId) external view returns (ValidationData memory);
+    function getImpactReports(uint256 projectId) external view returns (ImpactReport[] memory);
 
-    function getVerificationReport(uint256 projectId) external view returns (VerificationData memory);
+    // 🔹 Renewable Energy Certificate (REC) Management
+    function submitRECReport(uint256 projectId, RECData memory rec) external;
 
-    function isProjectActive(uint256 projectId) external view returns (bool);
+    function getREC(uint256 projectId) external view returns (RECData memory);
 
-    function getProjectCount() external view returns (uint256);
-
-    function getComments(uint256 projectId) external view returns (
-        string[] memory messages, 
-        address[] memory commenters, 
-        uint256[] memory timestamps
-    );
-
-    function getGeneralMetadata(uint256 projectId) external view returns (GeneralMetadata memory);
-
-    function setGeneralMetadata(uint256 projectId, GeneralMetadata calldata data) external;
+    function verifyREC(bytes32 recId) external view returns (bool);
 }
