@@ -1,105 +1,118 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-/**
- * @title ITerraStakeSlashing
- * @notice Interface for the TerraStakeSlashing contract.
- */
 interface ITerraStakeSlashing {
     // ------------------------------------------------------------------------
-    // Core Functions
+    // 🔹 Events for Transparency & Tracking
     // ------------------------------------------------------------------------
-    /**
-     * @notice Slash a participant for violating protocol rules.
-     * @param participant Address to slash.
-     * @param amount Amount of tokens to slash.
-     * @param reason Description of the slashing reason.
-     */
+    event ParticipantSlashed(
+        address indexed participant,
+        uint256 amount,
+        uint256 redistributionAmount,
+        uint256 burnAmount,
+        string reason
+    );
+    event StakeLocked(address indexed participant, uint256 amount, uint256 lockUntil);
+    event FundsRedistributed(uint256 amount, address indexed destination);
+    event FundsBurned(uint256 amount);
+    
+    event RedistributionPoolUpdateRequested(address indexed newPool, uint256 unlockTime);
+    event RedistributionPoolUpdated(address indexed newPool);
+    event RedistributionPercentageUpdated(uint256 newPercentage);
+    
+    event GovernanceRoleTransferred(address indexed oldAccount, address indexed newAccount);
+    event GovernanceTimelockSet(bytes32 indexed setting, uint256 newValue, uint256 unlockTime);
+    event GovernanceTimelockExecuted(bytes32 indexed setting, uint256 oldValue, uint256 newValue);
+    event GovernanceTimelockCanceled(bytes32 indexed setting);
+
+    event SlashingPaused();
+    event SlashingResumed();
+    event PenaltyUpdated(address indexed participant, uint256 newPenalty);
+    
+    event EmergencyWithdrawalRequested(address indexed admin, uint256 amount, uint256 unlockTime);
+    event EmergencyWithdrawalExecuted(address indexed admin, uint256 amount);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Governance Roles & Security
+    // ------------------------------------------------------------------------
+    function SLASHER_ROLE() external pure returns (bytes32);
+    function GOVERNANCE_ROLE() external pure returns (bytes32);
+    function STAKING_CONTRACT_ROLE() external pure returns (bytes32);
+    function REWARD_DISTRIBUTOR_ROLE() external pure returns (bytes32);
+    function EMERGENCY_ROLE() external pure returns (bytes32);
+    function DEFAULT_ADMIN_ROLE() external pure returns (bytes32);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Core System Contracts
+    // ------------------------------------------------------------------------
+    function tStakeToken() external view returns (address);
+    function stakingContract() external view returns (address);
+    function rewardDistributor() external view returns (address);
+    function liquidityGuard() external view returns (address);
+    function redistributionPool() external view returns (address);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Slashing & Fund Redistribution
+    // ------------------------------------------------------------------------
+    function redistributionPercentage() external view returns (uint256);
+    function totalSlashed() external view returns (uint256);
+    function slashingLockPeriod() external view returns (uint256);
+    
+    function checkIfSlashed(address participant) external view returns (bool);
+    function getTotalSlashed() external view returns (uint256);
+    function getRedistributionPercentage() external view returns (uint256);
+    function getRedistributionPool() external view returns (address);
+    function isStakerPenalized(address participant) external view returns (bool);
+    function getGovernanceTimelock(bytes32 setting) external view returns (uint256);
+
     function slash(
         address participant,
         uint256 amount,
-        string calldata reason
+        string calldata reason,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
     ) external;
 
-    /**
-     * @notice Propose an update to the redistribution pool address with a timelock.
-     * @param newPool New redistribution pool address.
-     */
-    function proposeRedistributionPoolUpdate(address newPool) external;
+    function lockStakedFunds(address participant, uint256 amount) external;
 
-    /**
-     * @notice Execute an approved redistribution pool update after the timelock delay.
-     * @param newPool New redistribution pool address.
-     */
-    function executeRedistributionPoolUpdate(address newPool) external;
+    function setPenalty(
+        address participant,
+        uint256 newPenalty
+    ) external;
 
-    /**
-     * @notice Propose an update to the redistribution percentage with a timelock.
-     * @param newPercentage New redistribution percentage (basis points).
-     */
-    function proposeRedistributionUpdate(uint256 newPercentage) external;
+    function redistributeSlashedFunds(uint256 amount, address destination) external;
 
-    /**
-     * @notice Execute an approved redistribution percentage update after the timelock delay.
-     * @param newPercentage New redistribution percentage (basis points).
-     */
-    function executeRedistributionUpdate(uint256 newPercentage) external;
+    function burnSlashedFunds(uint256 amount) external;
 
-    /**
-     * @notice Transfer a role to a new account.
-     * @param role The role to transfer.
-     * @param newAccount The new account to assign the role.
-     */
-    function transferRole(bytes32 role, address newAccount) external;
+    function setGovernanceTimelock(
+        bytes32 setting,
+        uint256 newValue
+    ) external;
 
-    /**
-     * @notice Pause the contract to stop state-changing operations.
-     */
+    function executeGovernanceTimelock(
+        bytes32 setting
+    ) external;
+
+    function cancelGovernanceTimelock(
+        bytes32 setting
+    ) external;
+
+    // ------------------------------------------------------------------------
+    // 🔹 Emergency Controls & Security Functions
+    // ------------------------------------------------------------------------
     function pause() external;
-
-    /**
-     * @notice Unpause the contract to resume state-changing operations.
-     */
     function unpause() external;
 
+    function requestEmergencyWithdraw(uint256 amount) external;
+    function executeEmergencyWithdraw() external;
+
     // ------------------------------------------------------------------------
-    // View Functions
+    // 🔹 Governance Management & Multi-Sig
     // ------------------------------------------------------------------------
-    /**
-     * @notice Check if the contract is currently paused.
-     * @return True if the contract is paused, false otherwise.
-     */
-    function paused() external view returns (bool);
-
-    /**
-     * @notice Check if a participant has already been slashed.
-     * @param participant Address of the participant.
-     * @return True if the participant has been slashed, false otherwise.
-     */
-    function checkIfSlashed(address participant) external view returns (bool);
-
-    /**
-     * @notice Get the total amount of tokens slashed.
-     * @return Total tokens slashed.
-     */
-    function getTotalSlashed() external view returns (uint256);
-
-    /**
-     * @notice Get the current redistribution percentage.
-     * @return Redistribution percentage (basis points).
-     */
-    function getRedistributionPercentage() external view returns (uint256);
-
-    /**
-     * @notice Get the address of the current redistribution pool.
-     * @return Address of the redistribution pool.
-     */
-    function getRedistributionPool() external view returns (address);
-
-    /**
-     * @notice Get the timelock of a pending change proposal.
-     * @param proposalId Unique identifier of the proposal.
-     * @return Governance timelock for changes.
-     */
-    function getPendingChange(bytes32 proposalId) external view returns (uint256);
+    function requestRedistributionPoolUpdate(address newPool) external;
+    function executeRedistributionPoolUpdate(address newPool) external;
+    
+    function transferGovernanceRole(address newGovernance) external;
 }
