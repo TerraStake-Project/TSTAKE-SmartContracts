@@ -12,6 +12,7 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
  * @title TerraStakeLiquidityGuard
  * @notice Secure liquidity protection & auto-reinjection for the TerraStake ecosystem.
  * @dev Protects against flash loans, price manipulation, and excessive liquidity withdrawals.
+ *      This version adds TWAP-based cooldown protection before liquidity withdrawal.
  */
 contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
     using SafeMath for uint256;
@@ -70,6 +71,18 @@ contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
     mapping(address => bool) public liquidityWhitelist;
     mapping(address => uint256) public pendingCooldownChanges;
 
+    // ============================================================
+    // 🔹 TWAP-Based Liquidity Withdrawal Protection Variables
+    // ============================================================
+    struct WithdrawalRequest {
+        uint256 tokenId;
+        uint256 amount;
+        uint256 requestTime;
+        uint256 requestPrice;
+    }
+    mapping(address => WithdrawalRequest) public pendingWithdrawal;
+    uint256 public constant TWAP_COOLDOWN = 24 hours; // TWAP observation period
+
     // ================================
     // 🔹 Events for Transparency
     // ================================
@@ -84,6 +97,10 @@ contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
     event CircuitBreakerTriggered();
     event PriceDeviationDetected();
     event TWAPVerificationFailed();
+
+    // New events for the TWAP-based withdrawal process
+    event WithdrawalRequested(address indexed user, uint256 tokenId, uint256 amount, uint256 requestTime, uint256 requestPrice);
+    event WithdrawalExecuted(address indexed user, uint256 tokenId, uint256 amount, uint256 executionPrice);
 
     // ================================
     // 🔹 Constructor
@@ -121,8 +138,7 @@ contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
             dailyWithdrawalVolume = 0;
             lastVolumeResetTime = block.timestamp;
         }
-
-        dailyWithdrawalVolume += withdrawalAmount;
+        dailyWithdrawalVolume = dailyWithdrawalVolume.add(withdrawalAmount);
         if (dailyWithdrawalVolume > MAX_DAILY_VOLUME) {
             emit CircuitBreakerTriggered();
             revert("Circuit Breaker: Exceeded max daily withdrawal volume");
@@ -131,12 +147,10 @@ contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
 
     function _checkPriceDeviation() internal {
         if (block.timestamp < lastPriceCheckTime + PRICE_CHECK_INTERVAL) return;
-
         int256 currentPrice = _getUniswapPrice();
         int256 priceChange = (currentPrice * 100) / lastCheckedPrice - 100;
         lastCheckedPrice = currentPrice;
         lastPriceCheckTime = block.timestamp;
-
         if (priceChange > int256(MAX_PRICE_IMPACT) || priceChange < -int256(MAX_PRICE_IMPACT)) {
             emit PriceDeviationDetected();
             revert("Price deviation too high");
@@ -148,25 +162,71 @@ contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
         return price;
     }
 
-    // ================================
-    // 🔹 Liquidity Withdrawal with TWAP & Cooldown Control
-    // ================================
-    function withdrawLiquidity(uint256 tokenId, uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+    // ====================================================
+    // 🔹 TWAP-Based Liquidity Withdrawal: Request Phase
+    // ====================================================
+    function requestLiquidityWithdrawal(uint256 tokenId, uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
         require(liquidityWhitelist[msg.sender], "Not whitelisted");
-
         _checkCircuitBreaker(amount);
-        _checkPriceDeviation();
-        
+
+        // Ensure liquidity is unlocked based on the liquidity lock settings
         LiquidityLock storage lock = liquidityLocks[tokenId];
         require(block.timestamp >= lock.unlockStart, "Liquidity still locked");
 
-        uint256 elapsedTime = block.timestamp - lock.unlockStart;
-        uint256 totalUnlocked = (lock.releaseRate * elapsedTime) / (lock.unlockEnd - lock.unlockStart);
-        require(amount <= totalUnlocked, "Exceeds unlocked amount");
+        int256 currentPrice = _getUniswapPrice();
+        require(currentPrice > 0, "Invalid price");
 
-        userLiquidity[msg.sender] = userLiquidity[msg.sender].sub(amount);
+        pendingWithdrawal[msg.sender] = WithdrawalRequest({
+            tokenId: tokenId,
+            amount: amount,
+            requestTime: block.timestamp,
+            requestPrice: uint256(currentPrice)
+        });
 
-        emit LiquidityRemoved(msg.sender, amount, amount);
+        emit WithdrawalRequested(msg.sender, tokenId, amount, block.timestamp, uint256(currentPrice));
+    }
+
+    // ====================================================
+    // 🔹 TWAP-Based Liquidity Withdrawal: Execution Phase
+    // ====================================================
+    function executeLiquidityWithdrawal() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        WithdrawalRequest storage req = pendingWithdrawal[msg.sender];
+        require(req.requestTime != 0, "No pending withdrawal");
+        require(block.timestamp >= req.requestTime + TWAP_COOLDOWN, "TWAP cooldown period not elapsed");
+
+        int256 currentPriceInt = _getUniswapPrice();
+        require(currentPriceInt > 0, "Invalid price");
+        uint256 currentPrice = uint256(currentPriceInt);
+
+        // Calculate percentage deviation between current price and the price at request time
+        uint256 priceDeviation = calculatePriceDeviation(currentPrice, req.requestPrice);
+        require(priceDeviation <= MAX_PRICE_IMPACT, "Price deviation too high");
+
+        // Re-check liquidity lock details
+        LiquidityLock storage lock = liquidityLocks[req.tokenId];
+        require(block.timestamp >= lock.unlockStart, "Liquidity still locked");
+        uint256 elapsedTime = block.timestamp.sub(lock.unlockStart);
+        uint256 totalUnlocked = lock.releaseRate.mul(elapsedTime).div(lock.unlockEnd.sub(lock.unlockStart));
+        require(req.amount <= totalUnlocked, "Exceeds unlocked amount");
+
+        // Update liquidity provided by the user
+        userLiquidity[msg.sender] = userLiquidity[msg.sender].sub(req.amount);
+
+        emit LiquidityRemoved(msg.sender, req.amount, req.amount);
+        emit WithdrawalExecuted(msg.sender, req.tokenId, req.amount, currentPrice);
+
+        delete pendingWithdrawal[msg.sender];
+    }
+
+    // ====================================================
+    // 🔹 Helper: Calculate Price Deviation Percentage
+    // ====================================================
+    function calculatePriceDeviation(uint256 currentPrice, uint256 basePrice) public pure returns (uint256) {
+        if (currentPrice >= basePrice) {
+            return currentPrice.sub(basePrice).mul(100).div(basePrice);
+        } else {
+            return basePrice.sub(currentPrice).mul(100).div(basePrice);
+        }
     }
 
     // ================================
@@ -194,4 +254,3 @@ contract TerraStakeLiquidityGuard is AccessControl, ReentrancyGuard {
         liquidityWhitelist[user] = status;
     }
 }
-
