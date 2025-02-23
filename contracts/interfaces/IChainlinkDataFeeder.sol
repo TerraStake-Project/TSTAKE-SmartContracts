@@ -1,103 +1,139 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-/**
- * @dev This interface matches the final "ChainlinkDataFeeder" contract,
- *      including extra fields (like decimals) in DataFeed, the updated function names, 
- *      and the public variables/getters.
- */
 interface IChainlinkDataFeeder {
-    // -------------------------------------------------------
-    // Struct
-    // -------------------------------------------------------
-    /**
-     * @dev Per-project data feed configuration
-     */
-    struct DataFeed {
-        address aggregator;
-        bool active;
-        uint8 decimals;
+    // ------------------------------------------------------------------------
+    // 🔹 Events for Transparency & Monitoring
+    // ------------------------------------------------------------------------
+    event DataUpdated(address indexed feed, int256 value, uint256 timestamp);
+    event ProjectDataUpdated(uint256 indexed projectId, int256 value, uint256 timestamp);
+    event FeedActivationUpdated(address indexed feed, bool active);
+    event OracleChangeRequested(address indexed feed, uint256 unlockTime);
+    event OracleChangeConfirmed(address indexed feed);
+    event CircuitBreakerTriggered(address indexed feed, uint256 failureCount);
+    event TWAPViolationDetected(int256 reportedPrice, int256 TWAP);
+    event CrossChainDataValidated(address indexed feed, bytes32 crossChainId, bool valid);
+    event PerformanceMetricsUpdated(address indexed feed, uint256 reliability, uint256 latency, uint256 deviation);
+    event GovernanceStatusChecked(bool status);
+    event PriceImpactValidated(address feed, bool isValid);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Governance Roles for Access Control
+    // ------------------------------------------------------------------------
+    function DEFAULT_ADMIN_ROLE() external pure returns (bytes32);
+    function DEVICE_MANAGER_ROLE() external pure returns (bytes32);
+    function DATA_MANAGER_ROLE() external pure returns (bytes32);
+    function GOVERNANCE_ROLE() external pure returns (bytes32);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Oracle Data & Feeds Management
+    // ------------------------------------------------------------------------
+    function lastKnownPrice(address feed) external view returns (int256);
+    function activeFeeds(address feed) external view returns (bool);
+    function feedFailures(address feed) external view returns (uint256);
+    function pendingOracleChanges(bytes32 requestId) external view returns (uint256);
+
+    function terraStakeProjects() external view returns (address);
+    function terraStakeToken() external view returns (address);
+    function liquidityGuard() external view returns (address);
+
+    function priceOracles(uint256 index) external view returns (address);
+    function priceOraclesLength() external view returns (uint256);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Oracle Data Analytics & Performance Tracking
+    // ------------------------------------------------------------------------
+    struct FeedAnalytics {
+        uint256 updateCount;
+        uint256 lastValidation;
+        int256[] priceHistory;
+        uint256 reliabilityScore;
     }
 
-    // -------------------------------------------------------
-    // Events
-    // -------------------------------------------------------
-    event DataFeedUpdated(uint256 indexed projectId, address indexed aggregator, bool active, uint8 decimals);
-    event DataFedToTerraStake(uint256 indexed projectId, int256 value, uint256 timestamp);
-    event StaleThresholdUpdated(uint256 newThreshold);
-    event PriceFeedUpdated(string indexed feedType, address indexed aggregator, bool active, uint8 decimals);
-
-    // -------------------------------------------------------
-    // Core Functions
-    // -------------------------------------------------------
-    /**
-     * @notice Sets or updates a data feed for a given project.
-     */
-    function setDataFeed(
-        uint256 projectId, 
-        address aggregator, 
-        bool active, 
-        uint8 decimals
-    ) external;
-
-    /**
-     * @notice Updates one of the base price feeds (TSTAKE, USDC, ETH).
-     */
-    function updatePriceFeed(
-        string calldata feedType, 
-        address aggregator, 
-        bool active,
-        uint8 decimals
-    ) external;
-
-    /**
-     * @notice Feeds the latest aggregator data to TerraStakeProjects for a single project.
-     */
-    function feedDataToTerraStake(uint256 projectId) external;
-
-    /**
-     * @notice (Optional) Feeds data in batch for multiple projects.
-     */
-    function feedAllActiveProjectsData(uint256[] calldata projectIds) external;
-
-    /**
-     * @notice Update the allowable data staleness threshold (in seconds).
-     */
-    function updateStaleThreshold(uint256 newThreshold) external;
-
-    // -------------------------------------------------------
-    // View Functions
-    // -------------------------------------------------------
-    /**
-     * @notice Returns the latest TSTAKE aggregator price.
-     */
-    function getTStakePrice() external view returns (int256);
-
-    /**
-     * @notice Returns the latest USDC aggregator price.
-     */
-    function getUSDCPrice() external view returns (int256);
-
-    /**
-     * @notice Returns the latest ETH aggregator price.
-     */
-    function getETHPrice() external view returns (int256);
-
-    /**
-     * @notice Public getters for last fed data (value) and timestamp.
-     *         Since they are public mappings in the contract, 
-     *         we expose the same function signatures here.
-     */
-    function lastDataValue(uint256 projectId) external view returns (int256);
-    function lastUpdateTimestamp(uint256 projectId) external view returns (uint256);
-
-    /**
-     * @notice Returns the project feed details. 
-     *         Matches the public `projectFeeds` mapping in the contract.
-     */
-    function projectFeeds(uint256 projectId) external view returns (
-        address aggregator,
-        bool active,
-        uint8 decimals
+    function feedAnalytics(address feed) external view returns (
+        uint256 updateCount,
+        uint256 lastValidation,
+        uint256 reliabilityScore
     );
+
+    function getFeedPerformanceMetrics(address feed) external view returns (
+        uint256 reliability,
+        uint256 latency,
+        uint256 deviation
+    );
+
+    // ------------------------------------------------------------------------
+    // 🔹 Cross-Chain Data Validation
+    // ------------------------------------------------------------------------
+    function crossChainData(bytes32 crossChainId) external view returns (int256);
+    function validateCrossChainData(address feed, bytes32 crossChainId) external returns (bool);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Project Category Support
+    // ------------------------------------------------------------------------
+    enum ProjectCategory {
+        RENEWABLES, 
+        CARBON_CREDITS, 
+        ESG_SCORING, 
+        ENERGY_STORAGE, 
+        WATER_MANAGEMENT
+    }
+
+    function setCategoryFeed(ProjectCategory category, address feed, bool active) external;
+    function categoryFeeds(ProjectCategory category, address feed) external view returns (bool);
+    function categoryThresholds(ProjectCategory category) external view returns (int256);
+    function validateCategoryData(ProjectCategory category, int256 value) external view returns (bool);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Initialization & Configuration
+    // ------------------------------------------------------------------------
+    function initializeFeeds(
+        address _terraStakeProjects,
+        address _terraStakeToken,
+        address _liquidityGuard,
+        address[] calldata _oracles
+    ) external;
+
+    // ------------------------------------------------------------------------
+    // 🔹 Data Feeds Management & Oracle Updates
+    // ------------------------------------------------------------------------
+    function updateData(address feed) external;
+    function updateProjectData(uint256 projectId) external;
+    function toggleFeed(address feed, bool active) external;
+    function getLatestPrice(address feed) external view returns (int256);
+    function validateDataFeed(address feed) external returns (bool);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Multi-Oracle TWAP Validation
+    // ------------------------------------------------------------------------
+    function validatePriceWithTWAP(address feed, int256 reportedPrice) external returns (bool);
+    function calculateExtendedTWAP(address feed, uint256 period) external view returns (int256);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Governance-Controlled Oracle Management (Timelock Protected)
+    // ------------------------------------------------------------------------
+    function requestOracleChange(address feed) external;
+    function confirmOracleChange(address feed) external;
+
+    // ------------------------------------------------------------------------
+    // 🔹 Data Validation & Governance Integration
+    // ------------------------------------------------------------------------
+    function validateDataWithLiquidityGuard(int256 price) external view returns (bool);
+    function checkGovernanceStatus() external view returns (bool);
+
+    // ------------------------------------------------------------------------
+    // 🔹 Data Validation & Chainlink Round Data
+    // ------------------------------------------------------------------------
+    function getFeedLatestRoundData(address feed) external view returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+    );
+
+    // ------------------------------------------------------------------------
+    // 🔹 Versioning & State Validation
+    // ------------------------------------------------------------------------
+    function getContractVersion() external pure returns (bytes32);
 }
