@@ -15,52 +15,73 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard, ERC1155Holder 
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
 
     uint256 public royaltyFee = 500; // 5%
+    uint256 public tradingVolume;
+    uint256 public totalListings;
+
     address public immutable royaltyRecipient;
     ITerraStakeToken public immutable tStakeToken;
     IERC1155 public immutable nftContract;
     uint256 public constant REWARD_AMOUNT = 10 * 10**18; // 10 TSTAKE tokens
 
-    mapping(address => bool) public supportedPaymentTokens;
+    bool public isPaused;
 
     struct Listing {
         address seller;
-        address paymentToken;
         uint256 price;
         uint256 amount;
         bool active;
+        uint256 expiry;
     }
-    mapping(address => mapping(uint256 => Listing)) public listings;
+    mapping(uint256 => Listing) public listings;
+
+    struct DutchAuction {
+        address seller;
+        uint256 startPrice;
+        uint256 reservePrice;
+        uint256 amount;
+        uint256 duration;
+        uint256 startTime;
+        bool active;
+    }
+    mapping(uint256 => DutchAuction) public dutchAuctions;
 
     struct Auction {
         address seller;
         address highestBidder;
-        address paymentToken;
         uint256 highestBid;
         uint256 minBid;
         uint256 amount;
         uint256 endTime;
         bool active;
     }
-    mapping(address => mapping(uint256 => Auction)) public auctions;
+    mapping(uint256 => Auction) public auctions;
 
-    struct ListingMetadata {
-        uint256 projectId;
-        uint256 impactValue;
+    // Trading analytics tracking
+    mapping(uint256 => uint256) public totalTradeVolume;
+    mapping(uint256 => uint256[]) public priceHistory;
+    mapping(uint256 => uint256) public lastTradePrice;
+    mapping(uint256 => uint256) public rewardPoints;
+
+    event NFTListed(uint256 indexed tokenId, address indexed seller, uint256 amount, uint256 price, uint256 expiry);
+    event NFTPurchased(uint256 indexed tokenId, address indexed buyer, uint256 amount, uint256 price);
+    event NFTDelisted(uint256 indexed tokenId);
+    event DutchAuctionCreated(uint256 indexed tokenId, uint256 startPrice, uint256 reservePrice, uint256 duration);
+    event DutchAuctionFinalized(uint256 indexed tokenId, address indexed buyer, uint256 finalPrice);
+    event AuctionCreated(uint256 indexed tokenId, uint256 amount, uint256 minBid, uint256 endTime);
+    event BidPlaced(uint256 indexed tokenId, address indexed bidder, uint256 bid);
+    event AuctionFinalized(uint256 indexed tokenId, address indexed winner, uint256 finalBid);
+    event AuctionCancelled(uint256 indexed tokenId);
+    event TradingVolumeUpdated(uint256 newVolume);
+    event RoyaltyFeeUpdated(uint256 newRoyalty);
+    event EmergencyPaused(bool status);
+    event RewardDistributed(address indexed recipient, uint256 amount);
+
+    modifier notPaused() {
+        require(!isPaused, "Marketplace is paused");
+        _;
     }
-    mapping(address => mapping(uint256 => ListingMetadata)) public nftMetadata;
 
-    event NFTListed(address indexed nftContract, uint256 indexed tokenId, address indexed seller, uint256 amount, uint256 price, address paymentToken);
-    event NFTPurchased(address indexed nftContract, uint256 indexed tokenId, address indexed buyer, uint256 amount, uint256 price);
-    event NFTDelisted(address indexed nftContract, uint256 indexed tokenId);
-    event AuctionCreated(address indexed nftContract, uint256 indexed tokenId, uint256 amount, uint256 minBid, uint256 endTime, address paymentToken);
-    event BidPlaced(address indexed nftContract, uint256 indexed tokenId, address indexed bidder, uint256 bid);
-    event AuctionFinalized(address indexed nftContract, uint256 indexed tokenId, address indexed winner, uint256 finalBid);
-
-    constructor(
-        address _nftContract,
-        address _tStakeToken,
-        address _royaltyRecipient
-    ) {
+    constructor(address _nftContract, address _tStakeToken, address _royaltyRecipient) {
         require(_nftContract != address(0), "Invalid NFT contract");
         require(_tStakeToken != address(0), "Invalid TSTAKE token address");
         require(_royaltyRecipient != address(0), "Invalid royalty recipient");
@@ -73,86 +94,99 @@ contract TerraStakeMarketplace is AccessControl, ReentrancyGuard, ERC1155Holder 
         _grantRole(GOVERNANCE_ROLE, msg.sender);
     }
 
-    function listNFT(
-        uint256 tokenId,
-        uint256 amount,
-        uint256 price,
-        address paymentToken,
-        uint256 projectId,
-        uint256 impactValue
-    ) external nonReentrant {
-        require(amount > 0, "Amount must be greater than zero");
-        require(price > 0, "Price must be greater than zero");
-        require(supportedPaymentTokens[paymentToken], "Unsupported payment token");
-        require(nftContract.balanceOf(msg.sender, tokenId) >= amount, "You do not own this NFT");
-        require(nftContract.isApprovedForAll(msg.sender, address(this)), "Marketplace not approved");
-
-        require(!listings[address(nftContract)][tokenId].active, "NFT already listed");
-        require(!auctions[address(nftContract)][tokenId].active, "NFT is in an active auction");
-
-        listings[address(nftContract)][tokenId] = Listing({
-            seller: msg.sender,
-            paymentToken: paymentToken,
-            price: price,
-            amount: amount,
-            active: true
-        });
-
-        nftMetadata[address(nftContract)][tokenId] = ListingMetadata({
-            projectId: projectId,
-            impactValue: impactValue
-        });
-
-        emit NFTListed(address(nftContract), tokenId, msg.sender, amount, price, paymentToken);
+    // ====================================================
+    // 🔹 Trading Analytics & Market Performance
+    // ====================================================
+    function getPriceHistory(uint256 tokenId) external view returns (uint256[] memory) {
+        return priceHistory[tokenId];
     }
 
-    function purchaseNFT(uint256 tokenId) external nonReentrant {
-        Listing storage listedItem = listings[address(nftContract)][tokenId];
+    function getMarketPerformance(uint256 tokenId) external view returns (uint256 totalVolume, uint256 lastPrice) {
+        return (totalTradeVolume[tokenId], lastTradePrice[tokenId]);
+    }
+
+    function calculateRewards(address user) external view returns (uint256) {
+        return rewardPoints[user];
+    }
+
+    // ====================================================
+    // 🔹 NFT Trading & Rewards
+    // ====================================================
+    function purchaseNFT(uint256 tokenId) external notPaused nonReentrant {
+        Listing storage listedItem = listings[tokenId];
         require(listedItem.active, "NFT not listed");
+        require(block.timestamp <= listedItem.expiry, "Listing expired");
 
         uint256 totalPrice = listedItem.price * listedItem.amount;
         uint256 royaltyAmount = (totalPrice * royaltyFee) / 10000;
         uint256 sellerAmount = totalPrice - royaltyAmount;
 
-        IERC20 payment = IERC20(listedItem.paymentToken);
-        require(payment.transferFrom(msg.sender, royaltyRecipient, royaltyAmount), "Royalty transfer failed");
-        require(payment.transferFrom(msg.sender, listedItem.seller, sellerAmount), "Payment to seller failed");
+        require(tStakeToken.transferFrom(msg.sender, royaltyRecipient, royaltyAmount), "Royalty transfer failed");
+        require(tStakeToken.transferFrom(msg.sender, listedItem.seller, sellerAmount), "Payment to seller failed");
 
         nftContract.safeTransferFrom(listedItem.seller, msg.sender, tokenId, listedItem.amount, "");
 
-        delete listings[address(nftContract)][tokenId];
+        // Update market analytics
+        tradingVolume += totalPrice;
+        totalTradeVolume[tokenId] += totalPrice;
+        lastTradePrice[tokenId] = listedItem.price;
+        priceHistory[tokenId].push(listedItem.price);
 
+        // Reward buyers & sellers
+        rewardPoints[msg.sender] += REWARD_AMOUNT;
+        rewardPoints[listedItem.seller] += REWARD_AMOUNT;
         tStakeToken.transfer(msg.sender, REWARD_AMOUNT);
         tStakeToken.transfer(listedItem.seller, REWARD_AMOUNT);
 
-        emit NFTPurchased(address(nftContract), tokenId, msg.sender, listedItem.amount, totalPrice);
+        delete listings[tokenId];
+
+        emit NFTPurchased(tokenId, msg.sender, listedItem.amount, totalPrice);
+        emit TradingVolumeUpdated(tradingVolume);
+        emit RewardDistributed(msg.sender, REWARD_AMOUNT);
+        emit RewardDistributed(listedItem.seller, REWARD_AMOUNT);
     }
 
-    function finalizeAuction(uint256 tokenId) external nonReentrant {
-        Auction storage auction = auctions[address(nftContract)][tokenId];
+    // ====================================================
+    // 🔹 Dutch Auction System
+    // ====================================================
+    function finalizeDutchAuction(uint256 tokenId) external notPaused nonReentrant {
+        DutchAuction storage auction = dutchAuctions[tokenId];
         require(auction.active, "Auction not active");
-        require(block.timestamp >= auction.endTime, "Auction not ended");
 
-        auction.active = false;
+        uint256 elapsedTime = block.timestamp - auction.startTime;
+        uint256 priceDrop = ((auction.startPrice - auction.reservePrice) * elapsedTime) / auction.duration;
+        uint256 currentPrice = auction.startPrice - priceDrop;
 
-        if (auction.highestBid == 0) {
-            emit AuctionFinalized(address(nftContract), tokenId, address(0), 0);
-            return;
+        if (currentPrice < auction.reservePrice) {
+            currentPrice = auction.reservePrice;
         }
 
-        IERC20 payment = IERC20(auction.paymentToken);
-        uint256 royaltyAmount = (auction.highestBid * royaltyFee) / 10000;
-        uint256 sellerAmount = auction.highestBid - royaltyAmount;
+        require(tStakeToken.transferFrom(msg.sender, auction.seller, currentPrice), "Payment failed");
 
-        require(payment.transfer(royaltyRecipient, royaltyAmount), "Royalty transfer failed");
-        require(payment.transfer(auction.seller, sellerAmount), "Payment to seller failed");
+        nftContract.safeTransferFrom(auction.seller, msg.sender, tokenId, auction.amount, "");
+        auction.active = false;
 
-        nftContract.safeTransferFrom(auction.seller, auction.highestBidder, tokenId, auction.amount, "");
+        // Update analytics
+        tradingVolume += currentPrice;
+        totalTradeVolume[tokenId] += currentPrice;
+        lastTradePrice[tokenId] = currentPrice;
+        priceHistory[tokenId].push(currentPrice);
 
-        emit AuctionFinalized(address(nftContract), tokenId, auction.highestBidder, auction.highestBid);
+        emit DutchAuctionFinalized(tokenId, msg.sender, currentPrice);
+        emit TradingVolumeUpdated(tradingVolume);
     }
 
-    function supportsInterface(bytes4 interfaceId) public view virtual override(AccessControl, ERC1155Holder) returns (bool) {
-        return super.supportsInterface(interfaceId);
+    // ====================================================
+    // 🔹 Security & Governance
+    // ====================================================
+    function updateRoyaltyFee(uint256 newRoyalty) external onlyRole(GOVERNANCE_ROLE) {
+        require(newRoyalty <= 1000, "Max 10%");
+        royaltyFee = newRoyalty;
+        emit RoyaltyFeeUpdated(newRoyalty);
+    }
+
+    function togglePause() external onlyRole(GOVERNANCE_ROLE) {
+        isPaused = !isPaused;
+        emit EmergencyPaused(isPaused);
     }
 }
