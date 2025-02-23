@@ -4,21 +4,18 @@ pragma solidity 0.8.26;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./interfaces/ITerraStakeToken.sol";
 
 /**
  * @title TerraStakeToken
  * @notice Official TerraStake Token (TSTAKE) for the TerraStake ecosystem.
- * @dev Non-upgradable ERC20 contract with governance, liquidity injection, and staking mechanics.
- * 
- * Features:
- * ✅ 3B Max Supply
- * ✅ Auto Liquidity Injection to Uniswap v3
- * ✅ Dynamic Liquidity Fee (Based on Trading Volume)
- * ✅ Secure Governance & Emergency Controls
+ * @dev This contract manages governance, staking rewards, and liquidity provisioning.
+ * It integrates directly with Uniswap v3 for automatic liquidity injection.
  */
-contract TerraStakeToken is ERC20, AccessControl, Pausable {
+contract TerraStakeToken is ERC20, AccessControl, Pausable, ITerraStakeToken {
     // ================================
     // 🔹 Token Metadata & Supply
     // ================================
@@ -34,7 +31,7 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
     uint256 public liquidityFee;
     uint256 public minLiquidityFee;
     uint256 public maxLiquidityFee;
-    uint256 public tradingVolume;  // Tracks 24-hour trading volume for dynamic fee adjustments
+    uint256 public tradingVolume;
     uint256 public lastFeeUpdateTime;
 
     // ================================
@@ -44,16 +41,14 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
-    uint256 public governanceThreshold;
-
     struct Proposal {
         address proposer;
         uint256 newLiquidityFee;
         uint256 endTime;
         bool executed;
     }
-
     Proposal[] public proposals;
+    uint256 public governanceThreshold;
 
     // ================================
     // 🔹 Events
@@ -65,7 +60,7 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
     event GovernanceFailed(uint256 proposalId, string reason);
 
     // ================================
-    // 🔹 Constructor (Replaces `initialize`)
+    // 🔹 Constructor (Non-Upgradable)
     // ================================
     constructor(
         address admin,
@@ -93,15 +88,14 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
         usdcToken = IERC20(_usdcToken);
 
         governanceThreshold = 1_000_000 * 10**18; // 1M TSTAKE for governance proposals
-
-        // Mint all tokens to admin (This ensures max supply is set)
-        _mint(admin, MAX_CAP);
     }
 
     // ================================
     // 🔹 Liquidity Management
     // ================================
     function _transfer(address sender, address recipient, uint256 amount) internal override {
+        require(balanceOf(sender) >= amount, "Insufficient balance");
+
         uint256 fee = (amount * liquidityFee) / 100;
         uint256 transferAmount = amount - fee;
 
@@ -113,7 +107,7 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
     }
 
     function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external onlyRole(GOVERNANCE_ROLE) {
-        require(usdcAmount > 0 && tStakeAmount > 0, "Amounts must be greater than zero");
+        require(usdcAmount > 0 && tStakeAmount > 0, "Invalid amounts");
 
         usdcToken.transferFrom(msg.sender, address(this), usdcAmount);
         _mint(address(this), tStakeAmount);
@@ -138,6 +132,31 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
     // ================================
     // 🔹 Governance & Security
     // ================================
+    function proposeFeeAdjustment(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
+        require(newFee >= minLiquidityFee && newFee <= maxLiquidityFee, "Fee out of range");
+
+        uint256 proposalId = proposals.length;
+        proposals.push(Proposal({
+            proposer: msg.sender,
+            newLiquidityFee: newFee,
+            endTime: block.timestamp + 3 days,
+            executed: false
+        }));
+
+        emit ProposalCreated(proposalId, msg.sender, newFee, block.timestamp + 3 days);
+    }
+
+    function executeProposal(uint256 proposalId) external onlyRole(GOVERNANCE_ROLE) {
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed, "Already executed");
+        require(block.timestamp >= proposal.endTime, "Voting period not ended");
+
+        liquidityFee = proposal.newLiquidityFee;
+        proposal.executed = true;
+
+        emit ProposalExecuted(proposalId, proposal.newLiquidityFee);
+    }
+
     function pause() external onlyRole(EMERGENCY_ROLE) {
         _pause();
     }
@@ -146,29 +165,8 @@ contract TerraStakeToken is ERC20, AccessControl, Pausable {
         _unpause();
     }
 
-    function proposeFeeAdjustment(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
-        require(newFee >= minLiquidityFee && newFee <= maxLiquidityFee, "Fee out of bounds");
-        
-        proposals.push(Proposal({
-            proposer: msg.sender,
-            newLiquidityFee: newFee,
-            endTime: block.timestamp + 3 days,
-            executed: false
-        }));
-
-        emit ProposalCreated(proposals.length - 1, msg.sender, newFee, block.timestamp + 3 days);
-    }
-
-    function executeProposal(uint256 proposalId) external onlyRole(GOVERNANCE_ROLE) {
-        require(proposalId < proposals.length, "Invalid proposal");
-        Proposal storage proposal = proposals[proposalId];
-        require(!proposal.executed, "Already executed");
-        require(block.timestamp >= proposal.endTime, "Proposal not ready");
-
-        liquidityFee = proposal.newLiquidityFee;
-        proposal.executed = true;
-
-        emit ProposalExecuted(proposalId, proposal.newLiquidityFee);
+    function officialInfo() external pure returns (string memory) {
+        return "This is the official TerraStake Token (TSTAKE), deployed and maintained by the TerraStake team.";
     }
 
     function verifyOwner() external pure returns (string memory) {
