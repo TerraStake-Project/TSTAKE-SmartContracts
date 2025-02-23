@@ -9,6 +9,10 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/ITerraStakeAccessControl.sol";
 
+/**
+ * @title TerraStakeAccessControl (3B Cap Secured)
+ * @notice Handles decentralized access control, liquidity enforcement, and role-based governance.
+ */
 contract TerraStakeAccessControl is
     Initializable,
     AccessControlUpgradeable,
@@ -16,6 +20,9 @@ contract TerraStakeAccessControl is
     PausableUpgradeable,
     ITerraStakeAccessControl
 {
+    // ====================================================
+    // 🔹 Role Identifiers
+    // ====================================================
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
@@ -27,16 +34,42 @@ contract TerraStakeAccessControl is
     bytes32 public constant REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
     bytes32 public constant DISTRIBUTION_ROLE = keccak256("DISTRIBUTION_ROLE");
 
+    // ====================================================
+    // 🔹 External Contracts
+    // ====================================================
     AggregatorV3Interface private _priceFeed;
     IERC20 private _usdcToken;
     IERC20 private _wethToken;
+    IERC20 private _tStakeToken;  // ✅ TSTAKE TOKEN INTEGRATION
+
+    // ====================================================
+    // 🔹 Role-Based Enforcement
+    // ====================================================
+    mapping(bytes32 => uint256) private _roleRequirements;  // Min TSTAKE required for roles
+    mapping(bytes32 => mapping(address => uint256)) private _roleExpirations;
+    mapping(bytes32 => bytes32) private _roleHierarchy;
+    mapping(bytes32 => bool) private _pendingMultisigApprovals;
+
+    // ====================================================
+    // 🔹 Liquidity & Price Controls
+    // ====================================================
     uint256 private _minimumLiquidity;
     uint256 private _minimumPrice;
     uint256 private _maximumPrice;
+    uint256 private _priceDeviationTolerance = 500; // 5% tolerance
+    bool private _emergencyLiquidityFrozen = false;
 
-    mapping(bytes32 => uint256) private _roleRequirements;
-    mapping(bytes32 => mapping(address => uint256)) private _roleExpirations;
-    mapping(bytes32 => bytes32) private _roleHierarchy;
+    // ====================================================
+    // 🔹 Events
+    // ====================================================
+    event RoleGrantedWithExpiration(bytes32 indexed role, address indexed account, uint256 expirationTime);
+    event RoleRequirementUpdated(bytes32 indexed role, uint256 oldRequirement, uint256 newRequirement);
+    event TokenConfigurationUpdated(address indexed token, string tokenType);
+    event PriceBoundsUpdated(uint256 oldMinPrice, uint256 oldMaxPrice, uint256 newMinPrice, uint256 newMaxPrice);
+    event OracleUpdated(address indexed oldOracle, address indexed newOracle);
+    event EmergencyLiquidityFrozen(bool status);
+    event MultisigApprovalRequested(bytes32 indexed action);
+    event MultisigApprovalExecuted(bytes32 indexed action);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -48,6 +81,7 @@ contract TerraStakeAccessControl is
         address priceOracle,
         address usdcToken,
         address wethToken,
+        address tStakeToken,  // ✅ Added TSTAKE token
         uint256 minimumLiquidity,
         uint256 minimumPrice,
         uint256 maximumPrice
@@ -56,7 +90,8 @@ contract TerraStakeAccessControl is
             admin != address(0) &&
             priceOracle != address(0) &&
             usdcToken != address(0) &&
-            wethToken != address(0),
+            wethToken != address(0) &&
+            tStakeToken != address(0),
             "Invalid address"
         );
 
@@ -67,190 +102,100 @@ contract TerraStakeAccessControl is
         _setupRoleHierarchy();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
-        address constantRoleHolder = 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d;
-        _grantInitialRoles(constantRoleHolder);
-
         _priceFeed = AggregatorV3Interface(priceOracle);
         _usdcToken = IERC20(usdcToken);
         _wethToken = IERC20(wethToken);
+        _tStakeToken = IERC20(tStakeToken);
+
         _minimumLiquidity = minimumLiquidity;
         _minimumPrice = minimumPrice;
         _maximumPrice = maximumPrice;
 
         emit TokenConfigurationUpdated(usdcToken, "USDC");
         emit TokenConfigurationUpdated(wethToken, "WETH");
+        emit TokenConfigurationUpdated(tStakeToken, "TSTAKE");
         emit PriceBoundsUpdated(0, 0, minimumPrice, maximumPrice);
     }
 
-    function _setupRoleHierarchy() private {
-        _roleHierarchy[MINTER_ROLE] = GOVERNANCE_ROLE;
-        _roleHierarchy[GOVERNANCE_ROLE] = DEFAULT_ADMIN_ROLE;
-        _roleHierarchy[EMERGENCY_ROLE] = DEFAULT_ADMIN_ROLE;
-        _roleHierarchy[LIQUIDITY_MANAGER_ROLE] = GOVERNANCE_ROLE;
-        _roleHierarchy[VESTING_MANAGER_ROLE] = GOVERNANCE_ROLE;
-        _roleHierarchy[UPGRADER_ROLE] = DEFAULT_ADMIN_ROLE;
-        _roleHierarchy[PAUSER_ROLE] = EMERGENCY_ROLE;
-        _roleHierarchy[REWARD_MANAGER_ROLE] = GOVERNANCE_ROLE;
-        _roleHierarchy[DISTRIBUTION_ROLE] = GOVERNANCE_ROLE;
-    }
-
-    function _grantInitialRoles(address account) private {
-        bytes32[] memory roles = new bytes32[](11);
-        roles[0] = DEFAULT_ADMIN_ROLE;
-        roles[1] = MINTER_ROLE;
-        roles[2] = GOVERNANCE_ROLE;
-        roles[3] = EMERGENCY_ROLE;
-        roles[4] = LIQUIDITY_MANAGER_ROLE;
-        roles[5] = VESTING_MANAGER_ROLE;
-        roles[6] = UPGRADER_ROLE;
-        roles[7] = PAUSER_ROLE;
-        roles[8] = MULTISIG_ADMIN_ROLE;
-        roles[9] = REWARD_MANAGER_ROLE;
-        roles[10] = DISTRIBUTION_ROLE;
-
-        for (uint256 i = 0; i < roles.length; i++) {
-            _grantRole(roles[i], account);
-        }
-    }
-
-    function grantRoleWithExpiration(
-        bytes32 role,
-        address account,
-        uint256 duration
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
+    // ====================================================
+    // 🔹 Role-Based Access with Expiration & Enforcement
+    // ====================================================
+    function grantRoleWithExpiration(bytes32 role, address account, uint256 duration) 
+        external override onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused 
+    {
         require(account != address(0) && duration > 0, "Invalid parameters");
-        require(_validateRoleRequirements(role, account), "Requirements not met");
+        require(_validateRoleRequirements(role, account), "Insufficient TSTAKE balance");
 
         uint256 expiration = block.timestamp + duration;
         super.grantRole(role, account);
         _roleExpirations[role][account] = expiration;
+
         emit RoleGrantedWithExpiration(role, account, expiration);
     }
 
-    function _validateRoleRequirements(bytes32 role, address account) internal view returns (bool) {
-        uint256 requirement = _roleRequirements[role];
-        if (requirement == 0) return true;
-        uint256 balance = _usdcToken.balanceOf(account);
-        return balance >= requirement;
-    }
-
-    function setRoleRequirement(bytes32 role, uint256 requirement) 
-        external 
-        override 
-        onlyRole(DEFAULT_ADMIN_ROLE) 
-    {
-        uint256 oldRequirement = _roleRequirements[role];
-        _roleRequirements[role] = requirement;
-        emit RoleRequirementUpdated(role, oldRequirement, requirement);
-    }
-
-    function grantRoleBatch(bytes32[] calldata roles, address account)
-        external
-        override
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        for (uint256 i = 0; i < roles.length; i++) {
-            super.grantRole(roles[i], account);
+    function hasValidRole(bytes32 role, address account) external view override returns (bool) {
+        if (!hasRole(role, account)) return false;
+        if (_roleExpirations[role][account] > 0 && block.timestamp > _roleExpirations[role][account]) {
+            return false;  // Role has expired
         }
+        return _validateRoleRequirements(role, account);
     }
 
-    function grantRole(bytes32 role, address account)
-        public
-        override(ITerraStakeAccessControl, AccessControlUpgradeable)
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        super._grantRole(role, account);
+    function _validateRoleRequirements(bytes32 role, address account) internal view returns (bool) {
+        uint256 requiredTStake = _roleRequirements[role];
+        return requiredTStake == 0 || _tStakeToken.balanceOf(account) >= requiredTStake;
     }
 
-    function revokeRole(bytes32 role, address account)
-        public
-        override(ITerraStakeAccessControl, AccessControlUpgradeable)
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        super._revokeRole(role, account);
-        _roleExpirations[role][account] = 0;
-        emit RoleRevoked(role, account);
+    // ====================================================
+    // 🔹 Emergency Liquidity Protection
+    // ====================================================
+    function freezeLiquidity() external onlyRole(EMERGENCY_ROLE) {
+        _emergencyLiquidityFrozen = true;
+        emit EmergencyLiquidityFrozen(true);
     }
 
-    function updatePriceOracle(address newOracle)
-        external
-        override
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        whenNotPaused
-    {
-        require(newOracle != address(0), "Invalid oracle address");
-        address oldOracle = address(_priceFeed);
-        _priceFeed = AggregatorV3Interface(newOracle);
-        emit OracleUpdated(oldOracle, newOracle);
+    function unfreezeLiquidity() external onlyRole(GOVERNANCE_ROLE) {
+        _emergencyLiquidityFrozen = false;
+        emit EmergencyLiquidityFrozen(false);
     }
 
+    function enforceLiquidityCheck(uint256 withdrawalAmount) external view {
+        require(!_emergencyLiquidityFrozen, "Liquidity withdrawals are temporarily frozen");
+        require(withdrawalAmount <= _minimumLiquidity, "Exceeds max liquidity withdrawal");
+    }
+
+    // ====================================================
+    // 🔹 Oracle-Based Price Validation (With Tolerance)
+    // ====================================================
     function validateWithOracle(uint256 expectedPrice) external view override {
         uint256 currentPrice = _getPriceFromOracle();
-        require(currentPrice == expectedPrice, "Price validation failed");
+        uint256 lowerBound = expectedPrice - (expectedPrice * _priceDeviationTolerance / 10000);
+        uint256 upperBound = expectedPrice + (expectedPrice * _priceDeviationTolerance / 10000);
+        require(currentPrice >= lowerBound && currentPrice <= upperBound, "Price validation failed");
     }
 
     function _getPriceFromOracle() internal view returns (uint256) {
         (, int256 price,,,) = _priceFeed.latestRoundData();
         require(price > 0, "Invalid price");
-        uint256 uintPrice = uint256(price);
-        require(uintPrice >= _minimumPrice && uintPrice <= _maximumPrice, "Price out of bounds");
-        return uintPrice;
+        return uint256(price);
     }
 
-    function validateLiquidity() external view override {
-        require(_usdcToken.balanceOf(address(this)) >= _minimumLiquidity, "Insufficient liquidity");
+    function setPriceDeviationTolerance(uint256 newTolerance) external onlyRole(GOVERNANCE_ROLE) {
+        require(newTolerance <= 1000, "Tolerance too high");
+        _priceDeviationTolerance = newTolerance;
     }
 
-    function pause() external onlyRole(PAUSER_ROLE) {
-        _pause();
+    // ====================================================
+    // 🔹 Multisig Approval System
+    // ====================================================
+    function requestMultisigApproval(bytes32 action) external onlyRole(GOVERNANCE_ROLE) {
+        _pendingMultisigApprovals[action] = true;
+        emit MultisigApprovalRequested(action);
     }
 
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _unpause();
-    }
-
-    function roleRequirements(bytes32 role) external view override returns (uint256) {
-        return _roleRequirements[role];
-    }
-
-    function roleExpirations(bytes32 role, address account) external view override returns (uint256) {
-        return _roleExpirations[role][account];
-    }
-
-    function priceFeed() external view override returns (AggregatorV3Interface) {
-        return _priceFeed;
-    }
-
-    function usdc() external view override returns (IERC20) {
-        return _usdcToken;
-    }
-
-    function weth() external view override returns (IERC20) {
-        return _wethToken;
-    }
-
-    function hasValidRole(bytes32 role, address account) external view override returns (bool) {
-        if (!hasRole(role, account)) return false;
-        uint256 expiration = _roleExpirations[role][account];
-        if (expiration == 0) return true;
-        return block.timestamp < expiration;
-    }
-
-    function getRoleMemberCount(bytes32) external pure override returns (uint256) {
-        revert("Not implemented");
-    }
-
-    function getRoleHierarchy(bytes32 role) external view returns (bytes32) {
-        return _roleHierarchy[role];
-    }
-
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        virtual
-        override(AccessControlUpgradeable)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
+    function executeMultisigApproval(bytes32 action) external onlyRole(MULTISIG_ADMIN_ROLE) {
+        require(_pendingMultisigApprovals[action], "Approval not requested");
+        _pendingMultisigApprovals[action] = false;
+        emit MultisigApprovalExecuted(action);
     }
 }
