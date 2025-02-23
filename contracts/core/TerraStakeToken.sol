@@ -1,46 +1,35 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 
 /**
  * @title TerraStakeToken
  * @notice Official TerraStake Token (TSTAKE) for the TerraStake ecosystem.
- * @dev This contract manages governance, staking rewards, and liquidity provisioning.
- * It integrates directly with Uniswap v3 for automatic liquidity injection.
- * 
- * TerraStake is a decentralized staking and governance protocol, designed for scalable and efficient
- * liquidity management, ensuring fair governance participation and reward distribution.
+ * @dev Non-upgradable ERC20 contract with governance, liquidity injection, and staking mechanics.
  * 
  * Features:
  * ✅ 3B Max Supply
  * ✅ Auto Liquidity Injection to Uniswap v3
  * ✅ Dynamic Liquidity Fee (Based on Trading Volume)
- * ✅ Fully Upgradeable & Emergency Controls
- * ✅ Secure Governance & Staking Mechanisms
+ * ✅ Secure Governance & Emergency Controls
  */
-contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgradeable, PausableUpgradeable {
-    using SafeMath for uint256;
-
+contract TerraStakeToken is ERC20, AccessControl, Pausable {
     // ================================
     // 🔹 Token Metadata & Supply
     // ================================
-    string public constant TOKEN_NAME = "TerraStake Token";
-    string public constant TOKEN_SYMBOL = "TSTAKE";
     uint256 public constant MAX_CAP = 3_000_000_000 * 10**18; // ✅ 3B max supply
 
     // ================================
     // 🔹 Uniswap & Liquidity Management
     // ================================
-    address public liquidityPool;
-    ISwapRouter public uniswapRouter;
-    IERC20 public usdcToken;
+    address public immutable liquidityPool;
+    ISwapRouter public immutable uniswapRouter;
+    IERC20 public immutable usdcToken;
 
     uint256 public liquidityFee;
     uint256 public minLiquidityFee;
@@ -51,13 +40,11 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
     // ================================
     // 🔹 Security & Governance
     // ================================
-    uint256 public constant MIN_EXECUTION_DELAY = 1 days;
-    uint256 public constant MAX_EXECUTION_DELAY = 7 days;
-    uint256 public constant PRECISION = 1e18;
-
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
+
+    uint256 public governanceThreshold;
 
     struct Proposal {
         address proposer;
@@ -65,8 +52,8 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
         uint256 endTime;
         bool executed;
     }
+
     Proposal[] public proposals;
-    uint256 public governanceThreshold;
 
     // ================================
     // 🔹 Events
@@ -78,24 +65,20 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
     event GovernanceFailed(uint256 proposalId, string reason);
 
     // ================================
-    // 🔹 Initialization
+    // 🔹 Constructor (Replaces `initialize`)
     // ================================
-    function initialize(
+    constructor(
         address admin,
         address _uniswapRouter,
         address _liquidityPool,
         address _usdcToken,
         uint256 _minLiquidityFee,
         uint256 _maxLiquidityFee
-    ) external initializer {
+    ) ERC20("TerraStake Token", "TSTAKE") {
         require(admin != address(0), "Invalid admin");
         require(_uniswapRouter != address(0), "Invalid Uniswap Router");
         require(_liquidityPool != address(0), "Invalid Liquidity Pool");
         require(_usdcToken != address(0), "Invalid USDC address");
-
-        __ERC20_init(TOKEN_NAME, TOKEN_SYMBOL);
-        __AccessControl_init();
-        __Pausable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MINTER_ROLE, admin);
@@ -110,6 +93,9 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
         usdcToken = IERC20(_usdcToken);
 
         governanceThreshold = 1_000_000 * 10**18; // 1M TSTAKE for governance proposals
+
+        // Mint all tokens to admin (This ensures max supply is set)
+        _mint(admin, MAX_CAP);
     }
 
     // ================================
@@ -127,6 +113,8 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
     }
 
     function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external onlyRole(GOVERNANCE_ROLE) {
+        require(usdcAmount > 0 && tStakeAmount > 0, "Amounts must be greater than zero");
+
         usdcToken.transferFrom(msg.sender, address(this), usdcAmount);
         _mint(address(this), tStakeAmount);
 
@@ -148,17 +136,6 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
     }
 
     // ================================
-    // 🔹 Verification Functions
-    // ================================
-    function officialInfo() external pure returns (string memory) {
-        return "This is the official TerraStake Token (TSTAKE), deployed and maintained by the TerraStake team.";
-    }
-
-    function verifyOwner() external pure returns (string memory) {
-        return "Official TerraStake Deployment - Contact TerraStake Team for verification.";
-    }
-
-    // ================================
     // 🔹 Governance & Security
     // ================================
     function pause() external onlyRole(EMERGENCY_ROLE) {
@@ -167,5 +144,34 @@ contract TerraStakeToken is Initializable, ERC20Upgradeable, AccessControlUpgrad
 
     function unpause() external onlyRole(EMERGENCY_ROLE) {
         _unpause();
+    }
+
+    function proposeFeeAdjustment(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
+        require(newFee >= minLiquidityFee && newFee <= maxLiquidityFee, "Fee out of bounds");
+        
+        proposals.push(Proposal({
+            proposer: msg.sender,
+            newLiquidityFee: newFee,
+            endTime: block.timestamp + 3 days,
+            executed: false
+        }));
+
+        emit ProposalCreated(proposals.length - 1, msg.sender, newFee, block.timestamp + 3 days);
+    }
+
+    function executeProposal(uint256 proposalId) external onlyRole(GOVERNANCE_ROLE) {
+        require(proposalId < proposals.length, "Invalid proposal");
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed, "Already executed");
+        require(block.timestamp >= proposal.endTime, "Proposal not ready");
+
+        liquidityFee = proposal.newLiquidityFee;
+        proposal.executed = true;
+
+        emit ProposalExecuted(proposalId, proposal.newLiquidityFee);
+    }
+
+    function verifyOwner() external pure returns (string memory) {
+        return "Official TerraStake Deployment - Contact TerraStake Team for verification.";
     }
 }
