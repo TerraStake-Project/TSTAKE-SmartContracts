@@ -1,17 +1,65 @@
-node_modules
+# Ignore Node.js dependencies
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+
+# Ignore environment variables and secrets
 .env
+.env.local
+.env.development.local
+.env.production.local
+.env.test.local
+.env.example
 
-# Hardhat files
-/cache
-/artifacts
+# Ignore Hardhat artifacts and cache
+artifacts/
+cache/
+typechain/
+typechain-types/
 
-# TypeChain files
-/typechain
-/typechain-types
+# Ignore Foundry build files
+out/
+lib/
+foundry.toml.lock
 
-# solidity-coverage files
-/coverage
-/coverage.json
+# Ignore OpenZeppelin upgrades cache
+openzeppelin-upgrades.json
 
-# Hardhat Ignition default folder for deployments against a local node
-ignition/deployments/chain-31337
+# Ignore Hardhat test reports
+coverage/
+coverage.json
+test-coverage/
+coverage-final.json
+lcov-report/
+
+# Ignore editor-specific files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Ignore Solidity dependency lock files
+forge.lock
+yarn.lock
+pnpm-lock.yaml
+package-lock.json
+
+# Ignore compiled contracts & ABIs
+abis/
+build/
+
+# Ignore logs and debug files
+*.log
+debug.log
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Ignore Remix IDE artifacts
+remix-compiler.json
+remix.debug
+
+# Ignore GitHub workflows cache (optional)
+.github/workflows/*.cache
