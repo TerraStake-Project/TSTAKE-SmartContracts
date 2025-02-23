@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.26;
 
+/**
+ * @title ITerraStakeToken
+ * @notice Interface for the TerraStake Token (TSTAKE) contract
+ */
 interface ITerraStakeToken {
     // ================================
     // 🔹 Token Metadata & Supply
     // ================================
 
-    function name() external view returns (string memory);
+    function name() external pure returns (string memory);
 
-    function symbol() external view returns (string memory);
+    function symbol() external pure returns (string memory);
 
     function totalSupply() external view returns (uint256);
 
-    function MAX_CAP() external view returns (uint256);
+    function MAX_CAP() external pure returns (uint256);
 
     // ================================
     // 🔹 Liquidity Management
@@ -26,11 +30,13 @@ interface ITerraStakeToken {
 
     function liquidityFee() external view returns (uint256);
 
+    function minLiquidityFee() external view returns (uint256);
+
+    function maxLiquidityFee() external view returns (uint256);
+
     function tradingVolume() external view returns (uint256);
 
     function lastFeeUpdateTime() external view returns (uint256);
-
-    function getLiquidityReserves() external view returns (uint256);
 
     function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external;
 
@@ -44,15 +50,12 @@ interface ITerraStakeToken {
 
     function executeProposal(uint256 proposalId) external;
 
-    function proposals(uint256 proposalId)
-        external
-        view
-        returns (
-            address proposer,
-            uint256 newLiquidityFee,
-            uint256 endTime,
-            bool executed
-        );
+    function proposals(uint256 proposalId) external view returns (
+        address proposer,
+        uint256 newLiquidityFee,
+        uint256 endTime,
+        bool executed
+    );
 
     // ================================
     // 🔹 Security & Emergency Functions
@@ -70,7 +73,7 @@ interface ITerraStakeToken {
 
     function officialInfo() external pure returns (string memory);
 
-    function verifyOwner() external pure returns (string memory);
+    function verifyOwner() external view returns (address);
 
     // ================================
     // 🔹 Events
