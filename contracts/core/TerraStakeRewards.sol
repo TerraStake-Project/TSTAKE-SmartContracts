@@ -10,7 +10,7 @@ import "../interfaces/ITerraStakeProjects.sol";
 
 /**
  * @title TerraStakeRewards (3B Cap Secured)
- * @notice Implements a reward distribution system with impact tracking, project validation, LP receipt generation, and certification.
+ * @notice Implements a reward distribution system with real-time APR adjustments via Chainlink oracle
  */
 contract TerraStakeRewards is
     ITerraStakeRewards,
@@ -21,6 +21,8 @@ contract TerraStakeRewards is
     uint256 public constant MAX_MULTIPLIER = 10000; // Basis points
     uint256 public constant MIN_REWARD_RATE = 1;
     uint256 public constant SLASHING_LOCK_PERIOD = 3 days; // Prevents instant claim after slashing
+    uint256 public constant APR_DECIMALS = 18;
+    uint256 public constant MIN_APR_UPDATE_INTERVAL = 1 hours;
 
     IERC20 public rewardToken;
     address public stakingContract;
@@ -31,7 +33,13 @@ contract TerraStakeRewards is
 
     ITerraStakeProjects public terraStakeProjects;
 
-    // **Halving Mechanism**
+    // APR Oracle Configuration
+    address public aprOracle;
+    uint256 public lastAprUpdate;
+    uint256 public currentApr;
+    bytes32 public constant APR_UPDATER_ROLE = keccak256("APR_UPDATER_ROLE");
+
+    // Halving Mechanism
     uint256 public constant AVERAGE_BLOCK_TIME = 13;
     uint256 public constant TWO_YEARS_BLOCKS = (2 * 365 * 24 * 60 * 60) / AVERAGE_BLOCK_TIME;
     uint256 public halvingInterval;
@@ -42,11 +50,11 @@ contract TerraStakeRewards is
     mapping(uint256 => bool) public projectHasPool;
     mapping(address => uint256) public lastSlashingTime;
 
-    // **Security Enhancements**
+    // Security Enhancements
     bool private _locked;
     mapping(bytes32 => uint256) public operationTimelocks;
 
-    // **Events**
+    // Events
     event RewardPoolCreated(uint256 indexed poolId, uint256 amount, uint32 multiplier);
     event ProjectPoolCreated(uint256 indexed projectId, uint256 amount, uint32 multiplier);
     event RewardsFunded(uint256 indexed projectId, uint256 amount);
@@ -58,8 +66,10 @@ contract TerraStakeRewards is
     event StakingContractUpdated(address newStakingContract);
     event GovernanceTimelockSet(bytes32 indexed setting, uint256 newValue, uint256 unlockTime);
     event GovernanceTimelockExecuted(bytes32 indexed setting, uint256 oldValue, uint256 newValue);
+    event AprOracleUpdated(address indexed newOracle);
+    event AprUpdated(uint256 oldApr, uint256 newApr);
 
-    // **Modifiers**
+    // Modifiers
     modifier onlyStakingContract() {
         require(msg.sender == stakingContract, "Caller is not staking contract");
         _;
@@ -77,13 +87,14 @@ contract TerraStakeRewards is
         _;
     }
 
-    // **Initialization**
+    // Initialization
     function initialize(
         address _rewardToken,
         address _stakingContract,
         uint256 _baseRewardRate,
         uint256 _userRewardCap,
         address _terraStakeProjects,
+        address _aprOracle,
         address admin
     ) external initializer {
         require(_rewardToken != address(0), "Invalid reward token");
@@ -91,6 +102,7 @@ contract TerraStakeRewards is
         require(admin != address(0), "Invalid admin address");
         require(_baseRewardRate >= MIN_REWARD_RATE, "Reward rate too low");
         require(_terraStakeProjects != address(0), "Invalid project contract");
+        require(_aprOracle != address(0), "Invalid APR oracle");
 
         __AccessControl_init();
         __ReentrancyGuard_init();
@@ -102,13 +114,37 @@ contract TerraStakeRewards is
         halvingInterval = TWO_YEARS_BLOCKS;
         lastHalvingBlock = block.number;
         userRewardCap = _userRewardCap;
+        aprOracle = _aprOracle;
 
         terraStakeProjects = ITerraStakeProjects(_terraStakeProjects);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(APR_UPDATER_ROLE, _aprOracle);
     }
 
-    // **Reward Pool Management**
+    // APR Management
+    function updateApr(uint256 newApr) external onlyRole(APR_UPDATER_ROLE) {
+        require(block.timestamp >= lastAprUpdate + MIN_APR_UPDATE_INTERVAL, "Too frequent updates");
+        require(newApr > 0, "Invalid APR");
+
+        uint256 oldApr = currentApr;
+        currentApr = newApr;
+        lastAprUpdate = block.timestamp;
+
+        emit AprUpdated(oldApr, newApr);
+    }
+
+    function setAprOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newOracle != address(0), "Invalid oracle address");
+        
+        _revokeRole(APR_UPDATER_ROLE, aprOracle);
+        aprOracle = newOracle;
+        _grantRole(APR_UPDATER_ROLE, newOracle);
+        
+        emit AprOracleUpdated(newOracle);
+    }
+
+    // Reward Pool Management
     function createRewardPool(uint256 amount, uint32 multiplier, uint48 duration) external onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 poolId) {
         require(amount > 0, "Invalid amount");
         require(multiplier > 0 && multiplier <= MAX_MULTIPLIER, "Invalid multiplier");
@@ -135,7 +171,7 @@ contract TerraStakeRewards is
         emit RewardPoolDeactivated(poolId);
     }
 
-    // **Reward Claims**
+    // Reward Claims
     function batchClaimRewards(uint256[] calldata poolIds) external nonReentrant whenNotPaused notSlashed(msg.sender) {
         uint256 totalRewards;
         for (uint256 i = 0; i < poolIds.length; i++) {
@@ -161,7 +197,7 @@ contract TerraStakeRewards is
         return rewards;
     }
 
-    // **Governance Security**
+    // Governance Security
     function setGovernanceTimelock(bytes32 setting, uint256 newValue) external onlyRole(DEFAULT_ADMIN_ROLE) {
         operationTimelocks[setting] = block.timestamp + 2 days;
         emit GovernanceTimelockSet(setting, newValue, operationTimelocks[setting]);
