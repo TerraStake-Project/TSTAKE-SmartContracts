@@ -11,9 +11,16 @@ import {
     TerraStakeRewardsABI,
     TerraStakeProjectsABI,
     TerraStakeITOABI,
-    TerraGovernanceABI,
+    TerraStakeaGovernanceABI,
     TerraStakeAccessControlABI,
-    ChainlinkDataFeederABI
+    ChainlinkDataFeederABI,
+    TerraStakeSlashingABI,
+    TerraStakeProjectsABI,
+    TerraStakeNFTABI,
+    TerraStakeMarketPlaceABI,
+    TerraStakeLiquidityGuardABI,
+    TerraStakeAntiBotABI,
+    RewardDistributorABI,
 } from './abi';
 
 // Interfaces
@@ -116,8 +123,16 @@ class ContractManager {
             rewards: TerraStakeRewardsABI,
             projects: TerraStakeProjectsABI,
             ito: TerraStakeITOABI,
-            governance: TerraGovernanceABI,
-            oracle: ChainlinkDataFeederABI
+            governance: TerraStakeGovernanceABI,
+            oracle: ChainlinkDataFeederABI,
+            slashing: TerraStakeSlashingABI,
+            NFT: TerraStakeNFTABI,
+            Marketplace: TerraStakeMarketPlaceABI,
+            LiquidityGuard: TerraStakeLiquidityGuardABI,
+            AntiBot: TerraStakeAntiBotABI,
+            AccessControl: TerraStakeAcessControlABI,
+            RewardDistributor: RewardDistributorABI,
+            
         };
 
         const contracts: Record<string, ethers.Contract> = {};
