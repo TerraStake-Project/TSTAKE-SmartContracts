@@ -5,7 +5,9 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 interface ITerraStakeAccessControl {
-    // Custom Errors
+    // ------------------------------------------------------------------------
+    // 🔹 Custom Errors
+    // ------------------------------------------------------------------------
     error Unauthorized();
     error InvalidAddress();
     error RoleExpired(bytes32 role, address account);
@@ -14,8 +16,11 @@ interface ITerraStakeAccessControl {
     error InvalidHierarchy(bytes32 role, bytes32 parentRole);
     error InvalidDuration();
     error PriceOutOfBounds(uint256 price, uint256 min, uint256 max);
+    error InsufficientTStakeBalance(address account, uint256 requiredBalance);
 
-    // Events
+    // ------------------------------------------------------------------------
+    // 🔹 Events
+    // ------------------------------------------------------------------------
     event RoleGrantedWithExpiration(bytes32 indexed role, address indexed account, uint256 expirationTime);
     event RoleRequirementSet(bytes32 indexed role, uint256 requirement);
     event RoleRevoked(bytes32 indexed role, address indexed account);
@@ -26,7 +31,9 @@ interface ITerraStakeAccessControl {
     event RoleRequirementUpdated(bytes32 indexed role, uint256 oldRequirement, uint256 newRequirement);
     event LiquidityThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
 
-    // Role Identifiers
+    // ------------------------------------------------------------------------
+    // 🔹 Role Identifiers
+    // ------------------------------------------------------------------------
     function MINTER_ROLE() external pure returns (bytes32);
     function GOVERNANCE_ROLE() external pure returns (bytes32);
     function EMERGENCY_ROLE() external pure returns (bytes32);
@@ -38,12 +45,15 @@ interface ITerraStakeAccessControl {
     function REWARD_MANAGER_ROLE() external pure returns (bytes32);
     function DISTRIBUTION_ROLE() external pure returns (bytes32);
 
-    // Administrative Functions
+    // ------------------------------------------------------------------------
+    // 🔹 Administrative Functions
+    // ------------------------------------------------------------------------
     function initialize(
         address admin,
         address priceOracle,
         address usdcToken,
         address wethToken,
+        address tStakeToken,  // ✅ TSTAKE token added
         uint256 minimumLiquidity,
         uint256 minimumPrice,
         uint256 maximumPrice
@@ -58,16 +68,31 @@ interface ITerraStakeAccessControl {
     function pause() external;
     function unpause() external;
 
-    // Validation Functions
+    // ------------------------------------------------------------------------
+    // 🔹 TSTAKE-Based Role Enforcement
+    // ------------------------------------------------------------------------
+    /**
+     * @notice Validates if an account has the required amount of TSTAKE tokens to maintain a role.
+     * @param account The account to check.
+     * @param requiredBalance The minimum amount of TSTAKE tokens required.
+     */
+    function validateWithTStake(address account, uint256 requiredBalance) external view;
+
+    // ------------------------------------------------------------------------
+    // 🔹 Validation Functions
+    // ------------------------------------------------------------------------
     function validateWithOracle(uint256 expectedPrice) external view;
     function validateLiquidity() external view;
 
-    // View Functions
+    // ------------------------------------------------------------------------
+    // 🔹 View Functions
+    // ------------------------------------------------------------------------
     function roleRequirements(bytes32 role) external view returns (uint256);
     function roleExpirations(bytes32 role, address account) external view returns (uint256);
     function priceFeed() external view returns (AggregatorV3Interface);
     function usdc() external view returns (IERC20);
     function weth() external view returns (IERC20);
+    function tStakeToken() external view returns (IERC20); // ✅ TSTAKE Token Address Getter
     function hasValidRole(bytes32 role, address account) external view returns (bool);
     function getRoleMemberCount(bytes32 role) external view returns (uint256);
     function getRoleHierarchy(bytes32 role) external view returns (bytes32);
