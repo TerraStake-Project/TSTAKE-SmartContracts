@@ -2,51 +2,83 @@
 pragma solidity 0.8.26;
 
 interface ITerraStakeITO {
-    enum ITOState { NotStarted, Active, Paused, Finalized }
+    enum ITOState { NotStarted, Active, Ended }
 
-    // ------------------------------------------------------
-    // Events
-    // ------------------------------------------------------
+    // ================================
+    // 🔹 Constants
+    // ================================
+    function POOL_FEE() external pure returns (uint24);
+    function MAX_TOKENS_FOR_ITO() external pure returns (uint256);
+    function DEFAULT_MIN_PURCHASE_USDC() external pure returns (uint256);
+    function DEFAULT_MAX_PURCHASE_USDC() external pure returns (uint256);
+
+    // ================================
+    // 🔹 Governance & Roles
+    // ================================
+    function GOVERNANCE_ROLE() external view returns (bytes32);
+    function MULTISIG_ROLE() external view returns (bytes32);
+    function PAUSER_ROLE() external view returns (bytes32);
+
+    // ================================
+    // 🔹 ITO State Variables
+    // ================================
+    function itoState() external view returns (ITOState);
+    function startingPrice() external view returns (uint256);
+    function endingPrice() external view returns (uint256);
+    function priceDuration() external view returns (uint256);
+    function tokensSold() external view returns (uint256);
+    function accumulatedUSDC() external view returns (uint256);
+    function itoStartTime() external view returns (uint256);
+    function itoEndTime() external view returns (uint256);
+    function minPurchaseUSDC() external view returns (uint256);
+    function maxPurchaseUSDC() external view returns (uint256);
+    function purchasesPaused() external view returns (bool);
+
+    // ================================
+    // 🔹 ITO Functions
+    // ================================
+    function getCurrentPrice() external view returns (uint256);
+
+    function buyTokens(
+        uint256 usdcAmount,
+        uint256 minTokensOut,
+        bool usePermit,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    function withdrawUSDC(address recipient, uint256 amount) external;
+
+    function pausePurchases() external;
+
+    function resumePurchases() external;
+
+    // ================================
+    // 🔹 Uniswap Liquidity Functions
+    // ================================
+    function addLiquidityToUniswap(uint256 usdcAmount, uint256 tStakeAmount) external;
+
+    // ================================
+    // 🔹 View Functions & Mappings
+    // ================================
+    function purchasedAmounts(address user) external view returns (uint256);
+    function blacklist(address user) external view returns (bool);
+
+    // ================================
+    // 🔹 Verification Functions
+    // ================================
+    function officialInfo() external pure returns (string memory);
+    function verifyOwner() external pure returns (string memory);
+
+    // ================================
+    // 🔹 Events
+    // ================================
     event TokensPurchased(
         address indexed buyer,
-        uint256 usdcAmount,
-        uint256 tokenAmount,
-        uint256 timestamp
-    );
-
-    event TokensPurchasedAfterITO(
-        address indexed buyer,
-        uint256 usdcAmount,
-        uint256 tokenAmount,
-        uint256 timestamp
-    );
-
-    event LiquidityAdded(
-        uint256 tStakeAmount,
-        uint256 usdcAmount,
-        uint256 timestamp
-    );
-
-    event ITOStateChanged(
-        ITOState newState,
-        uint256 timestamp
-    );
-
-    event DynamicITOParametersUpdated(
-        uint256 newStartingPrice,
-        uint256 newEndingPrice,
-        uint256 newPriceDuration
-    );
-
-    event UnsoldTokensBurned(
-        uint256 unsoldTokens,
-        uint256 timestamp
-    );
-
-    event UnsoldTokensAllocated(
-        uint256 treasuryAmount,
-        uint256 stakingAmount,
-        uint256 liquidityAmount,
+        uint256 usdcSpent,
+        uint256 tokensReceived,
         uint256 timestamp
     );
 
@@ -56,56 +88,23 @@ interface ITerraStakeITO {
         uint256 timestamp
     );
 
-    event TreasuryVestedTokensClaimed(
-        uint256 amountClaimed,
-        uint256 remainingVestedTokens,
+    event ITOStateUpdated(
+        ITOState newState,
         uint256 timestamp
     );
 
-    // ------------------------------------------------------
-    // Getter Functions
-    // ------------------------------------------------------
-    function getCurrentPrice() external view returns (uint256);
-    function getPoolPrice() external view returns (uint256);
-    function getRemainingVestedTreasuryTokens() external view returns (uint256);
+    event PurchasesPaused(
+        bool status,
+        uint256 timestamp
+    );
 
-    // ------------------------------------------------------
-    // ITO State Management
-    // ------------------------------------------------------
-    function startITO() external;
-    function pauseITO() external;
-    function finalizeITO() external;
-    function claimVestedTokens() external;
+    event BlacklistUpdated(
+        address indexed user,
+        bool isBlacklisted
+    );
 
-    function updateITOPrices(
-        uint256 newStartingPrice,
-        uint256 newEndingPrice,
-        uint256 newPriceDuration
-    ) external;
-
-    // ------------------------------------------------------
-    // Token Purchase Functions
-    // ------------------------------------------------------
-    function buyTokens(uint256 usdcAmount, uint256 minTokensOut) external;
-    function buyTokensAfterITO(uint256 usdcAmount) external;
-
-    // ------------------------------------------------------
-    // Liquidity Management
-    // ------------------------------------------------------
-    function addLiquidity(
-        uint256 amountTSTAKE,
-        uint256 amountUSDC,
-        int24 lowerTick,
-        int24 upperTick,
-        uint256 amount0Min,
-        uint256 amount1Min,
-        address recipient
-    ) external returns (uint256 tokenId);
-
-    // ------------------------------------------------------
-    // Governance Functions
-    // ------------------------------------------------------
-    function withdrawUSDC(address recipient, uint256 amount) external;
-    function pausePurchases() external;
-    function resumePurchases() external;
+    event LiquidityAdded(
+        uint256 usdcAmount,
+        uint256 tStakeAmount
+    );
 }
