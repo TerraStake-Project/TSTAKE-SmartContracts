@@ -39,6 +39,7 @@ contract TerraStakeStaking is AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant BASE_PENALTY_PERCENT = 10;
     uint256 public constant MAX_PENALTY_PERCENT = 30;
     uint256 public constant LOW_STAKING_THRESHOLD = 1_000_000 * 10**18; // 1M tokens
+    uint256 public constant GOVERNANCE_VESTING_PERIOD = 7 days; // New constant for vesting period
 
     uint256 public liquidityInjectionRate = 5; // 5% of staking rewards reinjected into Uniswap
     uint256 public constant MAX_LIQUIDITY_RATE = 10;
@@ -66,6 +67,12 @@ contract TerraStakeStaking is AccessControl, ReentrancyGuard, Pausable {
         bool autoCompounding;
     }
 
+    struct GovernanceReward {
+        uint256 amount;
+        uint256 unlockTime;
+        bool claimed;
+    }
+
     struct StakingAnalytics {
         uint256 totalRewardsEarned;
         uint256 stakingEfficiency;
@@ -77,6 +84,7 @@ contract TerraStakeStaking is AccessControl, ReentrancyGuard, Pausable {
     mapping(address => StakingAnalytics) public userAnalytics;
     mapping(address => uint256) public governanceVotes;
     mapping(address => bool) public governanceViolators;
+    mapping(address => GovernanceReward[]) public pendingGovernanceRewards; // New mapping for vesting rewards
 
     uint256 public totalStaked;
     StakingTier[] public tiers;
@@ -84,6 +92,8 @@ contract TerraStakeStaking is AccessControl, ReentrancyGuard, Pausable {
     event Staked(address indexed user, uint256 projectId, uint256 amount, uint256 duration);
     event Unstaked(address indexed user, uint256 projectId, uint256 amount, uint256 penalty);
     event RewardsDistributed(address indexed user, uint256 amount);
+    event GovernanceRewardLocked(address indexed user, uint256 amount, uint256 unlockTime);
+    event GovernanceRewardClaimed(address indexed user, uint256 amount);
     event GovernanceRightsUpdated(address indexed user, bool hasRights);
     event LiquidityInjected(uint256 amount);
     event GovernanceVoteSlashed(address indexed user, uint256 amountLost);
@@ -124,6 +134,54 @@ contract TerraStakeStaking is AccessControl, ReentrancyGuard, Pausable {
         tiers.push(StakingTier(90 days, 150, true));
         tiers.push(StakingTier(180 days, 200, true));
         tiers.push(StakingTier(365 days, 300, true));
+    }
+
+    function distributeGovernanceReward(address user, uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        require(amount > 0, "Amount must be greater than zero");
+        
+        // Create new vesting entry
+        pendingGovernanceRewards[user].push(GovernanceReward({
+            amount: amount,
+            unlockTime: block.timestamp + GOVERNANCE_VESTING_PERIOD,
+            claimed: false
+        }));
+
+        emit GovernanceRewardLocked(user, amount, block.timestamp + GOVERNANCE_VESTING_PERIOD);
+    }
+
+    function claimGovernanceRewards() external nonReentrant {
+        GovernanceReward[] storage rewards = pendingGovernanceRewards[msg.sender];
+        uint256 totalClaimable = 0;
+        
+        for (uint256 i = 0; i < rewards.length; i++) {
+            if (!rewards[i].claimed && block.timestamp >= rewards[i].unlockTime) {
+                rewards[i].claimed = true;
+                totalClaimable += rewards[i].amount;
+            }
+        }
+        
+        require(totalClaimable > 0, "No rewards available for claiming");
+        require(stakingToken.transfer(msg.sender, totalClaimable), "Transfer failed");
+        
+        emit GovernanceRewardClaimed(msg.sender, totalClaimable);
+    }
+
+    function getPendingGovernanceRewards(address user) external view returns (
+        uint256 totalPending,
+        uint256 totalClaimable
+    ) {
+        GovernanceReward[] storage rewards = pendingGovernanceRewards[user];
+        
+        for (uint256 i = 0; i < rewards.length; i++) {
+            if (!rewards[i].claimed) {
+                totalPending += rewards[i].amount;
+                if (block.timestamp >= rewards[i].unlockTime) {
+                    totalClaimable += rewards[i].amount;
+                }
+            }
+        }
+        
+        return (totalPending, totalClaimable);
     }
 
     function stake(uint256 projectId, uint256 amount, uint256 duration, bool isLP, bool autoCompound) external nonReentrant whenNotPaused {
