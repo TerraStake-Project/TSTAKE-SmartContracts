@@ -8,14 +8,14 @@ import "@openzeppelin/contracts/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import "@openzeppelin/contracts/security/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
-import "./interfaces/ITerraStakeGovernance.sol"; // ✅ Governance Integration
-import "./interfaces/IPriceFeed.sol"; // ✅ Live Price Feeds
+import "./interfaces/ITerraStakeMarketplace.sol"; // 
 
 interface ITerraStakeToken is IERC20 {
     function transfer(address recipient, uint256 amount) external returns (bool);
 }
 
 contract TerraStakeMarketplace is 
+    ITerraStakeMarketplace, // 
     AccessControlUpgradeable, 
     ReentrancyGuardUpgradeable, 
     ERC1155Holder, 
@@ -35,8 +35,6 @@ contract TerraStakeMarketplace is
     address public royaltyRecipient;
     ITerraStakeToken public tStakeToken;
     IERC1155 public nftContract;
-    IPriceFeed public priceFeed;
-    ITerraStakeGovernance public governanceContract;
 
     uint256 public rewardPool;
     bool public riskMonitoringEnabled;
@@ -51,9 +49,6 @@ contract TerraStakeMarketplace is
         uint256 amount;
         bool active;
         uint256 expiry;
-        uint256 startPrice;
-        uint256 endPrice;
-        uint256 priceDecrementInterval;
         bool isAuction;
     }
 
@@ -74,10 +69,10 @@ contract TerraStakeMarketplace is
     event NFTListed(
         uint256 indexed tokenId,
         address indexed seller,
-        uint256 indexed listingId,
         uint256 amount,
         uint256 price,
-        bool isAuction
+        bool isAuction,
+        uint256 expiry
     );
 
     event NFTPurchased(
@@ -123,15 +118,11 @@ contract TerraStakeMarketplace is
     function initialize(
         address _nftContract,
         address _tStakeToken,
-        address _royaltyRecipient,
-        address _governanceContract,
-        address _priceFeed
+        address _royaltyRecipient
     ) external initializer {
         require(_nftContract != address(0), "Invalid NFT contract");
         require(_tStakeToken != address(0), "Invalid TSTAKE token");
         require(_royaltyRecipient != address(0), "Invalid royalty recipient");
-        require(_governanceContract != address(0), "Invalid governance contract");
-        require(_priceFeed != address(0), "Invalid price feed");
 
         __AccessControl_init();
         __ReentrancyGuard_init();
@@ -141,8 +132,6 @@ contract TerraStakeMarketplace is
         nftContract = IERC1155(_nftContract);
         tStakeToken = ITerraStakeToken(_tStakeToken);
         royaltyRecipient = _royaltyRecipient;
-        governanceContract = ITerraStakeGovernance(_governanceContract);
-        priceFeed = IPriceFeed(_priceFeed);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(GOVERNANCE_ROLE, msg.sender);
@@ -160,14 +149,12 @@ contract TerraStakeMarketplace is
     function listNFT(
         uint256 tokenId,
         uint256 amount,
-        uint256 startPrice,
-        uint256 endPrice,
-        uint256 priceDecrementInterval,
-        uint256 expiry,
-        bool isAuction
+        uint256 price,
+        bool isAuction,
+        uint256 expiry
     ) external marketActive nonReentrant {
         require(amount > 0, "Invalid amount");
-        require(startPrice > 0 && startPrice <= MAX_PRICE, "Invalid price");
+        require(price > 0 && price <= MAX_PRICE, "Invalid price");
         require(expiry > block.timestamp + 1 hours, "Expiry too soon");
         require(expiry < block.timestamp + 30 days, "Expiry too far");
 
@@ -176,17 +163,14 @@ contract TerraStakeMarketplace is
         listings[tokenId][msg.sender] = Listing({
             seller: msg.sender,
             tokenId: tokenId,
-            price: startPrice,
+            price: price,
             amount: amount,
             active: true,
             expiry: expiry,
-            startPrice: startPrice,
-            endPrice: endPrice,
-            priceDecrementInterval: priceDecrementInterval,
             isAuction: isAuction
         });
 
-        emit NFTListed(tokenId, msg.sender, block.timestamp, amount, startPrice, isAuction);
+        emit NFTListed(tokenId, msg.sender, amount, price, isAuction, expiry);
     }
 
     // ==========================
@@ -218,34 +202,41 @@ contract TerraStakeMarketplace is
         require(listings[tokenId][seller].isAuction, "Not an auction");
 
         Bid storage bid = bids[tokenId][seller];
-        require(bidAmount > bid.highestBid, "Must outbid");
+        require(bidAmount > bid.highestBid, "Must outbid the current highest bid");
 
         if (bid.highestBid > 0) {
-            tStakeToken.transfer(bid.highestBidder, bid.highestBid);
+            require(tStakeToken.transfer(bid.highestBidder, bid.highestBid), "Refund failed");
         }
 
-        tStakeToken.transferFrom(msg.sender, address(this), bidAmount);
+        require(tStakeToken.transferFrom(msg.sender, address(this), bidAmount), "Bid transfer failed");
 
         bid.highestBid = bidAmount;
         bid.highestBidder = msg.sender;
+        bid.bidEndTime = listings[tokenId][seller].expiry;
 
         emit NFTBidPlaced(tokenId, msg.sender, bidAmount);
     }
 
     // ==========================
-    // 🔹 Finalizing an Auction
+    // 🔹 Finalizing an Auction 
     // ==========================
     function finalizeAuction(uint256 tokenId, address seller) external nonReentrant {
-        Bid storage bid = bids[tokenId][seller];
         require(block.timestamp >= listings[tokenId][seller].expiry, "Auction not ended");
-        require(bid.highestBid > 0, "No valid bids");
+        require(bids[tokenId][seller].highestBid > 0, "No valid bids");
 
-        tStakeToken.transfer(seller, bid.highestBid);
-        nftContract.safeTransferFrom(address(this), bid.highestBidder, tokenId, listings[tokenId][seller].amount, "");
+        Bid memory winningBid = bids[tokenId][seller];
+
+        uint256 royaltyAmount = (winningBid.highestBid * royaltyFee) / 10000;
+        uint256 sellerAmount = winningBid.highestBid - royaltyAmount;
+
+        require(tStakeToken.transfer(royaltyRecipient, royaltyAmount), "Royalty transfer failed");
+        require(tStakeToken.transfer(seller, sellerAmount), "Seller payment failed");
+
+        nftContract.safeTransferFrom(address(this), winningBid.highestBidder, tokenId, listings[tokenId][seller].amount, "");
 
         delete listings[tokenId][seller];
         delete bids[tokenId][seller];
 
-        emit NFTBidFinalized(tokenId, bid.highestBidder, bid.highestBid);
+        emit NFTBidFinalized(tokenId, winningBid.highestBidder, winningBid.highestBid);
     }
 }
