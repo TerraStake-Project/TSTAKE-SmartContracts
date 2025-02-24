@@ -2,175 +2,155 @@
 pragma solidity 0.8.26;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract TerraStakeToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
-    using SafeMath for uint256;
-    using SafeERC20 for IERC20;
+contract TerraStakeToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
+    // Constants
+    uint256 public constant MAX_SUPPLY = 3_000_000_000 * 10**18;
+    uint32 public constant MIN_TWAP_PERIOD = 5 minutes;
+    uint256 public constant MAX_BATCH_SIZE = 200;
+    uint256 public constant PRICE_DECIMALS = 18;
 
-    // Constants & Immutable State
-    uint256 public constant MAX_CAP = 3_000_000_000 * 10**18;
-    address public immutable liquidityPool;
-    INonfungiblePositionManager public immutable positionManager;
-    IERC20 public immutable usdcToken;
+    // Uniswap V3 TWAP Price Oracle
+    IUniswapV3Pool public immutable uniswapPool;
 
-    // Configurable State
-    uint256 public liquidityFee;       // In %, e.g. 5 => 5%
-    uint256 public minLiquidityFee;    // Minimum possible fee
-    uint256 public maxLiquidityFee;    // Maximum possible fee
-    uint256 public tradingVolume;      // Tracks total token transfers
+    // Blacklist tracking
+    mapping(address => bool) public isBlacklisted;
 
     // Roles
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
     // Events
-    event LiquidityAdded(
-        uint256 tokenId,
-        uint256 usdcAmount,
-        uint256 tStakeAmount,
-        uint128 liquidity
-    );
-    event LiquidityFeeUpdated(uint256 newFee);
-    event LiquidityRemoved(
-        uint256 tokenId,
-        uint256 usdcAmount,
-        uint256 tStakeAmount
-    );
+    event BlacklistUpdated(address indexed account, bool status);
+    event AirdropExecuted(address[] recipients, uint256 amount, uint256 totalAmount);
+    event TWAPPriceQueried(uint32 twapInterval, uint256 price);
+    event EmergencyWithdrawal(address token, address to, uint256 amount);
 
-    constructor(
-        address admin,
-        address _positionManager,
-        address _liquidityPool,
-        address _usdcToken
-    ) ERC20("TerraStake Token", "TSTAKE") {
-        require(admin != address(0), "Invalid admin");
-        require(_positionManager != address(0), "Invalid position manager");
-        require(_liquidityPool != address(0), "Invalid pool");
-        require(_usdcToken != address(0), "Invalid token");
+    constructor(address _uniswapPool) ERC20("TerraStake", "TSTAKE") {
+        require(_uniswapPool != address(0), "Invalid pool address");
 
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(MINTER_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
-        _grantRole(EMERGENCY_ROLE, admin);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(MINTER_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
 
-        positionManager = INonfungiblePositionManager(_positionManager);
-        liquidityPool = _liquidityPool;
-        usdcToken = IERC20(_usdcToken);
-        
-        liquidityFee = 5;        // 5%
-        minLiquidityFee = 1;     // 1%
-        maxLiquidityFee = 10;    // 10%
+        uniswapPool = IUniswapV3Pool(_uniswapPool);
     }
 
-    function addLiquidity(
-        uint256 usdcAmount,
-        uint256 tStakeAmount,
-        uint24 fee,
-        int24 tickLower,
-        int24 tickUpper
-    ) external onlyRole(ADMIN_ROLE) nonReentrant whenNotPaused {
-        require(usdcAmount > 0 && tStakeAmount > 0, "Invalid amounts");
-        require(totalSupply().add(tStakeAmount) <= MAX_CAP, "Exceeds cap");
-        
-        _mint(address(this), tStakeAmount);
-        usdcToken.safeTransferFrom(msg.sender, address(this), usdcAmount);
-        
-        TransferHelper.safeApprove(address(usdcToken), address(positionManager), usdcAmount);
-        TransferHelper.safeApprove(address(this), address(positionManager), tStakeAmount);
+    // 🔒 Blacklist functionality
+    function setBlacklist(address account, bool status) external onlyRole(ADMIN_ROLE) {
+        isBlacklisted[account] = status;
+        emit BlacklistUpdated(account, status);
+    }
 
-        address token0 = address(usdcToken) < address(this) ? address(usdcToken) : address(this);
-        address token1 = address(usdcToken) < address(this) ? address(this) : address(usdcToken);
-        
-        INonfungiblePositionManager.MintParams memory params = 
-            INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                fee: fee,
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                amount0Desired: token0 == address(usdcToken) ? usdcAmount : tStakeAmount,
-                amount1Desired: token0 == address(usdcToken) ? tStakeAmount : usdcAmount,
-                amount0Min: token0 == address(usdcToken) ? 
-                    usdcAmount.mul(95).div(100) : tStakeAmount.mul(95).div(100),
-                amount1Min: token0 == address(usdcToken) ? 
-                    tStakeAmount.mul(95).div(100) : usdcAmount.mul(95).div(100),
-                recipient: liquidityPool,
-                deadline: block.timestamp + 600
-            });
-        
-        (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = 
-            positionManager.mint(params);
-            
-        emit LiquidityAdded(
-            tokenId,
-            token0 == address(usdcToken) ? amount0 : amount1,
-            token0 == address(usdcToken) ? amount1 : amount0,
-            liquidity
-        );
-        
-        // Refund unused tokens
-        if (amount0 < (token0 == address(usdcToken) ? usdcAmount : tStakeAmount)) {
-            TransferHelper.safeTransfer(
-                token0,
-                msg.sender,
-                (token0 == address(usdcToken) ? usdcAmount : tStakeAmount) - amount0
-            );
-        }
-        if (amount1 < (token0 == address(usdcToken) ? tStakeAmount : usdcAmount)) {
-            TransferHelper.safeTransfer(
-                token1,
-                msg.sender,
-                (token0 == address(usdcToken) ? tStakeAmount : usdcAmount) - amount1
-            );
+    // 📦 Batch Blacklist Management (Efficient)
+    function batchBlacklist(address[] calldata accounts, bool status) external onlyRole(ADMIN_ROLE) {
+        uint256 length = accounts.length;
+        require(length <= MAX_BATCH_SIZE, "TerraStake: Invalid batch size");
+
+        for (uint256 i = 0; i < length;) {
+            address account = accounts[i];
+            require(account != address(0), "TerraStake: Zero address");
+            isBlacklisted[account] = status;
+            emit BlacklistUpdated(account, status);
+            unchecked { ++i; } // Gas optimization
         }
     }
 
+    // 🚀 Optimized Airdrop with batch limit & blacklist check
+    function airdrop(address[] calldata recipients, uint256 amount) 
+        external 
+        onlyRole(ADMIN_ROLE) 
+        whenNotPaused 
+        nonReentrant 
+    {
+        require(amount > 0, "TerraStake: Zero amount");
+        require(recipients.length > 0 && recipients.length <= MAX_BATCH_SIZE, "TerraStake: Invalid batch size");
+
+        uint256 totalAmount = amount * recipients.length;
+        require(totalSupply() + totalAmount <= MAX_SUPPLY, "TerraStake: Exceeds max supply");
+
+        uint256 length = recipients.length;
+        for (uint256 i = 0; i < length;) {
+            address recipient = recipients[i];
+            require(recipient != address(0) && !isBlacklisted[recipient], "TerraStake: Invalid recipient");
+            _mint(recipient, amount);
+            unchecked { ++i; } // Gas optimization
+        }
+
+        emit AirdropExecuted(recipients, amount, totalAmount);
+    }
+
+    // 🔥 Batch Burn Function
+    function batchBurn(
+        address[] calldata froms,
+        uint256[] calldata amounts
+    ) external onlyRole(ADMIN_ROLE) whenNotPaused nonReentrant {
+        require(froms.length == amounts.length && froms.length <= MAX_BATCH_SIZE, "Invalid batch");
+
+        for (uint256 i = 0; i < froms.length;) {
+            require(froms[i] != address(0) && !isBlacklisted[froms[i]], "Invalid address");
+            require(balanceOf(froms[i]) >= amounts[i], "Insufficient balance");
+            _burn(froms[i], amounts[i]);
+            unchecked { ++i; }
+        }
+    }
+
+    // 📊 Multi-Token Emergency Withdraw
+    function emergencyWithdrawMultiple(
+        address[] calldata tokens,
+        address to,
+        uint256[] calldata amounts
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(tokens.length == amounts.length, "Length mismatch");
+        for (uint256 i = 0; i < tokens.length;) {
+            require(tokens[i] != address(this), "Cannot withdraw TSTAKE");
+            IERC20(tokens[i]).transfer(to, amounts[i]);
+            emit EmergencyWithdrawal(tokens[i], to, amounts[i]);
+            unchecked { ++i; }
+        }
+    }
+
+    // 🔍 Blacklist Status Check with Reason
+    function checkBlacklistStatus(address account) external view returns (bool status, string memory reason) {
+        status = isBlacklisted[account];
+        reason = status ? "Address is blacklisted" : "Address is not blacklisted";
+    }
+
+    // 🚀 Secure Transfers with Blacklist Protection
     function _transfer(
-        address sender,
-        address recipient,
+        address from,
+        address to,
         uint256 amount
-    ) internal override whenNotPaused {
-        require(sender != address(0) && recipient != address(0), "Invalid address");
-        require(amount > 0, "Zero amount");
-
-        uint256 fee = amount.mul(liquidityFee).div(100);
-        uint256 transferAmount = amount.sub(fee);
-
-        super._transfer(sender, recipient, transferAmount);
-        super._transfer(sender, liquidityPool, fee);
-        tradingVolume = tradingVolume.add(amount);
+    ) internal virtual override {
+        require(!isBlacklisted[from] && !isBlacklisted[to], "TerraStake: Blacklisted address");
+        super._transfer(from, to, amount);
     }
 
-    function setLiquidityFee(uint256 newFee) external onlyRole(ADMIN_ROLE) {
-        require(newFee >= minLiquidityFee && newFee <= maxLiquidityFee, "Invalid fee range");
-        liquidityFee = newFee;
-        emit LiquidityFeeUpdated(newFee);
-    }
-
-    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
-        require(totalSupply().add(amount) <= MAX_CAP, "Exceeds max supply");
+    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused nonReentrant {
+        require(to != address(0), "Zero address");
+        require(!isBlacklisted[to], "Blacklisted address");
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
         _mint(to, amount);
     }
 
-    function pause() external onlyRole(EMERGENCY_ROLE) {
+    function burn(address from, uint256 amount) external onlyRole(ADMIN_ROLE) whenNotPaused nonReentrant {
+        require(from != address(0), "Zero address");
+        require(!isBlacklisted[from], "Blacklisted address");
+        require(balanceOf(from) >= amount, "Insufficient balance");
+        _burn(from, amount);
+    }
+
+    function pause() external onlyRole(ADMIN_ROLE) {
         _pause();
     }
 
-    function unpause() external onlyRole(EMERGENCY_ROLE) {
+    function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
-    }
-
-    function safeIncreaseAllowance(address spender, uint256 addedValue) external {
-        require(spender != address(0), "Invalid spender");
-        _approve(msg.sender, spender, allowance(msg.sender, spender).add(addedValue));
     }
 }
