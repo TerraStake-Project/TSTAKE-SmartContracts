@@ -1,101 +1,70 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 interface ITerraStakeToken {
     // ================================
-    // 🔹 Token Metadata & Supply
+    // 🔹 Token & Supply Information
     // ================================
-
-    function name() external view returns (string memory);
-
-    function symbol() external view returns (string memory);
-
-    function totalSupply() external view returns (uint256);
-
-    function MAX_CAP() external pure returns (uint256);
+    function MAX_SUPPLY() external view returns (uint256);
 
     // ================================
-    // 🔹 Liquidity & Fee Management
+    // 🔹 Blacklist Management
     // ================================
-
-    function liquidityPool() external view returns (address);
-
-    function uniswapRouter() external view returns (address);
-
-    function usdcToken() external view returns (address);
-
-    function liquidityFee() external view returns (uint256);
-
-    function minLiquidityFee() external view returns (uint256);
-
-    function maxLiquidityFee() external view returns (uint256);
-
-    function tradingVolume() external view returns (uint256);
-
-    function lastFeeUpdateTime() external view returns (uint256);
-
-    function addLiquidity(uint256 usdcAmount, uint256 tStakeAmount) external;
+    function setBlacklist(address account, bool status) external;
+    function batchBlacklist(address[] calldata accounts, bool status) external;
+    function checkBlacklistStatus(address account) external view returns (bool status, string memory reason);
 
     // ================================
-    // 🔹 Governance & Voting System
+    // 🔹 Minting & Burning
     // ================================
-
-    function governanceThreshold() external view returns (uint256);
-
-    function proposeFeeAdjustment(uint256 newFee) external;
-
-    function executeProposal(uint256 proposalId) external;
-
-    function proposals(uint256 proposalId)
-        external
-        view
-        returns (
-            address proposer,
-            uint256 newLiquidityFee,
-            uint256 endTime,
-            bool executed
-        );
-
-    // ================================
-    // 🔹 Minting Control
-    // ================================
-
     function mint(address to, uint256 amount) external;
+    function burn(address from, uint256 amount) external;
+    function batchBurn(address[] calldata froms, uint256[] calldata amounts) external;
 
     // ================================
-    // 🔹 Security & Emergency Functions
+    // 🔹 Airdrop Function
     // ================================
+    function airdrop(address[] calldata recipients, uint256 amount) external;
 
+    // ================================
+    // 🔹 Security Functions
+    // ================================
     function pause() external;
-
     function unpause() external;
 
-    function hasRole(bytes32 role, address account) external view returns (bool);
+    // ================================
+    // 🔹 Ecosystem Integrations
+    // ================================
+    function updateGovernanceContract(address _governanceContract) external;
+    function updateStakingContract(address _stakingContract) external;
+    function updateLiquidityGuard(address _liquidityGuard) external;
+
+    function governanceContract() external view returns (address);
+    function stakingContract() external view returns (address);
+    function liquidityGuard() external view returns (address);
 
     // ================================
-    // 🔹 Verification & Utility Functions
+    // 🔹 Emergency Functions
     // ================================
+    function emergencyWithdrawMultiple(
+        address[] calldata tokens,
+        address to,
+        uint256[] calldata amounts
+    ) external;
 
-    function officialInfo() external pure returns (string memory);
-
-    function verifyOwner() external view returns (address);
-
-    function safeIncreaseAllowance(address spender, uint256 addedValue) external;
+    // ================================
+    // 🔹 Uniswap V3 TWAP Oracle
+    // ================================
+    function uniswapPool() external view returns (address);
 
     // ================================
     // 🔹 Events
     // ================================
-
-    event LiquidityAdded(uint256 usdcAmount, uint256 tStakeAmount);
-    
-    event LiquidityFeeUpdated(uint256 newFee);
-
-    event ProposalCreated(
-        uint256 proposalId,
-        address proposer,
-        uint256 newFee,
-        uint256 endTime
-    );
-
-    event ProposalExecuted(uint256 proposalId, uint256 newFee);
+    event BlacklistUpdated(address indexed account, bool status);
+    event AirdropExecuted(address[] recipients, uint256 amount, uint256 totalAmount);
+    event TokenBurned(address indexed burner, uint256 amount);
+    event EmergencyWithdrawal(address token, address to, uint256 amount);
+    event GovernanceUpdated(address indexed governanceContract);
+    event StakingUpdated(address indexed stakingContract);
+    event LiquidityGuardUpdated(address indexed liquidityGuard);
 }
