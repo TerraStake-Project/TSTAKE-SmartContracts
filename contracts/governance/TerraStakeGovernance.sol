@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/IQuoter.sol";
@@ -13,11 +14,6 @@ import "../interfaces/IRewardDistributor.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 
-/**
- * @title TerraStakeGovernance (DAO-Managed)
- * @notice Official TerraStake DAO governance contract for managing TSTAKE rewards, staking policies, liquidity, and voting.
- * @dev Supports Quadratic Voting, Buyback Mechanism, Liquidity Injection, Reward Halving, and Proposal Execution.
- */
 contract TerraStakeGovernance is 
     Initializable, 
     AccessControlUpgradeable, 
@@ -60,12 +56,10 @@ contract TerraStakeGovernance is
     uint256 public totalVotesCast;
     uint256 public totalProposalsExecuted;
 
-    // **Quadratic Voting & Penalty Variables**
     uint256 public constant PENALTY_FOR_VIOLATION = 5; // 5% stake slashing for governance abuse
     mapping(address => uint256) public governanceVotes;
     mapping(address => bool) public penalizedGovernors;
 
-    // **Halving & Governance-Driven Staking**
     uint256 public halvingPeriod;
     uint256 public lastHalvingTime;
     uint256 public halvingEpoch;
@@ -75,7 +69,6 @@ contract TerraStakeGovernance is
     mapping(uint256 => mapping(address => bool)) public hasVoted;
     mapping(bytes32 => bool) public executedHashes;
 
-    // **Uniswap & External Contract References**
     ITerraStakeStaking public stakingContract;
     IRewardDistributor public rewardDistributor;
     ITerraStakeLiquidityGuard public liquidityGuard;
@@ -86,8 +79,8 @@ contract TerraStakeGovernance is
     AggregatorV3Interface public priceFeed;
     address public treasuryWallet;
 
-    uint24 public constant POOL_FEE = 3000; // Uniswap V3 Fee Tier
-    uint256 public constant TIMELOCK_DURATION = 2 days; // Timelock period for critical proposals
+    uint24 public constant POOL_FEE = 3000;
+    uint256 public constant TIMELOCK_DURATION = 2 days;
 
     // -------------------------------------------
     // 🔹 Events
@@ -103,22 +96,17 @@ contract TerraStakeGovernance is
     );
 
     event ProposalTimelocked(uint256 indexed proposalId, uint256 unlockTime);
-    event ProposalExecuted(uint256 indexed proposalId);
+    event ProposalExecuted(uint256 indexed proposalId, address target, ProposalType proposalType);
     event ProposalVetoed(uint256 indexed proposalId);
     event ProposalThresholdUpdated(uint256 newThreshold);
     event VotingDurationUpdated(uint256 newDuration);
     event MinimumHoldingUpdated(uint256 newMinimumHolding);
     event HalvingApplied(uint256 newEpoch);
     event HalvingPeriodUpdated(uint256 newHalvingPeriod);
-    event VotingPowerCalculated(address indexed user, uint256 power);
-    event NFTGovernanceBoostApplied(address indexed user, uint256 power);
+    event ProposalVotingEnded(uint256 indexed proposalId, uint256 votesFor, uint256 votesAgainst);
     event BuybackExecuted(uint256 usdcAmount, uint256 tStakeReceived);
     event LiquidityInjected(uint256 usdcAmount, uint256 tStakeAdded);
-    event GovernancePenaltyApplied(address indexed violator, uint256 slashedAmount);
 
-    // -------------------------------------------
-    // 🔹 Initialization
-    // -------------------------------------------
     function initialize(
         address _stakingContract,
         address _rewardDistributor,
@@ -166,31 +154,34 @@ contract TerraStakeGovernance is
         halvingEpoch = 0;
     }
 
-    // -------------------------------------------
-    // 🔹 Quadratic Voting Calculation
-    // -------------------------------------------
-    function calculateQuadraticVotingPower(address voter) public view returns (uint256) {
-        uint256 baseVotes = stakingContract.getUserStake(voter);
-        uint256 nftBoost = _calculateNFTBoost(voter);
-        return sqrt(baseVotes + nftBoost);
-    }
+    function executeProposal(uint256 proposalId) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+        require(proposal.endBlock < block.number, "Voting ongoing");
+        require(!proposal.executed, "Already executed");
+        require(!proposal.vetoed, "Proposal was vetoed");
+        require(proposal.votesFor > proposal.votesAgainst, "Proposal failed");
+        require(block.timestamp >= proposal.timelockEndTime, "Timelock active");
+        require(Address.isContract(proposal.target), "Execution target is not a contract");
 
-    function _calculateNFTBoost(address voter) internal view returns (uint256) {
-        return nftContract.balanceOf(voter, 1) * 10;
-    }
+        proposal.executed = true;
+        totalProposalsExecuted++;
 
-    // -------------------------------------------
-    // 🔹 Halving Check & Execution
-    // -------------------------------------------
-    function checkAndTriggerHalving() external {
-        if (block.timestamp >= lastHalvingTime + halvingPeriod) {
-            _applyHalving();
+        if (proposal.proposalType == ProposalType.Buyback) {
+            _executeBuyback(proposal.data);
+        } else if (proposal.proposalType == ProposalType.LiquidityInjection) {
+            _executeLiquidityInjection(proposal.data);
+        } else {
+            Address.functionCall(proposal.target, proposal.data);
         }
+
+        emit ProposalExecuted(proposalId, proposal.target, proposal.proposalType);
     }
 
-    function _applyHalving() internal {
-        lastHalvingTime = block.timestamp;
-        halvingEpoch++;
-        emit HalvingApplied(halvingEpoch);
+    function finalizeVoting(uint256 proposalId) external {
+        Proposal storage proposal = proposals[proposalId];
+        require(block.number > proposal.endBlock, "Voting ongoing");
+        require(!proposal.executed && !proposal.vetoed, "Proposal already finalized");
+
+        emit ProposalVotingEnded(proposalId, proposal.votesFor, proposal.votesAgainst);
     }
 }
