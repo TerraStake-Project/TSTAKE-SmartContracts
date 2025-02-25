@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 interface ITerraStakeGovernance {
-    // -------------------------------------------
+    // ================================
     // 🔹 Proposal Enums & Structs
-    // -------------------------------------------
+    // ================================
     enum ProposalStatus { Active, Timelocked, Vetoed, Executed, VotingEnded }
-    enum ProposalType { General, RewardDistribution, Buyback, LiquidityInjection }
+    enum ProposalType { General, RewardDistribution, Buyback, LiquidityInjection, FeeAdjustment }
 
     struct Proposal {
         bytes data;
@@ -22,68 +22,87 @@ interface ITerraStakeGovernance {
         string description;
     }
 
-    // -------------------------------------------
-    // 🔹 Governance Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Initializes the governance contract with key configurations.
-     */
-    function initialize(
-        address _stakingContract,
-        address _rewardDistributor,
-        address _liquidityGuard,
-        address _uniswapRouter,
-        address _uniswapQuoter,
-        address _uniswapPool,
-        address _nftContract,
-        address _treasuryWallet,
-        uint256 _votingDuration,
-        uint256 _proposalThreshold,
-        uint256 _minimumHolding,
-        uint256 _halvingPeriod
-    ) external;
+    struct FeeProposal {
+        uint256 projectSubmissionFee;
+        uint256 impactReportingFee;
+        uint256 buybackPercentage;
+        uint256 liquidityPairingPercentage;
+        uint256 burnPercentage;
+        uint256 treasuryPercentage;
+        uint256 voteEnd;
+        bool executed;
+    }
 
-    /**
-     * @notice Executes a successful governance proposal.
-     * @dev Can only be called once the voting period has ended and timelock has passed.
-     */
+    // ================================
+    // 🔹 Proposal Management
+    // ================================
+    function createProposal(
+        bytes calldata data,
+        address target,
+        ProposalType proposalType,
+        uint256 linkedProjectId,
+        string calldata description
+    ) external returns (uint256);
+
+    function voteOnProposal(uint256 proposalId, bool support) external;
     function executeProposal(uint256 proposalId) external;
-
-    /**
-     * @notice Finalizes the voting process for a given proposal.
-     */
+    function vetoProposal(uint256 proposalId) external;
     function finalizeVoting(uint256 proposalId) external;
+    function batchProcessProposals(uint256[] calldata proposalIds) external;
+    function canExecuteProposal(uint256 proposalId) external view returns (bool);
 
-    /**
-     * @notice Checks if halving conditions are met and executes if necessary.
-     */
-    function checkAndTriggerHalving() external;
+    function getProposal(uint256 proposalId) external view returns (
+        bytes memory data,
+        address target,
+        uint256 votesFor,
+        uint256 votesAgainst,
+        uint256 endBlock,
+        uint256 timelockEndTime,
+        bool executed,
+        bool vetoed,
+        ProposalType proposalType,
+        uint256 linkedProjectId,
+        string memory description
+    );
 
-    /**
-     * @notice Returns full proposal details.
-     */
-    function getProposal(uint256 proposalId) external view returns (Proposal memory);
+    // ================================
+    // 🔹 Governance Settings & Voting
+    // ================================
+    function setProposalThreshold(uint256 newThreshold) external;
+    function setVotingDuration(uint256 newDuration) external;
+    function setMinimumHolding(uint256 newMinimumHolding) external;
+    function validateGovernanceParameters() external view returns (bool);
 
-    /**
-     * @notice Returns the total number of proposals created.
-     */
-    function getProposalCount() external view returns (uint256);
+    function getGovernanceVotes(address user) external view returns (uint256);
+    function penalizeGovernor(address user) external;
+    function isGovernorPenalized(address user) external view returns (bool);
+    function recoverERC20(address token, uint256 amount) external;
 
-    /**
-     * @notice Returns whether a given address has voted on a proposal.
-     */
-    function hasUserVoted(uint256 proposalId, address user) external view returns (bool);
+    // ================================
+    // 🔹 Dynamic Fee Governance
+    // ================================
+    function proposeFeeUpdate(uint256 newProjectFee, uint256 newImpactFee) external;
+    function executeFeeUpdate(uint256 proposalId) external;
+    function getCurrentFees() external view returns (uint256 projectFee, uint256 impactFee);
 
-    /**
-     * @notice Calculates the quadratic voting power for a given voter.
-     */
-    function calculateQuadraticVotingPower(address voter) external view returns (uint256);
+    // ================================
+    // 🔹 Halving & Economic Adjustments
+    // ================================
+    function applyHalving() external;
+    function updateHalvingPeriod(uint256 newHalvingPeriod) external;
+    function getHalvingDetails() external view returns (uint256 period, uint256 lastTime, uint256 epoch);
 
-    // -------------------------------------------
+    // ================================
+    // 🔹 Buyback & Liquidity Adjustments
+    // ================================
+    function executeBuyback(uint256 amount) external;
+    function injectLiquidity(uint256 amount) external;
+    function setLiquidityPairing(bool enabled) external;
+    function getLiquiditySettings() external view returns (bool isPairingEnabled);
+
+    // ================================
     // 🔹 Events
-    // -------------------------------------------
-    
+    // ================================
     event ProposalCreated(
         uint256 indexed proposalId,
         bytes data,
@@ -100,9 +119,22 @@ interface ITerraStakeGovernance {
     event ProposalThresholdUpdated(uint256 newThreshold);
     event VotingDurationUpdated(uint256 newDuration);
     event MinimumHoldingUpdated(uint256 newMinimumHolding);
+    event GovernanceParametersUpdated(
+        uint256 newVotingDuration,
+        uint256 newProposalThreshold,
+        uint256 newMinimumHolding
+    );
+    event RewardRateAdjusted(uint256 newRate, uint256 timestamp);
+    event TokenRecovered(address indexed token, uint256 amount, address indexed recipient);
+
+    event FeeUpdateProposed(uint256 indexed proposalId, uint256 newProjectFee, uint256 newImpactFee);
+    event FeeUpdateExecuted(uint256 indexed proposalId, uint256 newProjectFee, uint256 newImpactFee);
+
     event HalvingApplied(uint256 newEpoch);
     event HalvingPeriodUpdated(uint256 newHalvingPeriod);
+
     event ProposalVotingEnded(uint256 indexed proposalId, uint256 votesFor, uint256 votesAgainst);
     event BuybackExecuted(uint256 usdcAmount, uint256 tStakeReceived);
     event LiquidityInjected(uint256 usdcAmount, uint256 tStakeAdded);
+    event LiquidityPairingUpdated(bool isEnabled);
 }
