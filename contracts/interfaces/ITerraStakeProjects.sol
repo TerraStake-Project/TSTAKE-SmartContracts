@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 interface ITerraStakeProjects {
     // ====================================================
@@ -79,14 +79,14 @@ interface ITerraStakeProjects {
 
     /// @dev Stores validation reports and timestamps for project approvals
     struct ValidationData {
-        address vvb;
+        address validator;
         uint256 validationDate;
         bytes32 validationReportHash;
     }
 
     /// @dev Verification reports for projects to ensure compliance and updates
     struct VerificationData {
-        address vvb;
+        address verifier;
         uint256 verificationDate;
         bytes32 verificationReportHash;
     }
@@ -133,6 +133,16 @@ interface ITerraStakeProjects {
     }
 
     // ====================================================
+    // 🔹 Fee Management (Dynamic & Voted Adjustments)
+    // ====================================================
+    struct FeeStructure {
+        uint256 projectSubmissionFee;
+        uint256 impactReportingFee;
+        uint256 categoryChangeFee;
+        uint256 verificationFee;
+    }
+
+    // ====================================================
     // 🔹 Events
     // ====================================================
 
@@ -146,12 +156,12 @@ interface ITerraStakeProjects {
     event CommentAdded(uint256 indexed projectId, address indexed commenter, string message);
 
     /// @dev Governance-related events
-    event ValidationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
-    event VerificationSubmitted(uint256 indexed projectId, address indexed vvb, bytes32 reportHash);
+    event ValidationSubmitted(uint256 indexed projectId, address indexed validator, bytes32 reportHash);
+    event VerificationSubmitted(uint256 indexed projectId, address indexed verifier, bytes32 reportHash);
     event MetricsReported(uint256 indexed projectId, string metricType, string metricValue);
     event CategoryMultiplierUpdated(ProjectCategory indexed category, uint256 multiplier);
     event ImpactRequirementUpdated(ProjectCategory indexed category, uint256 minimumImpact);
-    event FeeStructureUpdated(uint256 registrationFee, uint256 verificationFee, uint256 categoryChangeFee);
+    event FeeStructureUpdated(uint256 projectSubmissionFee, uint256 impactReportingFee, uint256 verificationFee, uint256 categoryChangeFee);
     event ContractsSet(address stakingContract, address rewardsContract);
 
     /// @dev Analytics & reporting events
@@ -184,9 +194,9 @@ interface ITerraStakeProjects {
     ) external;
 
     function updateProjectState(uint256 projectId, ProjectState newState) external;
-    
+
     function uploadProjectDocuments(uint256 projectId, string[] calldata ipfsHashes) external;
-    
+
     function getProjectDocuments(uint256 projectId) external view returns (string[] memory);
 
     // 🔹 Governance Functions
@@ -207,7 +217,7 @@ interface ITerraStakeProjects {
         uint256 minimumScale
     ) external;
 
-    function updateFeeStructure(uint256 registrationFee, uint256 categoryChangeFee, uint256 verificationFee) external;
+    function updateFeeStructure(uint256 projectSubmissionFee, uint256 categoryChangeFee, uint256 impactReportingFee, uint256 verificationFee) external;
 
     function addComment(uint256 projectId, string calldata message) external;
 
