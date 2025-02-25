@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/draft-IERC20Permit.sol";
 import "../interfaces/ITerraStakeSlashing.sol";
 import "../interfaces/ITerraStakeStaking.sol";
-import "../interfaces/IRewardDistributor.sol";
+import "../interfaces/ITerraStakeRewardDistributor.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 
 interface IERC20Burnable {
@@ -28,13 +28,8 @@ interface AggregatorV3Interface {
 }
 
 /**
- * @title TerraStakeSlashing (3B Cap Governance Secured)
+ * @title TerraStakeSlashing
  * @notice Handles governance penalties, security breaches, and stake redistributions.
- * ✅ **DAO-Managed with Multi-Sig Approvals & Governance Timelocks**
- * ✅ **Quadratic Voting Protected Against Whale Control**
- * ✅ **Slash Enforcement via Permit-Based Approval (EIP-2612)**
- * ✅ **Liquidity & Buyback Exploit Protection**
- * ✅ **TWAP-Based Price Validation via Chainlink**
  */
 contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -50,35 +45,24 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
 
     IERC20 public immutable tStakeToken;
     ITerraStakeStaking public stakingContract;
-    IRewardDistributor public rewardDistributor;
+    ITerraStakeRewardDistributor public rewardDistributor;
     ITerraStakeLiquidityGuard public liquidityGuard;
     AggregatorV3Interface public priceOracle;
 
-    uint256 public constant GOVERNANCE_DELAY = 2 days;
-    uint256 public constant EMERGENCY_WITHDRAW_DELAY = 2 days; // Increased for security
-    uint256 public constant SLASHING_LOCK_PERIOD = 3 days; // Protects against mass slashing abuse
-    uint256 public constant REDISTRIBUTION_CHANGE_LOCK = 2 days; // Time-lock for redistribution updates
-    uint256 public constant PRICE_VALIDITY_PERIOD = 1 hours; // Maximum age of price feed data
+    uint256 public constant SLASHING_LOCK_PERIOD = 3 days;
+    uint256 public constant PRICE_VALIDITY_PERIOD = 1 hours;
     uint256 public constant PRICE_DEVIATION_THRESHOLD = 10; // 10% maximum deviation from TWAP
 
-    // ================================
-    // 🔹 State Variables
-    // ================================
     address public redistributionPool;
     uint256 public redistributionPercentage;
     uint256 public totalSlashed;
-    bool public paused;
     uint256 public lastTWAPPrice;
     uint256 public lastTWAPTimestamp;
 
     mapping(address => bool) public isSlashed;
-    mapping(bytes32 => uint256) public pendingChanges;
     mapping(address => uint256) public lastSlashingTime;
-    mapping(address => uint256) public lockedStakes; // Tracks locked funds post-slashing
+    mapping(address => uint256) public lockedStakes;
 
-    // ================================
-    // 🔹 Events
-    // ================================
     event ParticipantSlashed(
         address indexed participant,
         uint256 amount,
@@ -87,22 +71,9 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         string reason
     );
     event FundsRedistributed(uint256 amount, address recipient);
-    event RedistributionPoolUpdateRequested(address newPool, uint256 unlockTime);
-    event RedistributionPoolUpdated(address newPool);
-    event RedistributionPercentageUpdated(uint256 newPercentage);
-    event GovernanceTimelockSet(bytes32 indexed action, uint256 parameter, uint256 unlockTime);
-    event GovernanceRoleTransferred(address indexed oldAccount, address indexed newAccount);
-    event SlashingPaused();
-    event SlashingResumed();
-    event EmergencyWithdrawalRequested(address indexed admin, uint256 amount, uint256 unlockTime);
-    event EmergencyWithdrawalExecuted(address indexed admin, uint256 amount);
-    event PenaltyUpdated(address indexed participant, uint256 newPenalty);
-    event StakeLocked(address indexed participant, uint256 amount, uint256 lockUntil);
     event PriceValidationFailed(uint256 currentPrice, uint256 twapPrice, uint256 deviationPercentage);
+    event StakeLocked(address indexed participant, uint256 amount, uint256 lockUntil);
 
-    // ================================
-    // 🔹 Constructor
-    // ================================
     constructor(
         address _tStakeToken,
         address _stakingContract,
@@ -122,7 +93,7 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
 
         tStakeToken = IERC20(_tStakeToken);
         stakingContract = ITerraStakeStaking(_stakingContract);
-        rewardDistributor = IRewardDistributor(_rewardDistributor);
+        rewardDistributor = ITerraStakeRewardDistributor(_rewardDistributor);
         liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
         redistributionPool = _redistributionPool;
         redistributionPercentage = _redistributionPercentage;
@@ -131,62 +102,35 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(GOVERNANCE_ROLE, msg.sender);
         _grantRole(SLASHER_ROLE, msg.sender);
-        _grantRole(EMERGENCY_ROLE, msg.sender);
     }
 
     // ================================
     // 🔹 Price Validation
     // ================================
     function validatePrice() internal view returns (bool) {
-        (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        ) = priceOracle.latestRoundData();
-        
+        (, int256 answer, , uint256 updatedAt, ) = priceOracle.latestRoundData();
         require(answer > 0, "Invalid price feed response");
         require(updatedAt >= block.timestamp - PRICE_VALIDITY_PERIOD, "Stale price data");
-        require(answeredInRound >= roundId, "Price round not complete");
-        
+
         uint256 currentPrice = uint256(answer);
         
-        // Check if price has deviated too much from TWAP
         if (lastTWAPPrice > 0) {
-            uint256 deviationPercentage = currentPrice > lastTWAPPrice 
+            uint256 deviation = currentPrice > lastTWAPPrice
                 ? ((currentPrice - lastTWAPPrice) * 100) / lastTWAPPrice
                 : ((lastTWAPPrice - currentPrice) * 100) / lastTWAPPrice;
                 
-            if (deviationPercentage > PRICE_DEVIATION_THRESHOLD) {
-                emit PriceValidationFailed(currentPrice, lastTWAPPrice, deviationPercentage);
+            if (deviation > PRICE_DEVIATION_THRESHOLD) {
+                emit PriceValidationFailed(currentPrice, lastTWAPPrice, deviation);
                 return false;
             }
         }
-        
-        // Update TWAP state
+
         if (block.timestamp >= lastTWAPTimestamp + 1 hours) {
             lastTWAPPrice = currentPrice;
             lastTWAPTimestamp = block.timestamp;
         }
         
         return true;
-    }
-
-    // ================================
-    // 🔹 Secure Governance Updates
-    // ================================
-    function requestRedistributionPoolUpdate(address newPool) external onlyRole(GOVERNANCE_ROLE) {
-        require(newPool != address(0), "Invalid address");
-        pendingChanges[keccak256("REDISTRIBUTION_POOL")] = block.timestamp + REDISTRIBUTION_CHANGE_LOCK;
-        emit RedistributionPoolUpdateRequested(newPool, block.timestamp + REDISTRIBUTION_CHANGE_LOCK);
-    }
-
-    function executeRedistributionPoolUpdate(address newPool) external onlyRole(GOVERNANCE_ROLE) {
-        require(block.timestamp >= pendingChanges[keccak256("REDISTRIBUTION_POOL")], "Timelock active");
-        redistributionPool = newPool;
-        delete pendingChanges[keccak256("REDISTRIBUTION_POOL")];
-        emit RedistributionPoolUpdated(newPool);
     }
 
     // ================================
@@ -204,15 +148,13 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         require(participant != address(0), "Invalid participant");
         require(amount > 0, "Slashing amount must be > 0");
         require(!isSlashed[participant], "Already slashed");
-        require(block.timestamp >= lastSlashingTime[participant] + SLASHING_LOCK_PERIOD, "Slashing cooldown active");
+        require(block.timestamp >= lastSlashingTime[participant] + SLASHING_LOCK_PERIOD, "Cooldown active");
         require(validatePrice(), "Price validation failed");
 
         IERC20Permit(address(tStakeToken)).permit(participant, address(this), amount, deadline, v, r, s);
 
         uint256 participantBalance = tStakeToken.balanceOf(participant);
         require(participantBalance >= amount, "Insufficient balance");
-
-        require(!stakingContract.governanceViolators(participant), "Already penalized");
 
         tStakeToken.safeTransferFrom(participant, address(this), amount);
         isSlashed[participant] = true;
@@ -223,13 +165,12 @@ contract TerraStakeSlashing is ITerraStakeSlashing, AccessControl, ReentrancyGua
         uint256 redistributionAmount = (amount * redistributionPercentage) / 10000;
         uint256 burnAmount = amount - redistributionAmount;
 
-        tStakeToken.safeTransfer(redistributionPool, redistributionAmount);
-        emit FundsRedistributed(redistributionAmount, redistributionPool);
+        rewardDistributor.distributePenaltyRewards(redistributionAmount);
+        emit FundsRedistributed(redistributionAmount, address(rewardDistributor));
 
         require(_burnTokens(burnAmount), "Burn failed");
 
         emit ParticipantSlashed(participant, amount, redistributionAmount, burnAmount, reason);
-        emit PenaltyUpdated(participant, amount);
         emit StakeLocked(participant, amount, block.timestamp + SLASHING_LOCK_PERIOD);
     }
 
