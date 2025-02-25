@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -9,8 +9,8 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title TerraStakeAccessControl
- * @notice Centralized Access Control List for TerraStake protocol
- * @dev Handles role management, validation, and hierarchical permissions
+ * @notice Centralized Role-Based Access Control for TerraStake
+ * @dev Implements hierarchical permissioning, role time-locks, and governance-controlled security measures.
  */
 contract TerraStakeAccessControl is
     Initializable,
@@ -23,7 +23,7 @@ contract TerraStakeAccessControl is
     // ====================================================
     IERC20 private _tStakeToken;
     
-    // Role definitions moved to constant state variables for gas optimization
+    // Role definitions (Optimized for Gas Efficiency)
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
@@ -35,36 +35,24 @@ contract TerraStakeAccessControl is
     bytes32 public constant REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
     bytes32 public constant DISTRIBUTION_ROLE = keccak256("DISTRIBUTION_ROLE");
 
-    // Optimized storage layout for role management
     struct RoleData {
-        uint256 requirement;     // Minimum TSTAKE required
-        uint256 expiration;      // Role expiration timestamp
-        bytes32 parentRole;      // Hierarchical parent role
-        bool isActive;           // Role active status
+        uint256 requirement;      // Minimum TSTAKE balance required
+        uint256 expiration;       // Role expiration timestamp
+        bytes32 parentRole;       // Hierarchical parent role (if required)
+        bool isActive;            // Role activation status
     }
 
-    // Consolidated role data mapping
+    // Role storage mapping
     mapping(bytes32 => mapping(address => RoleData)) private _roleData;
-    
+    mapping(bytes32 => uint256) private _roleTimelock;
+
     // ====================================================
     // 🔹 Events
     // ====================================================
-    event RoleConfigured(
-        bytes32 indexed role,
-        uint256 requirement,
-        bytes32 parentRole
-    );
-    event RoleGrantedWithMetadata(
-        bytes32 indexed role,
-        address indexed account,
-        uint256 expiration,
-        uint256 requirement
-    );
-    event RoleRevoked(
-        bytes32 indexed role,
-        address indexed account,
-        address indexed revoker
-    );
+    event RoleConfigured(bytes32 indexed role, uint256 requirement, bytes32 parentRole);
+    event RoleGrantedWithMetadata(bytes32 indexed role, address indexed account, uint256 expiration, uint256 requirement);
+    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed revoker);
+    event RoleTimelockUpdated(bytes32 indexed role, uint256 timelockDuration);
 
     // ====================================================
     // 🔹 Modifiers
@@ -79,6 +67,14 @@ contract TerraStakeAccessControl is
         _;
     }
 
+    modifier roleTimelocked(bytes32 role) {
+        require(
+            block.timestamp >= _roleTimelock[role],
+            "Role change timelocked"
+        );
+        _;
+    }
+
     // ====================================================
     // 🔹 Constructor & Initializer
     // ====================================================
@@ -87,10 +83,7 @@ contract TerraStakeAccessControl is
         _disableInitializers();
     }
 
-    function initialize(
-        address admin,
-        address tStakeToken
-    ) external initializer {
+    function initialize(address admin, address tStakeToken) external initializer {
         require(admin != address(0) && tStakeToken != address(0), "Invalid addresses");
 
         __AccessControl_init();
@@ -114,7 +107,6 @@ contract TerraStakeAccessControl is
             "Invalid parent role"
         );
 
-        // Update role configuration
         _roleData[role][address(0)] = RoleData({
             requirement: requirement,
             expiration: 0,
@@ -129,14 +121,13 @@ contract TerraStakeAccessControl is
         bytes32 role,
         address account,
         uint256 duration
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) validRole(role) nonReentrant {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) validRole(role) roleTimelocked(role) nonReentrant {
         require(account != address(0), "Invalid account");
         require(duration > 0, "Invalid duration");
 
         RoleData storage roleConfig = _roleData[role][address(0)];
         require(roleConfig.isActive, "Role not active");
 
-        // Validate TSTAKE requirements
         if (roleConfig.requirement > 0) {
             require(
                 _tStakeToken.balanceOf(account) >= roleConfig.requirement,
@@ -144,7 +135,6 @@ contract TerraStakeAccessControl is
             );
         }
 
-        // Grant role with metadata
         _roleData[role][account] = RoleData({
             requirement: roleConfig.requirement,
             expiration: block.timestamp + duration,
@@ -153,51 +143,35 @@ contract TerraStakeAccessControl is
         });
 
         _grantRole(role, account);
+        _roleTimelock[role] = block.timestamp + 1 days; // 1-Day timelock for new grants
 
-        emit RoleGrantedWithMetadata(
-            role,
-            account,
-            block.timestamp + duration,
-            roleConfig.requirement
-        );
+        emit RoleGrantedWithMetadata(role, account, block.timestamp + duration, roleConfig.requirement);
     }
 
-    function revokeRole(
-        bytes32 role,
-        address account
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) validRole(role) {
+    function revokeRole(bytes32 role, address account) external onlyRole(DEFAULT_ADMIN_ROLE) validRole(role) roleTimelocked(role) {
         _roleData[role][account].isActive = false;
         _revokeRole(role, account);
+        _roleTimelock[role] = block.timestamp + 1 days; // Timelock prevents immediate reassignments
 
         emit RoleRevoked(role, account, msg.sender);
     }
 
     // ====================================================
-    // 🔹 Role Validation Functions
+    // 🔹 Role Validation & Security
     // ====================================================
-    function validateRole(
-        bytes32 role,
-        address account
-    ) external view returns (bool) {
+    function validateRole(bytes32 role, address account) external view returns (bool) {
         return _isActiveRole(role, account);
     }
 
-    function getRoleData(
-        bytes32 role,
-        address account
-    ) external view returns (
-        uint256 requirement,
-        uint256 expiration,
-        bytes32 parentRole,
-        bool isActive
-    ) {
+    function getRoleData(bytes32 role, address account) external view returns (uint256, uint256, bytes32, bool) {
         RoleData storage data = _roleData[role][account];
-        return (
-            data.requirement,
-            data.expiration,
-            data.parentRole,
-            data.isActive
-        );
+        return (data.requirement, data.expiration, data.parentRole, data.isActive);
+    }
+
+    function updateRoleTimelock(bytes32 role, uint256 timelockDuration) external onlyRole(GOVERNANCE_ROLE) {
+        require(timelockDuration <= 7 days, "Timelock too long");
+        _roleTimelock[role] = block.timestamp + timelockDuration;
+        emit RoleTimelockUpdated(role, timelockDuration);
     }
 
     // ====================================================
@@ -205,40 +179,16 @@ contract TerraStakeAccessControl is
     // ====================================================
     function _setupInitialRoles(address admin) private {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        
-        // Setup core roles
-        _roleData[DEFAULT_ADMIN_ROLE][address(0)] = RoleData({
-            requirement: 0,
-            expiration: 0,
-            parentRole: bytes32(0),
-            isActive: true
-        });
     }
 
     function _isValidRole(bytes32 role) private pure returns (bool) {
         return role != bytes32(0);
     }
 
-    function _isActiveRole(
-        bytes32 role,
-        address account
-    ) private view returns (bool) {
+    function _isActiveRole(bytes32 role, address account) private view returns (bool) {
         if (!hasRole(role, account)) return false;
 
         RoleData storage data = _roleData[role][account];
-        if (!data.isActive) return false;
-        if (data.expiration > 0 && block.timestamp > data.expiration) return false;
-        
-        // Check TSTAKE balance if requirement exists
-        if (data.requirement > 0) {
-            if (_tStakeToken.balanceOf(account) < data.requirement) return false;
-        }
-
-        // Validate parent role if exists
-        if (data.parentRole != bytes32(0)) {
-            if (!_isActiveRole(data.parentRole, account)) return false;
-        }
-
-        return true;
+        return data.isActive && (data.expiration == 0 || block.timestamp < data.expiration);
     }
 }
