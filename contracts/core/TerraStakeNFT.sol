@@ -18,6 +18,12 @@ interface ITerraStakeToken {
     function burn(address account, uint256 amount) external;
 }
 
+/**
+ * @title TerraStakeNFT
+ * @notice ERC1155 NFT contract with integrated on-chain metadata history and IPFS support for rich metadata.
+ *         Includes advanced features such as batch metadata processing, enhanced project verification,
+ *         automated liquidity management, optimized fee distribution, and emergency recovery.
+ */
 contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBaseV2 {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
@@ -40,8 +46,9 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         uint256 lastUpdated;
     }
 
+    // NFTMetadata now includes an ipfsUri field for full rich metadata stored on IPFS.
     struct NFTMetadata {
-        string uri;
+        string ipfsUri; // IPFS URI pointing to a JSON file containing complete metadata.
         uint256 projectId;
         uint256 impactValue;
         bool isTradable;
@@ -62,7 +69,7 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
     INonfungiblePositionManager public immutable positionManager;
     IUniswapV3Pool public immutable uniswapPool;
     address public immutable treasuryWallet;
-    address public immutable stakingRewards; // New variable for staking rewards
+    address public immutable stakingRewards; // For staking rewards transfers.
     VRFCoordinatorV2Interface internal vrfCoordinator;
 
     uint256 public totalMinted;
@@ -78,18 +85,21 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
     mapping(uint256 => uint256) private _cachedProjectImpact;
     mapping(uint256 => uint256) private _lastCacheUpdate;
     mapping(uint256 => uint256) private _randomnessResults;
-    mapping(uint256 => bytes32) private _projectHashes; // Stores the approved project hash per token.
+    mapping(uint256 => bytes32) private _projectHashes; // Approved project hash per token.
 
-    // ================================
-    // 🔹 Events
-    // ================================
+    // =====================================================
+    // Events
+    // =====================================================
     event NFTMinted(address indexed to, uint256 indexed tokenId, uint256 projectId);
     event MintingFeeUpdated(uint256 newFee);
     event FeeDistributed(uint256 stakingAmount, uint256 liquidityAmount, uint256 treasuryAmount, uint256 burnAmount);
     event RandomnessReceived(uint256 indexed requestId, uint256 randomValue);
-    event MetadataUpdated(uint256 indexed tokenId, string newUri, uint256 version);
+    event MetadataUpdated(uint256 indexed tokenId, string newIpfsUri, uint256 version);
     event ProjectHashVerified(uint256 indexed tokenId, uint256 indexed projectId, bytes32 projectHash);
 
+    // =====================================================
+    // Constructor
+    // =====================================================
     constructor(
         address _tStakeToken,
         address _terraStakeProjects,
@@ -101,8 +111,8 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         bytes32 _keyHash,
         uint64 _subscriptionId,
         address _treasuryWallet,
-        address _stakingRewards   // New parameter for staking rewards
-    ) ERC1155("https://metadata.terrastake.com/{id}.json") VRFConsumerBaseV2(_vrfCoordinator) {
+        address _stakingRewards
+    ) ERC1155("ipfs://") VRFConsumerBaseV2(_vrfCoordinator) {
         require(_tStakeToken != address(0), "Invalid TSTAKE token address");
         require(_terraStakeProjects != address(0), "Invalid TerraStakeProjects address");
 
@@ -126,11 +136,17 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         feeDistribution = FeeDistribution(40, 25, 20, 15);
     }
 
+    // =====================================================
+    // Administrative Functions
+    // =====================================================
     function setMintingFee(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
         mintFee = newFee;
         emit MintingFeeUpdated(newFee);
     }
 
+    // =====================================================
+    // Fee Distribution
+    // =====================================================
     function distributeMintingFee(uint256 fee) internal nonReentrant {
         uint256 stakingAmount = (fee * feeDistribution.stakingShare) / 100;
         uint256 liquidityAmount = (fee * feeDistribution.liquidityShare) / 100;
@@ -142,6 +158,9 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         emit FeeDistributed(stakingAmount, liquidityAmount, treasuryAmount, burnAmount);
     }
 
+    // =====================================================
+    // Project Verification Functions
+    // =====================================================
     /// @notice Retrieves verification data for a given project.
     /// @param projectId The project ID.
     /// @return projectHash The IPFS hash of the project data.
@@ -161,12 +180,23 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         return (projectHash, impactHash, isVerified);
     }
 
+    /// @notice Enhanced project verification including an active state check.
+    function verifyProjectIntegrity(uint256 projectId) internal view returns (bool) {
+        (bytes32 projectHash, bytes32 impactHash, bool verified) = getProjectVerification(projectId);
+        return verified 
+            && projectHash != bytes32(0) 
+            && terraStakeProjects.getProjectState(projectId) == ITerraStakeProjects.ProjectState.Active;
+    }
+
+    // =====================================================
+    // Minting Functionality with IPFS Metadata
+    // =====================================================
     /**
-     * @notice Mints a new NFT with verified project data.
+     * @notice Mints a new NFT with verified project data and rich metadata stored on IPFS.
      * @param to The recipient address.
      * @param projectId The associated project ID.
      * @param impactValue The impact value of the project.
-     * @param uri The metadata URI.
+     * @param ipfsUri The IPFS URI pointing to the rich JSON metadata.
      * @param isTradable Whether the NFT is tradable.
      * @param location Project location.
      * @param capacity Project capacity.
@@ -177,7 +207,7 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         address to,
         uint256 projectId,
         uint256 impactValue,
-        string memory uri,
+        string memory ipfsUri,
         bool isTradable,
         string memory location,
         uint256 capacity,
@@ -198,7 +228,7 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         _mint(to, tokenId, 1, "");
 
         NFTMetadata memory newMetadata = NFTMetadata(
-            uri,
+            ipfsUri,
             projectId,
             impactValue,
             isTradable,
@@ -224,6 +254,9 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         emit ProjectHashVerified(tokenId, projectId, verifiedProjectHash);
     }
 
+    // =====================================================
+    // Chainlink VRF Functions
+    // =====================================================
     function requestRandomness() internal returns (uint256) {
         return vrfCoordinator.requestRandomWords(keyHash, subscriptionId, 3, 100000, 1);
     }
@@ -233,18 +266,21 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
         emit RandomnessReceived(requestId, randomWords[0]);
     }
 
-    function updateMetadata(uint256 tokenId, string memory newUri) external onlyRole(GOVERNANCE_ROLE) {
+    // =====================================================
+    // Metadata Update Functions
+    // =====================================================
+    function updateMetadata(uint256 tokenId, string memory newIpfsUri) external onlyRole(GOVERNANCE_ROLE) {
         NFTMetadata storage metadata = _nftMetadata[tokenId];
-        metadata.uri = newUri;
+        metadata.ipfsUri = newIpfsUri;
         metadata.version++;
 
         metadataHistory[tokenId].push(metadata);
-        emit MetadataUpdated(tokenId, newUri, metadata.version);
+        emit MetadataUpdated(tokenId, newIpfsUri, metadata.version);
     }
 
-    // ===================================================
+    // =====================================================
     // Optimizations and Advanced Functions
-    // ===================================================
+    // =====================================================
 
     /// @notice Batch process metadata updates for a list of tokenIds.
     function batchProcessMetadata(uint256[] calldata tokenIds) external onlyRole(GOVERNANCE_ROLE) {
@@ -261,16 +297,8 @@ contract TerraStakeNFT is ERC1155, AccessControl, ReentrancyGuard, VRFConsumerBa
     function _updateMetadataCache(uint256 tokenId) internal {
         _lastCacheUpdate[tokenId] = block.timestamp;
         NFTMetadata storage metadata = _nftMetadata[tokenId];
-        // Dummy update: set cached project impact to the current impactValue.
+        // Dummy cache update: set cached project impact to the current impactValue.
         _cachedProjectImpact[tokenId] = metadata.impactValue;
-    }
-
-    /// @notice Enhanced project verification including an active state check.
-    function verifyProjectIntegrity(uint256 projectId) internal view returns (bool) {
-        (bytes32 projectHash, bytes32 impactHash, bool verified) = getProjectVerification(projectId);
-        return verified 
-            && projectHash != bytes32(0) 
-            && terraStakeProjects.getProjectState(projectId) == ITerraStakeProjects.ProjectState.Active;
     }
 
     /// @notice Automated liquidity management function.
