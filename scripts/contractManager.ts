@@ -11,7 +11,7 @@ dotenv.config();
 import {
     TerraStakeTokenABI,
     TerraStakeStakingABI,
-    TerraStakeRewardsABI,
+    TerraStakeRewardDistributorABI,
     TerraStakeProjectsABI,
     TerraStakeITOABI,
     TerraStakeGovernanceABI,
@@ -22,7 +22,6 @@ import {
     TerraStakeMarketPlaceABI,
     TerraStakeLiquidityGuardABI,
     TerraStakeAntiBotABI,
-    RewardDistributorABI,
 } from "./abi";
 
 // Interface for Staking Positions
@@ -126,7 +125,6 @@ class ContractManager {
         const abiMap = {
             token: TerraStakeTokenABI,
             staking: TerraStakeStakingABI,
-            rewards: TerraStakeRewardsABI,
             projects: TerraStakeProjectsABI,
             ito: TerraStakeITOABI,
             governance: TerraStakeGovernanceABI,
@@ -137,7 +135,7 @@ class ContractManager {
             LiquidityGuard: TerraStakeLiquidityGuardABI,
             AntiBot: TerraStakeAntiBotABI,
             AccessControl: TerraStakeAccessControlABI,
-            RewardDistributor: RewardDistributorABI,
+            RewardDistributor: TerraStakeRewardDistributorABI,
         };
 
         const contracts: Record<string, ethers.Contract> = {};
