@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
+import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+
 interface ITerraStakeMarketplace {
     // ================================
     // 🔹 Market Enums & Structs
     // ================================
-    
+
     enum MarketState { Active, Suspended, Emergency }
-    
+
     struct Listing {
         address seller;
         uint256 tokenId;
@@ -119,6 +121,14 @@ interface ITerraStakeMarketplace {
     function getLiquiditySettings() external view returns (bool isProvisionEnabled);
 
     // ================================
+    // 🔹 Upgradeability
+    // ================================
+
+    function upgradeTo(address newImplementation) external;
+
+    function getImplementation() external view returns (address);
+
+    // ================================
     // 🔹 Events
     // ================================
 
@@ -180,4 +190,6 @@ interface ITerraStakeMarketplace {
     event PriceFeedUpdated(address newPriceFeed);
 
     event ERC20Recovered(address indexed token, uint256 amount);
+
+    event Upgraded(address indexed newImplementation);
 }
