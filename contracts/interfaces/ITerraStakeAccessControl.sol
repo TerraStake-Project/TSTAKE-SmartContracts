@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -17,6 +17,8 @@ interface ITerraStakeAccessControl {
     error InvalidDuration();
     error PriceOutOfBounds(uint256 price, uint256 min, uint256 max);
     error InsufficientTStakeBalance(address account, uint256 requiredBalance);
+    error LiquidityThresholdNotMet();
+    error RoleAlreadyAssigned(bytes32 role, address account);
 
     // ------------------------------------------------------------------------
     // 🔹 Events
@@ -53,47 +55,77 @@ interface ITerraStakeAccessControl {
         address priceOracle,
         address usdcToken,
         address wethToken,
-        address tStakeToken,  // ✅ TSTAKE token added
+        address tStakeToken,
         uint256 minimumLiquidity,
         uint256 minimumPrice,
         uint256 maximumPrice
     ) external;
 
     function grantRoleWithExpiration(bytes32 role, address account, uint256 duration) external;
-    function grantRoleBatch(bytes32[] calldata roles, address account) external;
+    
+    function grantRoleBatch(bytes32[] calldata roles, address account, uint256[] calldata durations) external;
+
     function setRoleRequirement(bytes32 role, uint256 requirement) external;
+    
     function grantRole(bytes32 role, address account) external;
+
     function revokeRole(bytes32 role, address account) external;
+
     function updatePriceOracle(address newOracle) external;
+
     function pause() external;
+
     function unpause() external;
 
     // ------------------------------------------------------------------------
     // 🔹 TSTAKE-Based Role Enforcement
     // ------------------------------------------------------------------------
     /**
-     * @notice Validates if an account has the required amount of TSTAKE tokens to maintain a role.
-     * @param account The account to check.
-     * @param requiredBalance The minimum amount of TSTAKE tokens required.
+     * @notice Validates if an account meets the required TSTAKE balance **at the last block snapshot**.
+     * @dev Prevents flash-loan-based role assignment.
      */
-    function validateWithTStake(address account, uint256 requiredBalance) external view;
+    function validateWithTStakeSnapshot(address account, uint256 requiredBalance) external view;
 
     // ------------------------------------------------------------------------
     // 🔹 Validation Functions
     // ------------------------------------------------------------------------
+    /**
+     * @notice Cross-validates price data using **Chainlink TWAP & Uniswap V3 TWAP**.
+     */
     function validateWithOracle(uint256 expectedPrice) external view;
-    function validateLiquidity() external view;
+
+    /**
+     * @notice Ensures the platform's **staked liquidity is sufficient** before role grants.
+     * @dev Compares **staked TVL & liquidity thresholds** before allowing actions.
+     */
+    function validateLiquidityThreshold() external view;
 
     // ------------------------------------------------------------------------
     // 🔹 View Functions
     // ------------------------------------------------------------------------
     function roleRequirements(bytes32 role) external view returns (uint256);
+    
     function roleExpirations(bytes32 role, address account) external view returns (uint256);
+
     function priceFeed() external view returns (AggregatorV3Interface);
+
     function usdc() external view returns (IERC20);
+
     function weth() external view returns (IERC20);
-    function tStakeToken() external view returns (IERC20); // ✅ TSTAKE Token Address Getter
+
+    function tStakeToken() external view returns (IERC20);
+
     function hasValidRole(bytes32 role, address account) external view returns (bool);
+
     function getRoleMemberCount(bytes32 role) external view returns (uint256);
+
     function getRoleHierarchy(bytes32 role) external view returns (bytes32);
+
+    /**
+     * @notice Checks if a role is active and not expired.
+     * @param role The role to check.
+     * @param account The account to verify.
+     * @return True if the role is active, otherwise false.
+     */
+    function isActiveRole(bytes32 role, address account) external view returns (bool);
 }
