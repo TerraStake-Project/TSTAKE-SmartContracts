@@ -20,7 +20,7 @@ interface ITerraStakeNFT {
     }
 
     struct NFTMetadata {
-        string uri;
+        string ipfsUri; // IPFS URI pointing to a JSON file containing full, rich metadata.
         uint256 projectId;
         uint256 impactValue;
         bool isTradable;
@@ -41,7 +41,7 @@ interface ITerraStakeNFT {
     event MintingFeeUpdated(uint256 newFee);
     event FeeDistributed(uint256 stakingAmount, uint256 liquidityAmount, uint256 treasuryAmount, uint256 burnAmount);
     event RandomnessReceived(uint256 indexed requestId, uint256 randomValue);
-    event MetadataUpdated(uint256 indexed tokenId, string newUri, uint256 version);
+    event MetadataUpdated(uint256 indexed tokenId, string newIpfsUri, uint256 version);
     event ProjectHashVerified(uint256 indexed tokenId, uint256 indexed projectId, bytes32 projectHash);
 
     // =====================================================
@@ -56,7 +56,7 @@ interface ITerraStakeNFT {
         address to,
         uint256 projectId,
         uint256 impactValue,
-        string calldata uri,
+        string calldata ipfsUri,
         bool isTradable,
         string calldata location,
         uint256 capacity,
@@ -64,10 +64,10 @@ interface ITerraStakeNFT {
         string calldata projectType
     ) external;
 
-    function updateMetadata(uint256 tokenId, string calldata newUri) external;
+    function updateMetadata(uint256 tokenId, string calldata newIpfsUri) external;
 
     // =====================================================
-    // Optimized Operations & Emergency Functions
+    // Optimized & Emergency Functions
     // =====================================================
     function batchProcessMetadata(uint256[] calldata tokenIds) external;
     function emergencyRecovery(address token) external;
@@ -87,10 +87,7 @@ interface ITerraStakeNFT {
     function feeDistribution() external view returns (FeeDistribution memory);
     function keyHash() external view returns (bytes32);
     function subscriptionId() external view returns (uint64);
-
-    // =====================================================
-    // Public Collection Data
-    // =====================================================
-    // Returns the metadata history for a given token ID.
+    function liquidityWhitelist(address account) external view returns (bool);
     function metadataHistory(uint256 tokenId) external view returns (NFTMetadata[] memory);
+    function POOL_FEE() external view returns (uint24);
 }
