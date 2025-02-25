@@ -1,168 +1,153 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/utils/StorageSlot.sol";
 
-/// @title TerraStakeProxy Contract
-/// @notice Manages upgrades, access control, and governance integration
-/// @dev Uses OpenZeppelin's TransparentUpgradeableProxy and AccessControl for role-based access
+/// @title TerraStakeProxy
+/// @notice Manages secure upgrades, governance control, and emergency pauses
 contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, ReentrancyGuard, Pausable {
-    // Role definitions
+    // ================================
+    // 🔹 Role Definitions
+    // ================================
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant MULTISIG_ADMIN_ROLE = keccak256("MULTISIG_ADMIN_ROLE");
 
-    // Time delays for upgrades and unpausing
+    // ================================
+    // 🔹 Upgrade Security & Governance Variables
+    // ================================
     uint256 public constant UPGRADE_TIMELOCK = 2 days; // Timelock for upgrades
-    uint256 public constant UNPAUSE_DELAY = 1 days;   // Delay before unpausing
+    uint256 public constant UNPAUSE_DELAY = 1 days; // Delay before unpausing
 
-    // Tracks scheduled upgrades and unpause requests
-    mapping(address => uint256) public pendingUpgrades;
-    mapping(uint256 => uint256) public pendingUnpause;
-    
-    // Store implementation bytecode hashes
-    mapping(address => bytes32) public implementationBytecodeHashes;
+    mapping(address => uint256) public scheduledUpgrades;
+    mapping(uint256 => uint256) public scheduledUnpauses;
+    mapping(address => bytes32) public implementationHashes;
 
-    uint256 public version; // Tracks the current version of the implementation
+    uint256 public version;
 
-    /// Events
+    // ================================
+    // 🔹 Events for Transparency
+    // ================================
     event UpgradeScheduled(address indexed newImplementation, uint256 effectiveTime, uint256 version, bytes32 bytecodeHash);
     event UpgradeExecuted(address indexed oldImplementation, address indexed newImplementation, uint256 version, bytes32 oldHash, bytes32 newHash);
-    event UpgradeCancelled(address indexed newImplementation, address indexed actor, uint256 timestamp);
-    event ProxyPaused(address indexed actor, uint256 timestamp);
+    event UpgradeCancelled(address indexed newImplementation, address indexed actor);
+    event ProxyPaused(address indexed actor);
     event ProxyUnpauseRequested(address indexed actor, uint256 effectiveTime);
-    event ProxyUnpaused(address indexed actor, uint256 timestamp);
+    event ProxyUnpaused(address indexed actor);
     event BytecodeMismatch(address indexed implementation, bytes32 expectedHash, bytes32 actualHash);
 
-    /// @notice Initialize the proxy with implementation, admin, and roles
-    /// @param _logic Address of the initial implementation contract
-    /// @param _data ABI-encoded initializer call for the implementation
+    // ================================
+    // 🔹 Constructor
+    // ================================
     constructor(
         address _logic,
         bytes memory _data
-    ) TransparentUpgradeableProxy(_logic, 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d, _data) {
+    ) TransparentUpgradeableProxy(_logic, msg.sender, _data) {
         require(_logic != address(0), "Invalid logic address");
-        require(_data.length > 0, "Empty initialization data");
+        require(_data.length > 0, "Initialization data required");
 
-        // Set roles and assign them to the predefined admin address
-        _grantRole(DEFAULT_ADMIN_ROLE, 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d);
-        _grantRole(UPGRADER_ROLE, 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d);
-        _grantRole(PAUSER_ROLE, 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d);
-        _grantRole(MULTISIG_ADMIN_ROLE, 0xcB3705b50773e95fCe6d3Fcef62B4d753aA0059d);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(UPGRADER_ROLE, msg.sender);
+        _grantRole(PAUSER_ROLE, msg.sender);
+        _grantRole(MULTISIG_ADMIN_ROLE, msg.sender);
 
-        version = 1; // Initialize the version
-        
-        // Store initial implementation bytecode hash
-        implementationBytecodeHashes[_logic] = _getBytecodeHash(_logic);
+        version = 1;
+        implementationHashes[_logic] = _getBytecodeHash(_logic);
     }
 
-    /// @notice Schedule an upgrade to a new implementation
-    /// @param newImplementation Address of the new implementation contract
+    // ================================
+    // 🔹 Upgrade Security & Execution
+    // ================================
     function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) nonReentrant {
         require(newImplementation != address(0), "Zero address");
-        require(newImplementation.code.length > 0, "Not a contract");
-        require(pendingUpgrades[newImplementation] == 0, "Already scheduled");
+        require(newImplementation.code.length > 0, "Invalid contract");
+        require(scheduledUpgrades[newImplementation] == 0, "Already scheduled");
 
         _validateImplementation(newImplementation);
-        
-        // Get and validate bytecode hash
         bytes32 newBytecodeHash = _getBytecodeHash(newImplementation);
-        bytes32 currentHash = implementationBytecodeHashes[_implementation()];
-        require(newBytecodeHash != currentHash, "Identical bytecode");
+        require(newBytecodeHash != implementationHashes[_implementation()], "Same bytecode");
 
-        uint256 effectiveTime = block.timestamp + UPGRADE_TIMELOCK;
-        pendingUpgrades[newImplementation] = effectiveTime;
-        implementationBytecodeHashes[newImplementation] = newBytecodeHash;
+        scheduledUpgrades[newImplementation] = block.timestamp + UPGRADE_TIMELOCK;
+        implementationHashes[newImplementation] = newBytecodeHash;
 
-        emit UpgradeScheduled(newImplementation, effectiveTime, version, newBytecodeHash);
+        emit UpgradeScheduled(newImplementation, scheduledUpgrades[newImplementation], version, newBytecodeHash);
     }
 
-    /// @notice Execute a scheduled upgrade
-    /// @param newImplementation Address of the new implementation contract
     function executeUpgrade(address newImplementation) external onlyRole(MULTISIG_ADMIN_ROLE) nonReentrant {
-        require(pendingUpgrades[newImplementation] != 0, "No upgrade scheduled");
-        require(block.timestamp >= pendingUpgrades[newImplementation], "Timelock active");
+        require(scheduledUpgrades[newImplementation] != 0, "No upgrade scheduled");
+        require(block.timestamp >= scheduledUpgrades[newImplementation], "Timelock active");
 
         address oldImplementation = _implementation();
         require(newImplementation != oldImplementation, "Same implementation");
 
-        // Verify bytecode hasn't changed since scheduling
-        bytes32 storedHash = implementationBytecodeHashes[newImplementation];
+        bytes32 storedHash = implementationHashes[newImplementation];
         bytes32 currentHash = _getBytecodeHash(newImplementation);
-        require(storedHash == currentHash, "Implementation modified");
+        require(storedHash == currentHash, "Bytecode mismatch");
 
-        bytes32 oldHash = implementationBytecodeHashes[oldImplementation];
+        bytes32 oldHash = implementationHashes[oldImplementation];
         _upgradeTo(newImplementation);
-        delete pendingUpgrades[newImplementation];
+        delete scheduledUpgrades[newImplementation];
 
         version++;
         emit UpgradeExecuted(oldImplementation, newImplementation, version, oldHash, currentHash);
     }
 
-    /// @notice Get the bytecode hash of a contract
-    /// @param implementation Address of the contract to hash
-    /// @return Hash of the contract's bytecode
-    function _getBytecodeHash(address implementation) internal view returns (bytes32) {
-        bytes memory bytecode = implementation.code;
-        return keccak256(bytecode);
+    function cancelUpgrade(address newImplementation) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        require(scheduledUpgrades[newImplementation] != 0, "No scheduled upgrade");
+        delete scheduledUpgrades[newImplementation];
+        delete implementationHashes[newImplementation];
+
+        emit UpgradeCancelled(newImplementation, msg.sender);
     }
 
-    /// @notice Cancel a scheduled upgrade
-    /// @param newImplementation Address of the scheduled implementation to cancel
-    function clearScheduledUpgrade(address newImplementation) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
-        require(pendingUpgrades[newImplementation] != 0, "No scheduled upgrade");
-        delete pendingUpgrades[newImplementation];
-        delete implementationBytecodeHashes[newImplementation];
-        emit UpgradeCancelled(newImplementation, msg.sender, block.timestamp);
-    }
-
-    /// @notice Pause proxy functionality
+    // ================================
+    // 🔹 Pausing & Emergency Functions
+    // ================================
     function pause() external onlyRole(PAUSER_ROLE) nonReentrant {
         _pause();
-        emit ProxyPaused(msg.sender, block.timestamp);
+        emit ProxyPaused(msg.sender);
     }
 
-    /// @notice Request to unpause with delay
     function requestUnpause() external onlyRole(PAUSER_ROLE) nonReentrant {
         uint256 effectiveTime = block.timestamp + UNPAUSE_DELAY;
-        pendingUnpause[block.number] = effectiveTime;
+        scheduledUnpauses[block.number] = effectiveTime;
         emit ProxyUnpauseRequested(msg.sender, effectiveTime);
     }
 
-    /// @notice Execute unpausing after delay
     function unpause() external onlyRole(PAUSER_ROLE) nonReentrant {
-        require(pendingUnpause[block.number] != 0, "No unpause scheduled");
-        require(block.timestamp >= pendingUnpause[block.number], "Delay active");
+        require(scheduledUnpauses[block.number] != 0, "No unpause scheduled");
+        require(block.timestamp >= scheduledUnpauses[block.number], "Delay active");
 
-        delete pendingUnpause[block.number];
+        delete scheduledUnpauses[block.number];
         _unpause();
-        emit ProxyUnpaused(msg.sender, block.timestamp);
+        emit ProxyUnpaused(msg.sender);
     }
 
-    /// @notice Get current implementation address
-    /// @return The address of the current implementation
+    // ================================
+    // 🔹 Internal Helper Functions
+    // ================================
+    function _getBytecodeHash(address implementation) internal view returns (bytes32) {
+        return keccak256(implementation.code);
+    }
+
+    function _validateImplementation(address newImplementation) internal view {
+        require(newImplementation != address(this), "Cannot upgrade to proxy");
+        require(StorageSlot.getAddressSlot(0xb53127684a568b3173ae13b9f8a6016e01e3f0fdb8cb12c3a7c6008eeda3f3a4).value != newImplementation, "Cannot upgrade admin");
+    }
+
     function getImplementation() external view returns (address) {
         return _implementation();
     }
 
-    /// @dev Validate new implementation before upgrade
-    function _validateImplementation(address newImplementation) internal view {
-        require(newImplementation != address(this), "Cannot upgrade to proxy");
-        require(StorageSlot.getAddressSlot(0xb53127684a568b3173ae13b9f8a6016e01e3f0fdb8cb12c3a7c6008eeda3f3a4).value != newImplementation, "Cannot upgrade to admin");
-    }
-
-    /// @dev Internal upgrade mechanism using OpenZeppelin StorageSlot
-    function _upgradeTo(address newImplementation) internal {
-        StorageSlot.getAddressSlot(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc).value = newImplementation;
-    }
-
-    /// @dev Prevent calls when paused
+    // ================================
+    // 🔹 Secure Fallback & Payment Handling
+    // ================================
     fallback() external payable override {
-        require(!paused(), "Contract paused");
+        require(!paused(), "Proxy paused");
         super._fallback();
     }
 
