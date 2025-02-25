@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 interface ITerraStakeProjects {
     function updateProjectDataFromChainlink(uint256 projectId, int256 price) external;
@@ -19,14 +19,14 @@ interface ITerraStakeLiquidityGuard {
 }
 
 /**
- * @title TerraStake Chainlink Data Feeder v1.2
- * @notice Fully optimized oracle feeder with analytics, multi-chain validation, and governance security.
+ * @title TerraStake Chainlink Data Feeder v1.3
+ * @notice Secure and optimized oracle feeder for TerraStake ecosystem with TWAP validation.
  */
 contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
     // -------------------------------------------
     // 🔹 Security & Governance Constants
     // -------------------------------------------
-    bytes32 private constant CONTRACT_SIGNATURE = keccak256("v1.2");
+    bytes32 private constant CONTRACT_SIGNATURE = keccak256("v1.3");
     uint256 private constant STATE_SYNC_INTERVAL = 15 minutes;
     uint256 private constant ORACLE_TIMEOUT = 1 hours;
     uint256 private constant CIRCUIT_BREAKER_THRESHOLD = 3;
@@ -40,7 +40,7 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
 
     // -------------------------------------------
-    // 🔹 Oracle & IoT Data Feeds
+    // 🔹 Oracle Feeds & Data Storage
     // -------------------------------------------
     mapping(address => bool) public activeFeeds;
     mapping(address => int256) public lastKnownPrice;
@@ -50,7 +50,7 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
     address[] public priceOracles;
 
     // -------------------------------------------
-    // 🔹 Multi-Oracle Verification & TWAP Storage
+    // 🔹 Oracle Price Storage (TWAP)
     // -------------------------------------------
     struct OracleData {
         int256 price;
@@ -75,7 +75,7 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
     mapping(address => FeedAnalytics) public feedAnalytics;
 
     // -------------------------------------------
-    // 🔹 Cross-Contract References
+    // 🔹 External Contract Integrations
     // -------------------------------------------
     ITerraStakeProjects public terraStakeProjects;
     ITerraStakeToken public terraStakeToken;
@@ -188,11 +188,6 @@ contract ChainlinkDataFeeder is AccessControl, ReentrancyGuard {
 
         terraStakeProjects.updateProjectDataFromChainlink(projectId, price);
         emit ProjectDataUpdated(projectId, price, block.timestamp);
-    }
-
-    function getFeedPerformanceMetrics(address feed) external view returns (uint256 reliability, uint256 latency, uint256 deviation) {
-        FeedAnalytics storage analytics = feedAnalytics[feed];
-        return (analytics.reliabilityScore, block.timestamp - analytics.lastValidation, 0); 
     }
 
     function getContractVersion() external pure returns (bytes32) {
