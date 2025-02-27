@@ -1,598 +1,580 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20PermitUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import "../interfaces/ITerraStakeSlashing.sol";
-import "../interfaces/ITerraStakeStaking.sol";
-import "../interfaces/ITerraStakeRewardDistributor.sol";
-import "../interfaces/ITerraStakeLiquidityGuard.sol";
+import "./interfaces/ITerraStakeSlashing.sol";
+import "./interfaces/ITerraStakeGovernance.sol";
+import "./interfaces/ITerraStakeStaking.sol";
 
 /**
- * @title IERC20Burnable
- * @dev Interface for ERC20 tokens with burn functionality
+ * @title TerraStakeSlashing
+ * @author TerraStake Protocol Team
+ * @notice Handles slashing of validators in the TerraStake ecosystem, governed by DAO
  */
-interface IERC20Burnable {
-    function burn(uint256 amount) external;
-}
-
-/**
- * @title AggregatorV3Interface
- * @dev Interface for Chainlink price feeds
- */
-interface AggregatorV3Interface {
-    function latestRoundData()
-        external
-        view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
-}
-
-/**
- * @title TerraStakeSlashing (Multi-Sig Protected, Oracle-Aware, OpenZeppelin 5.2.x)
- * @notice Handles governance penalties, stake redistributions, and slashing mechanisms
- * @dev This contract is upgradeable using the UUPS pattern and integrates oracle price validation
- */
-contract TerraStakeSlashing is
-    Initializable,
-    ITerraStakeSlashing,
-    AccessControlUpgradeable,
-    ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+contract TerraStakeSlashing is 
+    Initializable, 
+    AccessControlEnumerableUpgradeable, 
+    ReentrancyGuardUpgradeable, 
+    UUPSUpgradeable,
+    ITerraStakeSlashing
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
-
-    // ================================
-    // 🔹 Custom Errors
-    // ================================
-    error InvalidAddress();
-    error InvalidAmount();
-    error AlreadySlashed();
-    error SlashingAlreadyRequested();
-    error NoSlashingRequestFound();
-    error NoSlashingRequestApproved();
-    error InsufficientStakedBalance();
-    error NotSlashed();
-    error LockPeriodNotExpired();
-    error NoLockedStake();
-    error PercentageExceeds100();
-    error InvalidRedistributionPercentage();
-    error StalePrice();
-    error PriceValidationFailed();
-    error InvalidOracle();
-    error NegativePrice();
-    error CooldownActive();
-    error BurnFailed();
-
-    // ================================
-    // 🔹 Governance & Security Roles
-    // ================================
-    bytes32 public constant SLASHER_ROLE = keccak256("SLASHER_ROLE");
+    // -------------------------------------------
+    // 🔹 Constants
+    // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
-    bytes32 public constant MULTISIG_ADMIN_ROLE = keccak256("MULTISIG_ADMIN_ROLE");
-    bytes32 public constant MULTISIG_APPROVER_ROLE = keccak256("MULTISIG_APPROVER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant ORACLE_MANAGER_ROLE = keccak256("ORACLE_MANAGER_ROLE");
-
-    // ================================
-    // 🔹 External Contract References
-    // ================================
-    IERC20Upgradeable public tStakeToken;
-    ITerraStakeStaking public stakingContract;
-    ITerraStakeRewardDistributor public rewardDistributor;
-    ITerraStakeLiquidityGuard public liquidityGuard;
-    AggregatorV3Interface public priceOracle;
-
-    // ================================
-    // 🔹 Slashing & Locking Parameters
-    // ================================
-    uint256 public constant SLASHING_LOCK_PERIOD = 3 days;
-    uint256 public constant PRICE_VALIDITY_PERIOD = 1 hours;
-    uint256 public constant PRICE_DEVIATION_THRESHOLD = 10; // 10% maximum deviation
-    uint256 public redistributionPercentage; // in basis points (e.g., 10000 = 100%)
-    uint256 public totalSlashed;
-    uint256 public lastTWAPPrice;
-    uint256 public lastTWAPTimestamp;
-
-    // ================================
-    // 🔹 Slashing State Tracking
-    // ================================
-    mapping(address => bool) public isSlashed;
-    mapping(address => uint256) public lastSlashingTime;
-    mapping(address => uint256) public lockedStakes;
-    mapping(address => bool) private pendingSlashApprovals;
-    mapping(address => uint256) private slashAmounts;
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
     
-    // ================================
-    // 🔹 Events
-    // ================================
-    event SlashingRequested(address indexed participant, uint256 amount, string reason);
-    event SlashingApproved(address indexed participant, uint256 amount);
-    event SlashingExecuted(address indexed participant, uint256 amount);
-    event FundsRedistributed(uint256 amount, address recipient);
-    event StakeLocked(address indexed participant, uint256 amount, uint256 lockUntil);
-    event StakeUnlocked(address indexed participant, uint256 amount);
-    event PenaltyPercentageUpdated(uint256 newPercentage);
-    event TokenRecovered(address token, uint256 amount, address recipient);
-    event ParticipantSlashed(
-        address indexed participant,
-        uint256 amount,
-        uint256 redistributionAmount,
-        uint256 burnAmount,
-        string reason
-    );
-    event PriceValidationFailed(uint256 currentPrice, uint256 twapPrice, uint256 deviationPercentage);
-    event PriceUpdated(uint256 newPrice, uint256 timestamp);
-    event OracleUpdated(address indexed newOracle);
-    event Upgraded(address indexed newImplementation);
+    uint256 public constant MIN_SLASH_PERCENTAGE = 1; // 1%
+    uint256 public constant MAX_SLASH_PERCENTAGE = 100; // 100%
+    uint256 public constant QUORUM_PERCENTAGE = 10; // 10% of total votes required
 
+    // -------------------------------------------
+    // 🔹 State Variables
+    // -------------------------------------------
+    
+    // Core contracts
+    ITerraStakeStaking public stakingContract;
+    ITerraStakeGovernance public governanceContract;
+    IERC20 public tStakeToken;
+    
+    // Slashing parameters
+    uint256 public redistributionPercentage; // percentage of slashed amount redistributed to other stakers
+    uint256 public burnPercentage; // percentage of slashed amount burned
+    uint256 public treasuryPercentage; // percentage of slashed amount sent to treasury
+    
+    // Slashing tracking
+    uint256 public totalSlashedAmount;
+    uint256 public slashProposalCount;
+    uint256 public coolingOffPeriod; // time before a validator can be slashed again
+    address public treasuryWallet;
+    
+    // Slashing proposal storage
+    mapping(uint256 => SlashProposal) public slashProposals;
+    mapping(address => uint256) public lastSlashTime;
+    mapping(address => uint256) public totalSlashedForValidator;
+    
+    // Emergency state
+    bool public emergencyPaused;
+    
+    // -------------------------------------------
+    // 🔹 Events
+    // -------------------------------------------
+    event SlashProposalCreated(
+        uint256 indexed proposalId,
+        address indexed validator,
+        uint256 slashPercentage,
+        string evidence,
+        uint256 timestamp
+    );
+    
+    event ValidatorSlashed(
+        address indexed validator,
+        uint256 slashedAmount,
+        uint256 redistributed,
+        uint256 burned,
+        uint256 sentToTreasury,
+        uint256 timestamp
+    );
+    
+    event SlashParametersUpdated(
+        uint256 redistributionPercentage,
+        uint256 burnPercentage,
+        uint256 treasuryPercentage
+    );
+    
+    event EmergencyPauseToggled(bool paused);
+    
+    // -------------------------------------------
+    // 🔹 Errors
+    // -------------------------------------------
+    error Unauthorized();
+    error InvalidParameters();
+    error SlashingCoolingOffPeriod();
+    error EmergencyPaused();
+    error ProposalDoesNotExist();
+    error InvalidSlashingAmount();
+    error SlashProposalAlreadyExecuted();
+    error GovernanceQuorumNotMet();
+    
+    // -------------------------------------------
+    // 🔹 Initializer & Upgrade Control
+    // -------------------------------------------
+    
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
-        // Disable initializers on deployment
         _disableInitializers();
-    }
-
-    /**
-     * @notice Initializes the contract (UUPS Upgradeable)
-     * @param _tStakeToken Address of the TSTAKE token
-     * @param _stakingContract Address of the staking contract
-     * @param _rewardDistributor Address of the reward distributor
-     * @param _liquidityGuard Address of the liquidity guard
-     * @param _redistributionPercentage Redistribution % in basis points (10000 = 100%)
-     * @param _priceOracle Address of the Chainlink price oracle
-     */
-    function initialize(
-        address _tStakeToken,
-        address _stakingContract,
-        address _rewardDistributor,
-        address _liquidityGuard,
-        uint256 _redistributionPercentage,
-        address _priceOracle
-    ) public initializer {
-        if (_tStakeToken == address(0)) revert InvalidAddress();
-        if (_stakingContract == address(0)) revert InvalidAddress();
-        if (_rewardDistributor == address(0)) revert InvalidAddress();
-        if (_liquidityGuard == address(0)) revert InvalidAddress();
-        if (_priceOracle == address(0)) revert InvalidOracle();
-        if (_redistributionPercentage > 10000) revert PercentageExceeds100();
-
-        __AccessControl_init();
-        __ReentrancyGuard_init();
-        __UUPSUpgradeable_init();
-
-        tStakeToken = IERC20Upgradeable(_tStakeToken);
-        stakingContract = ITerraStakeStaking(_stakingContract);
-        rewardDistributor = ITerraStakeRewardDistributor(_rewardDistributor);
-        liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
-        priceOracle = AggregatorV3Interface(_priceOracle);
-        redistributionPercentage = _redistributionPercentage;
-
-        // Set initial price data
-        _updateTWAPPrice();
-
-        // Grant all relevant roles to the deployer
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(GOVERNANCE_ROLE, msg.sender);
-        _grantRole(SLASHER_ROLE, msg.sender);
-        _grantRole(MULTISIG_ADMIN_ROLE, msg.sender);
-        _grantRole(MULTISIG_APPROVER_ROLE, msg.sender);
-        _grantRole(UPGRADER_ROLE, msg.sender);
-        _grantRole(ORACLE_MANAGER_ROLE, msg.sender);
-        _grantRole(EMERGENCY_ROLE, msg.sender);
-    }
-
-    /**
-     * @notice Authorizes a contract upgrade using UUPS pattern
-     * @param newImplementation Address of the new implementation
-     */
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        override
-        onlyRole(UPGRADER_ROLE)
-    {
-        emit Upgraded(newImplementation);
-    }
-
-    // ================================
-    // 🔹 Price Oracle Functions
-    // ================================
-
-    /**
-     * @notice Updates the TWAP price by fetching from the oracle
-     * @dev Called automatically during validation but can be called manually
-     */
-    function _updateTWAPPrice() internal {
-        (
-            ,
-            int256 answer,
-            ,
-            uint256 updatedAt,
-            
-        ) = priceOracle.latestRoundData();
-        
-        if (answer <= 0) revert NegativePrice();
-        if (updatedAt < block.timestamp - PRICE_VALIDITY_PERIOD) revert StalePrice();
-        
-        lastTWAPPrice = uint256(answer);
-        lastTWAPTimestamp = block.timestamp;
-        
-        emit PriceUpdated(lastTWAPPrice, lastTWAPTimestamp);
     }
     
     /**
-     * @notice Validates the current price against the TWAP to prevent manipulation
-     * @return True if price is valid, false otherwise
+     * @notice Initialize the slashing contract
+     * @param _stakingContract Address of the staking contract
+     * @param _governanceContract Address of the governance contract
+     * @param _tStakeToken Address of the TStake token
+     * @param _initialAdmin Initial admin address
+     * @param _treasuryWallet Address of the treasury wallet
      */
-    function validatePrice() public returns (bool) {
-        (
-            ,
-            int256 answer,
-            ,
-            uint256 updatedAt,
-            
-        ) = priceOracle.latestRoundData();
+    function initialize(
+        address _stakingContract,
+        address _governanceContract,
+        address _tStakeToken,
+        address _initialAdmin,
+        address _treasuryWallet
+    ) external initializer {
+        __AccessControlEnumerable_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
         
-        if (answer <= 0) revert NegativePrice();
-        if (updatedAt < block.timestamp - PRICE_VALIDITY_PERIOD) revert StalePrice();
+        // Grant roles
+        _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
+        _grantRole(UPGRADER_ROLE, _initialAdmin);
+        _grantRole(GOVERNANCE_ROLE, _governanceContract);
+        _grantRole(EMERGENCY_ROLE, _initialAdmin);
         
-        uint256 currentPrice = uint256(answer);
+        // Initialize contract references
+        stakingContract = ITerraStakeStaking(_stakingContract);
+        governanceContract = ITerraStakeGovernance(_governanceContract);
+        tStakeToken = IERC20(_tStakeToken);
+        treasuryWallet = _treasuryWallet;
         
-        if (lastTWAPPrice > 0) {
-            uint256 deviation = currentPrice > lastTWAPPrice
-                ? ((currentPrice - lastTWAPPrice) * 100) / lastTWAPPrice
-                : ((lastTWAPPrice - currentPrice) * 100) / lastTWAPPrice;
-                
-            if (deviation > PRICE_DEVIATION_THRESHOLD) {
-                emit PriceValidationFailed(currentPrice, lastTWAPPrice, deviation);
-                return false;
+        // Initialize slashing parameters
+        redistributionPercentage = 50; // 50% redistributed to stakers
+        burnPercentage = 30; // 30% burned
+        treasuryPercentage = 20; // 20% to treasury
+        coolingOffPeriod = 7 days; // 7 day cooling off period
+        
+        // Initialize tracking
+        totalSlashedAmount = 0;
+        slashProposalCount = 0;
+        emergencyPaused = false;
+    }
+    
+    /**
+     * @notice Authorize contract upgrades, restricted to the upgrader role
+     * @param newImplementation Address of the new implementation
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+    
+    // -------------------------------------------
+    // 🔹 Slashing Proposal Management
+    // -------------------------------------------
+    
+    /**
+     * @notice Create a proposal to slash a validator
+     * @param validator Address of the validator to slash
+     * @param slashPercentage Percentage of validator's stake to slash
+     * @param evidence String evidence for the slashing
+     * @return proposalId ID of the created slash proposal
+     */
+    function createSlashProposal(
+        address validator,
+        uint256 slashPercentage,
+        string calldata evidence
+    ) external nonReentrant returns (uint256) {
+        if (emergencyPaused) revert EmergencyPaused();
+        
+        // Validate parameters
+        if (validator == address(0)) revert InvalidParameters();
+        if (slashPercentage < MIN_SLASH_PERCENTAGE || slashPercentage > MAX_SLASH_PERCENTAGE) 
+            revert InvalidSlashingAmount();
+        
+        // Get validator's staked amount from staking contract
+        uint256 validatorStake = stakingContract.getValidatorStake(validator);
+        if (validatorStake == 0) revert InvalidParameters();
+        
+        // Create the slash proposal
+        slashProposalCount++;
+        uint256 proposalId = slashProposalCount;
+        
+        // Build slash proposal
+        slashProposals[proposalId] = SlashProposal({
+            id: proposalId,
+            validator: validator,
+            slashPercentage: slashPercentage,
+            totalStake: validatorStake,
+            executed: false,
+            proposer: msg.sender,
+            proposedTime: block.timestamp,
+            evidence: evidence,
+            executionTime: 0
+        });
+        
+        // Create governance proposal for this slash
+        bytes memory callData = abi.encodeWithSelector(
+            this.executeSlashing.selector,
+            proposalId
+        );
+        
+        bytes32 proposalHash = keccak256(abi.encode(
+            "SLASH",
+            validator, 
+            slashPercentage, 
+            block.timestamp
+        ));
+        
+        string memory description = string(abi.encodePacked(
+            "Slashing proposal for validator ", 
+            addressToString(validator), 
+            " with ", 
+            uintToString(slashPercentage),
+            "% penalty."
+        ));
+        
+        // Submit to governance contract
+        governanceContract.createStandardProposal(
+            proposalHash,
+            description,
+            callData,
+            address(this)
+        );
+        
+        emit SlashProposalCreated(
+            proposalId,
+            validator,
+            slashPercentage,
+            evidence,
+            block.timestamp
+        );
+        
+        return proposalId;
+    }
+    
+    /**
+     * @notice Execute slashing from a passed governance proposal
+     * @param proposalId ID of the slash proposal to execute
+     */
+    function executeSlashing(uint256 proposalId) external nonReentrant {
+        if (emergencyPaused) revert EmergencyPaused();
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) revert Unauthorized();
+        if (proposalId == 0 || proposalId > slashProposalCount) revert ProposalDoesNotExist();
+        
+        SlashProposal storage proposal = slashProposals[proposalId];
+        if (proposal.executed) revert SlashProposalAlreadyExecuted();
+        
+        // Check cooling off period
+        if (block.timestamp < lastSlashTime[proposal.validator] + coolingOffPeriod) 
+            revert SlashingCoolingOffPeriod();
+        
+        // Calculate slash amount
+        uint256 currentStake = stakingContract.getValidatorStake(proposal.validator);
+        uint256 slashAmount = (currentStake * proposal.slashPercentage) / 100;
+        
+        // Slash the validator through staking contract
+        stakingContract.slash(proposal.validator, slashAmount);
+        
+        // Calculate distribution
+        uint256 toRedistribute = (slashAmount * redistributionPercentage) / 100;
+        uint256 toBurn = (slashAmount * burnPercentage) / 100;
+        uint256 toTreasury = (slashAmount * treasuryPercentage) / 100;
+        
+        // Redistribute slashed tokens
+        if (toRedistribute > 0) {
+            stakingContract.distributeSlashedTokens(toRedistribute);
+        }
+        
+        // Burn tokens
+        if (toBurn > 0) {
+            stakingContract.burnSlashedTokens(toBurn);
+        }
+        
+        // Send to treasury
+        if (toTreasury > 0) {
+            stakingContract.sendSlashedTokensToTreasury(toTreasury, treasuryWallet);
+        }
+        
+        // Update tracking
+        proposal.executed = true;
+        proposal.executionTime = block.timestamp;
+        lastSlashTime[proposal.validator] = block.timestamp;
+        totalSlashedForValidator[proposal.validator] += slashAmount;
+        totalSlashedAmount += slashAmount;
+        
+        emit ValidatorSlashed(
+            proposal.validator,
+            slashAmount,
+            toRedistribute,
+            toBurn,
+            toTreasury,
+            block.timestamp
+        );
+    }
+    
+    // -------------------------------------------
+    // 🔹 Parameter Management
+    // -------------------------------------------
+    
+    /**
+     * @notice Update slashing parameters (only through governance)
+     * @param _redistributionPercentage New redistribution percentage
+     * @param _burnPercentage New burn percentage
+     * @param _treasuryPercentage New treasury percentage
+     */
+    function updateSlashParameters(
+        uint256 _redistributionPercentage,
+        uint256 _burnPercentage,
+        uint256 _treasuryPercentage
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        // Ensure percentages add up to 100%
+        if (_redistributionPercentage + _burnPercentage + _treasuryPercentage != 100) 
+            revert InvalidParameters();
+        
+        redistributionPercentage = _redistributionPercentage;
+        burnPercentage = _burnPercentage;
+        treasuryPercentage = _treasuryPercentage;
+        
+        emit SlashParametersUpdated(
+            _redistributionPercentage,
+            _burnPercentage,
+            _treasuryPercentage
+        );
+    }
+    
+    /**
+     * @notice Update cooling off period (only through governance)
+     * @param _coolingOffPeriod New cooling off period in seconds
+     */
+    function updateCoolingOffPeriod(uint256 _coolingOffPeriod) external onlyRole(GOVERNANCE_ROLE) {
+        coolingOffPeriod = _coolingOffPeriod;
+    }
+    
+    /**
+     * @notice Update treasury wallet (only through governance)
+     * @param _treasuryWallet New treasury wallet address
+     */
+    function updateTreasuryWallet(address _treasuryWallet) external onlyRole(GOVERNANCE_ROLE) {
+        if (_treasuryWallet == address(0)) revert InvalidParameters();
+        treasuryWallet = _treasuryWallet;
+    }
+    
+    // -------------------------------------------
+    // 🔹 Emergency Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Toggle emergency pause (only emergency role)
+     * @param paused Whether to pause or unpause
+     */
+    function toggleEmergencyPause(bool paused) external onlyRole(EMERGENCY_ROLE) {
+        emergencyPaused = paused;
+        emit EmergencyPauseToggled(paused);
+    }
+    
+    /**
+     * @notice Recover accidentally sent tokens (only admin)
+     * @param token Token address
+     * @param amount Amount to recover
+     */
+    function recoverERC20(address token, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        IERC20(token).transfer(treasuryWallet, amount);
+    }
+    
+    // -------------------------------------------
+    // 🔹 View Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Get slash proposal details
+     * @param proposalId ID of the proposal
+     * @return Slash proposal details
+     */
+function getSlashProposal(uint256 proposalId) external view returns (SlashProposal memory) {
+        if (proposalId == 0 || proposalId > slashProposalCount) revert ProposalDoesNotExist();
+        return slashProposals[proposalId];
+    }
+    
+    /**
+     * @notice Get slash history for a validator
+     * @param validator Validator address
+     * @return totalSlashed Total amount slashed from validator
+     * @return lastSlashed Last time validator was slashed
+     * @return canBeSlashed Whether validator can be slashed now
+     */
+    function getValidatorSlashInfo(address validator) external view returns (
+        uint256 totalSlashed,
+        uint256 lastSlashed,
+        bool canBeSlashed
+    ) {
+        totalSlashed = totalSlashedForValidator[validator];
+        lastSlashed = lastSlashTime[validator];
+        canBeSlashed = block.timestamp >= lastSlashTime[validator] + coolingOffPeriod;
+        
+        return (totalSlashed, lastSlashed, canBeSlashed);
+    }
+    
+    /**
+     * @notice Get current slashing parameters
+     * @return redistribution Percentage for redistribution
+     * @return burn Percentage for burning
+     * @return treasury Percentage for treasury
+     * @return cooling Cooling off period in seconds
+     */
+    function getSlashParameters() external view returns (
+        uint256 redistribution,
+        uint256 burn,
+        uint256 treasury,
+        uint256 cooling
+    ) {
+        return (
+            redistributionPercentage,
+            burnPercentage,
+            treasuryPercentage,
+            coolingOffPeriod
+        );
+    }
+    
+    /**
+     * @notice Get all active slash proposals
+     * @return ids Array of active proposal IDs
+     */
+    function getActiveSlashProposals() external view returns (uint256[] memory) {
+        uint256 count = 0;
+        
+        // Count active proposals
+        for (uint256 i = 1; i <= slashProposalCount; i++) {
+            if (!slashProposals[i].executed) {
+                count++;
             }
         }
         
-        // Update TWAP price every hour
-        if (block.timestamp >= lastTWAPTimestamp + 1 hours) {
-            lastTWAPPrice = currentPrice;
-            lastTWAPTimestamp = block.timestamp;
-            emit PriceUpdated(lastTWAPPrice, lastTWAPTimestamp);
+        // Collect active proposal IDs
+        uint256[] memory activeIds = new uint256[](count);
+        uint256 index = 0;
+        
+        for (uint256 i = 1; i <= slashProposalCount; i++) {
+            if (!slashProposals[i].executed) {
+                activeIds[index] = i;
+                index++;
+            }
         }
         
-        return true;
+        return activeIds;
     }
     
     /**
-     * @notice Updates the oracle address (governance function)
-     * @param _newOracle The new price oracle address
+     * @notice Check if a validator can be slashed
+     * @param validator Validator address
+     * @return True if validator can be slashed
      */
-    function updateOracle(address _newOracle) external onlyRole(ORACLE_MANAGER_ROLE) {
-        if (_newOracle == address(0)) revert InvalidOracle();
-        priceOracle = AggregatorV3Interface(_newOracle);
-        emit OracleUpdated(_newOracle);
+    function canSlashValidator(address validator) external view returns (bool) {
+        return block.timestamp >= lastSlashTime[validator] + coolingOffPeriod;
+    }
+    
+    /**
+     * @notice Calculate potential slash amounts for a given validator and percentage
+     * @param validator Validator address
+     * @param slashPercentage Percentage to slash
+     * @return total Total amount to slash
+     * @return toRedistribute Amount to redistribute
+     * @return toBurn Amount to burn
+     * @return toTreasury Amount to send to treasury
+     */
+    function calculateSlashAmounts(address validator, uint256 slashPercentage) external view returns (
+        uint256 total,
+        uint256 toRedistribute,
+        uint256 toBurn,
+        uint256 toTreasury
+    ) {
+        uint256 validatorStake = stakingContract.getValidatorStake(validator);
+        total = (validatorStake * slashPercentage) / 100;
         
-        // Initialize with the new oracle's price
-        _updateTWAPPrice();
+        toRedistribute = (total * redistributionPercentage) / 100;
+        toBurn = (total * burnPercentage) / 100;
+        toTreasury = (total * treasuryPercentage) / 100;
+        
+        return (total, toRedistribute, toBurn, toTreasury);
     }
-
-    // ================================
-    // 🔹 Multi-Sig Protected Slashing
-    // ================================
-
+    
     /**
-     * @notice Requests slashing for governance violation (step 1: GOVERNANCE_ROLE)
-     * @param participant The address to be slashed
-     * @param amount The amount of tokens to slash
-     * @param reason Reason or description
+     * @notice Get system-wide slashing statistics
+     * @return totalProposals Total number of slash proposals
+     * @return totalExecuted Total executed slash proposals
+     * @return totalAmountSlashed Total amount of tokens slashed
      */
-    function requestSlashing(
-        address participant,
-        uint256 amount,
-        string calldata reason
-    ) external override onlyRole(GOVERNANCE_ROLE) {
-        if (participant == address(0)) revert InvalidAddress();
-        if (amount == 0) revert InvalidAmount();
-        if (isSlashed[participant]) revert AlreadySlashed();
-        if (pendingSlashApprovals[participant]) revert SlashingAlreadyRequested();
-
-        slashAmounts[participant] = amount;
-        pendingSlashApprovals[participant] = true;
-
-        emit SlashingRequested(participant, amount, reason);
-    }
-
-    /**
-     * @notice Approves a requested slashing (step 2: MULTISIG_ADMIN_ROLE)
-     * @param participant The address for which slashing was requested
-     */
-    function approveSlashing(address participant) external override onlyRole(MULTISIG_ADMIN_ROLE) {
-        if (!pendingSlashApprovals[participant]) revert NoSlashingRequestFound();
-        if (slashAmounts[participant] == 0) revert InvalidAmount();
-
-        emit SlashingApproved(participant, slashAmounts[participant]);
-    }
-
-    /**
-     * @notice Finalizes the slashing after approval (step 3: MULTISIG_APPROVER_ROLE)
-     * @param participant The address to slash
-     */
-    function executeSlashing(address participant)
-        external
-        override
-        onlyRole(MULTISIG_APPROVER_ROLE)
-        nonReentrant
-    {
-        if (!pendingSlashApprovals[participant]) revert NoSlashingRequestApproved();
-        if (block.timestamp < lastSlashingTime[participant] + SLASHING_LOCK_PERIOD) revert CooldownActive();
-
-        // Validate price to prevent manipulation
-        if (!validatePrice()) revert PriceValidationFailed();
-
-        uint256 amount = slashAmounts[participant];
-        if (amount == 0) revert InvalidAmount();
-
-        // Check staked balance in staking contract
-        uint256 stakedBalance = stakingContract.stakedBalanceOf(participant);
-        if (stakedBalance < amount) revert InsufficientStakedBalance();
-
-        // Slash the stake via staking contract
-        stakingContract.slashStake(participant, amount);
-
-        // Update tracking
-
- isSlashed[participant] = true;
-        totalSlashed += amount;
-        lockedStakes[participant] = amount;
-        lastSlashingTime[participant] = block.timestamp;
-
-        // Compute redistribution & burn amounts
-        uint256 redistributionAmount = (amount * redistributionPercentage) / 10000;
-        uint256 burnAmount = amount - redistributionAmount;
-
-        // Distribute penalty rewards
-        if (redistributionAmount > 0) {
-            rewardDistributor.distributePenaltyRewards(redistributionAmount);
-            emit FundsRedistributed(redistributionAmount, address(rewardDistributor));
+    function getSlashingStats() external view returns (
+        uint256 totalProposals,
+        uint256 totalExecuted,
+        uint256 totalAmountSlashed
+    ) {
+        uint256 executed = 0;
+        
+        for (uint256 i = 1; i <= slashProposalCount; i++) {
+            if (slashProposals[i].executed) {
+                executed++;
+            }
         }
-
-        // Burn tokens using advanced burn mechanism
-        if (burnAmount > 0) {
-            if (!_burnTokens(burnAmount)) revert BurnFailed();
+        
+        return (slashProposalCount, executed, totalSlashedAmount);
+    }
+    
+    // -------------------------------------------
+    // 🔹 Helper Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Convert address to string
+     * @param addr Address to convert
+     * @return string representation
+     */
+    function addressToString(address addr) internal pure returns (string memory) {
+        bytes memory addressBytes = abi.encodePacked(addr);
+        bytes memory stringBytes = new bytes(42);
+        
+        stringBytes[0] = '0';
+        stringBytes[1] = 'x';
+        
+        for (uint256 i = 0; i < 20; i++) {
+            bytes1 leftNibble = bytes1(uint8(addressBytes[i]) / 16);
+            bytes1 rightNibble = bytes1(uint8(addressBytes[i]) % 16);
+            
+            stringBytes[2 + i * 2] = leftNibble < 10 
+                ? bytes1(uint8(leftNibble) + 48) 
+                : bytes1(uint8(leftNibble) + 87);
+            stringBytes[2 + i * 2 + 1] = rightNibble < 10 
+                ? bytes1(uint8(rightNibble) + 48) 
+                : bytes1(uint8(rightNibble) + 87);
         }
-
-        // Clear the slash request
-        delete pendingSlashApprovals[participant];
-        delete slashAmounts[participant];
-
-        emit ParticipantSlashed(
-            participant, 
-            amount, 
-            redistributionAmount, 
-            burnAmount, 
-            "Multi-sig governance slashing"
-        );
-        emit StakeLocked(participant, amount, block.timestamp + SLASHING_LOCK_PERIOD);
+        
+        return string(stringBytes);
     }
-
+    
     /**
-     * @notice Checks whether the lock period for a participant has expired
-     * @param participant The address to check
-     * @return True if the lock is expired
+     * @notice Convert uint to string
+     * @param value Uint to convert
+     * @return string representation
      */
-    function isLockExpired(address participant) public view override returns (bool) {
-        if (!isSlashed[participant]) return false;
-        return (block.timestamp >= lastSlashingTime[participant] + SLASHING_LOCK_PERIOD);
-    }
-
-    /**
-     * @notice Unlocks staked tokens after the slashing lock period expires
-     * @dev Resets `isSlashed` so the participant can stake again
-     * @param participant The address to unlock
-     */
-    function unlockStake(address participant) external override nonReentrant {
-        if (!isSlashed[participant]) revert NotSlashed();
-        if (!isLockExpired(participant)) revert LockPeriodNotExpired();
-
-        uint256 amountToUnlock = lockedStakes[participant];
-        if (amountToUnlock == 0) revert NoLockedStake();
-
-        lockedStakes[participant] = 0;
-        isSlashed[participant] = false;
-
-        emit StakeUnlocked(participant, amountToUnlock);
-    }
-
-    // ================================
-    // 🔹 Direct Slashing with ERC20-Permit
-    // ================================
-
-    /**
-     * @notice Executes slashing with ERC20 Permit for gasless approvals
-     * @dev This allows slashing tokens directly without prior allowance
-     * @param participant Address of the participant to slash
-     * @param amount Amount to slash
-     * @param reason Reason for slashing
-     * @param deadline Permit deadline timestamp
-     * @param v Part of the signature (from EIP-712)
-     * @param r Part of the signature (from EIP-712)
-     * @param s Part of the signature (from EIP-712)
-     */
-    function slashWithPermit(
-        address participant,
-        uint256 amount,
-        string calldata reason,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external onlyRole(SLASHER_ROLE) nonReentrant {
-        if (participant == address(0)) revert InvalidAddress();
-        if (amount == 0) revert InvalidAmount();
-        if (isSlashed[participant]) revert AlreadySlashed();
-        if (block.timestamp < lastSlashingTime[participant] + SLASHING_LOCK_PERIOD) revert CooldownActive();
-
-        // Validate price to prevent manipulation
-        if (!validatePrice()) revert PriceValidationFailed();
-
-        // Execute permit to get approval
-        IERC20PermitUpgradeable(address(tStakeToken)).permit(
-            participant, 
-            address(this), 
-            amount, 
-            deadline, 
-            v, 
-            r, 
-            s
-        );
-
-        // Transfer tokens from participant
-        tStakeToken.safeTransferFrom(participant, address(this), amount);
-
-        // Update slashing state
-        isSlashed[participant] = true;
-        totalSlashed += amount;
-        lastSlashingTime[participant] = block.timestamp;
-        lockedStakes[participant] = amount;
-
-        // Calculate redistribution and burn amounts
-        uint256 redistributionAmount = (amount * redistributionPercentage) / 10000;
-        uint256 burnAmount = amount - redistributionAmount;
-
-        // Distribute rewards
-        if (redistributionAmount > 0) {
-            rewardDistributor.distributePenaltyRewards(redistributionAmount);
-            emit FundsRedistributed(redistributionAmount, address(rewardDistributor));
+    function uintToString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0";
         }
-
-        // Burn tokens
-        if (burnAmount > 0) {
-            if (!_burnTokens(burnAmount)) revert BurnFailed();
+        
+        uint256 temp = value;
+        uint256 digits;
+        
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
         }
-
-        emit ParticipantSlashed(
-            participant, 
-            amount, 
-            redistributionAmount, 
-            burnAmount, 
-            reason
-        );
-        emit StakeLocked(participant, amount, block.timestamp + SLASHING_LOCK_PERIOD);
-    }
-
-    /**
-     * @notice Helper function to burn tokens with fallback mechanism
-     * @param amount Amount of tokens to burn
-     * @return success Whether the burn was successful
-     */
-    function _burnTokens(uint256 amount) internal returns (bool) {
-        // Try to use the burn function if it exists
-        try IERC20Burnable(address(tStakeToken)).burn(amount) {
-            return true;
-        } catch {
-            // Fallback: send to dead address if burn function is not available
-            tStakeToken.safeTransfer(address(0xdead), amount);
-            return true;
+        
+        bytes memory buffer = new bytes(digits);
+        
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
         }
+        
+        return string(buffer);
     }
-
+    
     /**
-     * @notice Updates the redistribution percentage in basis points (governance function)
-     * @param newPercentage New percentage (10000 = 100%)
+     * @dev This empty reserved space is put in place to allow future versions to add new
+     * variables without shifting down storage in the inheritance chain.
+     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
      */
-    function setRedistributionPercentage(uint256 newPercentage)
-        external
-        override
-        onlyRole(GOVERNANCE_ROLE)
-    {
-        if (newPercentage > 10000) revert InvalidRedistributionPercentage();
-        redistributionPercentage = newPercentage;
-        emit PenaltyPercentageUpdated(newPercentage);
-    }
-
-    /**
-     * @notice Returns the slash amount requested for a participant if any
-     * @param participant The participant's address
-     */
-    function getPendingSlashAmount(address participant)
-        external
-        view
-        override
-        returns (uint256)
-    {
-        if (!pendingSlashApprovals[participant]) {
-            return 0;
-        }
-        return slashAmounts[participant];
-    }
-
-    /**
-     * @notice Checks if a participant has a pending slash request
-     * @param participant The participant's address
-     */
-    function hasPendingSlashRequest(address participant)
-        external
-        view
-        override
-        returns (bool)
-    {
-        return pendingSlashApprovals[participant];
-    }
-
-    // ================================
-    // 🔹 Admin / Emergency
-    // ================================
-
-    /**
-     * @notice Recovers ERC20 tokens that might be stuck in this contract (Emergency only)
-     * @param token Address of the token to recover
-     * @param amount Token amount
-     * @param recipient Recipient address
-     */
-    function recoverERC20(
-        address token,
-        uint256 amount,
-        address recipient
-    ) external onlyRole(EMERGENCY_ROLE) {
-        if (recipient == address(0)) revert InvalidAddress();
-
-        IERC20Upgradeable(token).safeTransfer(recipient, amount);
-        emit TokenRecovered(token, amount, recipient);
-    }
-
-    /**
-     * @notice Updates contract references if needed
-     * @param _stakingContract New staking contract
-     * @param _rewardDistributor New reward distributor
-     * @param _liquidityGuard New liquidity guard
-     */
-    function updateContractReferences(
-        address _stakingContract,
-        address _rewardDistributor,
-        address _liquidityGuard
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        if (_stakingContract != address(0)) {
-            stakingContract = ITerraStakeStaking(_stakingContract);
-        }
-        if (_rewardDistributor != address(0)) {
-            rewardDistributor = ITerraStakeRewardDistributor(_rewardDistributor);
-        }
-        if (_liquidityGuard != address(0)) {
-            liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
-        }
-    }
-
-    /**
-     * @notice Force update the TWAP price (for emergency situations)
-     * @dev This should be used only when absolutely necessary
-     */
-    function forceUpdateTWAP() external onlyRole(ORACLE_MANAGER_ROLE) {
-        _updateTWAPPrice();
-    }
+    uint256[45] private __gap;
 }
