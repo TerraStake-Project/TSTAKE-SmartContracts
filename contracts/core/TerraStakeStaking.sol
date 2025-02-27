@@ -50,6 +50,7 @@ contract TerraStakeStaking is
     error ActionNotPermittedForValidator();
     error RateTooHigh(uint256 provided, uint256 maximum);
     error InvalidTierConfiguration();
+    error BatchTransferFailed();
 
     // -------------------------------------------
     // 🔹 Constants
@@ -69,6 +70,7 @@ contract TerraStakeStaking is
     uint256 public constant GOVERNANCE_VESTING_PERIOD = 7 days;
     uint256 public constant MAX_LIQUIDITY_RATE = 10;
     uint256 public constant MIN_STAKING_DURATION = 30 days;
+    address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
     // -------------------------------------------
     // 🔹 State Variables
@@ -288,12 +290,15 @@ contract TerraStakeStaking is
         uint256 stakingEndTime = positionStart + positionDuration;
         uint256 amount = positionAmount;
         uint256 penalty = 0;
+        uint256 toRedistribute = 0;
+        uint256 toBurn = 0;
+        uint256 toLiquidity = 0;
         
         // If unstaking early, apply penalty
         if (block.timestamp < stakingEndTime) {
             uint256 timeRemaining = stakingEndTime - block.timestamp;
-            
-            // Calculate penalty percentage (linear from BASE_PENALTY to MAX_PENALTY)
+
+// Calculate penalty percentage (linear from BASE_PENALTY to MAX_PENALTY)
             uint256 penaltyPercent = BASE_PENALTY_PERCENT + 
                 ((timeRemaining * (MAX_PENALTY_PERCENT - BASE_PENALTY_PERCENT)) / positionDuration);
             
@@ -305,11 +310,19 @@ contract TerraStakeStaking is
                 _governanceViolators[msg.sender] = true;
                 emit GovernanceRightsUpdated(msg.sender, false);
             }
+            
+            // Calculate penalty distributions
+            if (penalty > 0) {
+                toRedistribute = penalty / 2;
+                toBurn = penalty / 4;
+                toLiquidity = penalty - toRedistribute - toBurn;
+            }
         }
         
         // Claim any pending rewards first
         _claimRewards(msg.sender, projectId);
-// Update totals (using cached values)
+        
+        // Update totals (using cached values)
         _totalStaked -= positionAmount;
         _stakingBalance[msg.sender] = userStakingBalance - positionAmount;
         
@@ -329,30 +342,33 @@ contract TerraStakeStaking is
             emit ValidatorStatusChanged(msg.sender, false);
         }
         
-        // If there was a penalty, handle it
-        if (penalty > 0) {
-            // Half of penalty goes to other stakers as rewards
-            uint256 toRedistribute = penalty / 2;
+        // Handle all token transfers in one batch
+        bool success = true;
+        
+        // 1. Transfer user's tokens back
+        if (amount > 0) {
+            success = stakingToken.transfer(msg.sender, amount);
+        }
+        
+        // 2. Handle penalty distributions as a batch
+        if (penalty > 0 && success) {
+            // Distribute rewards to stakers
+            if (toRedistribute > 0) {
+                success = success && rewardDistributor.distributeBonus(toRedistribute);
+            }
             
-            // Other half is split between burning and liquidity
-            uint256 toBurn = penalty / 4;
-            uint256 toLiquidity = penalty - toRedistribute - toBurn;
-            
-            // Redistribute rewards
-            rewardDistributor.distributeBonus(toRedistribute);
-            
-            // Burn tokens
-            _burnTokens(toBurn);
+            // Send to burn address
+            if (toBurn > 0 && success) {
+                success = success && stakingToken.transfer(BURN_ADDRESS, toBurn);
+            }
             
             // Add to liquidity
-            if (autoLiquidityEnabled && toLiquidity > 0) {
-                _addLiquidity(toLiquidity);
+            if (autoLiquidityEnabled && toLiquidity > 0 && success) {
+                success = success && stakingToken.transfer(liquidityPool, toLiquidity);
             }
         }
         
-        // Transfer remaining tokens to user
-        if (!stakingToken.transfer(msg.sender, amount))
-            revert TransferFailed(address(stakingToken), address(this), msg.sender, amount);
+        if (!success) revert BatchTransferFailed();
         
         emit Unstaked(msg.sender, projectId, amount, penalty);
     }
@@ -383,12 +399,19 @@ contract TerraStakeStaking is
         // Update checkpoint
         position.lastCheckpoint = block.timestamp;
         
+        // Handle liquidity injection if enabled
+        uint256 toInject = 0;
+        if (autoLiquidityEnabled && liquidityInjectionRate > 0) {
+            toInject = (rewards * liquidityInjectionRate) / 100;
+        }
+        
         // Auto-compound if enabled
         if (position.autoCompounding) {
             // Cache values
-            uint256 newAmount = position.amount + rewards;
-            uint256 newTotalStaked = _totalStaked + rewards;
-            uint256 newUserBalance = _stakingBalance[user] + rewards;
+            uint256 compoundAmount = rewards;
+            uint256 newAmount = position.amount + compoundAmount;
+            uint256 newTotalStaked = _totalStaked + compoundAmount;
+            uint256 newUserBalance = _stakingBalance[user] + compoundAmount;
             
             // Update position and global state (single write)
             position.amount = newAmount;
@@ -399,21 +422,22 @@ contract TerraStakeStaking is
             _governanceVotes[user] = _calculateVotingPower(user);
             
             // Update project stats
-            projectsContract.updateProjectStaking(projectId, rewards, true);
+            projectsContract.updateProjectStaking(projectId, compoundAmount, true);
             
-            emit RewardsCompounded(user, projectId, rewards);
+            emit RewardsCompounded(user, projectId, compoundAmount);
         } else {
-            // Handle liquidity injection if enabled
-            uint256 toUser = rewards;
-            if (autoLiquidityEnabled && liquidityInjectionRate > 0) {
-                uint256 toInject = (rewards * liquidityInjectionRate) / 100;
-                if (toInject > 0) {
-                    toUser -= toInject;
-                    _addLiquidity(toInject);
-                }
+            // Distribute rewards with single transfer
+            uint256 toUser = rewards - toInject;
+            
+            // First handle liquidity injection if needed
+            if (toInject > 0) {
+                if (!stakingToken.transfer(liquidityPool, toInject))
+                    revert TransferFailed(address(stakingToken), address(this), liquidityPool, toInject);
+                    
+                emit LiquidityInjected(toInject);
             }
             
-            // Transfer rewards to user
+            // Then transfer rewards to user
             if (!rewardDistributor.distributeReward(user, toUser))
                 revert DistributionFailed(toUser);
                 
@@ -511,6 +535,12 @@ contract TerraStakeStaking is
         if (newValidatorBalance < validatorThreshold) {
             _validators[validator] = false;
             emit ValidatorStatusChanged(validator, false);
+        }
+        
+        // Batch all token transfers - send slashed amount to burn address
+        if (slashedSoFar > 0) {
+            if (!stakingToken.transfer(BURN_ADDRESS, slashedSoFar))
+                revert TransferFailed(address(stakingToken), address(this), BURN_ADDRESS, slashedSoFar);
         }
         
         emit ValidatorSlashed(validator, slashedSoFar);
@@ -652,7 +682,7 @@ contract TerraStakeStaking is
         if (position.amount == 0) return 0;
         
         uint256 timeStaked = block.timestamp - position.lastCheckpoint;
-        if (timeStaked == 0) return 0;
+if (timeStaked == 0) return 0;
         
         // Get APR based on staking conditions
         uint256 apr = getDynamicAPR(position.isLPStaker, position.hasNFTBoost);
@@ -693,7 +723,8 @@ contract TerraStakeStaking is
         uint256 totalStakedAmount = _totalStaked;
         uint256 baseRate = totalStakedAmount < LOW_STAKING_THRESHOLD ? BOOSTED_APR : BASE_APR;
         uint256 currentHalvingEpoch = halvingEpoch;
-// Apply halvings (divide by 2^halvingEpoch)
+        
+        // Apply halvings (divide by 2^halvingEpoch)
         if (currentHalvingEpoch > 0) {
             // Apply halving using bitshift for gas efficiency
             return baseRate >> currentHalvingEpoch;
@@ -876,30 +907,6 @@ contract TerraStakeStaking is
     // -------------------------------------------
     // 🔹 Internal Helper Functions
     // -------------------------------------------
-    
-    /**
-     * @notice Burn tokens
-     * @param amount Amount to burn
-     */
-    function _burnTokens(uint256 amount) internal {
-        // Send tokens to dead address
-        address burnAddress = 0x000000000000000000000000000000000000dEaD;
-        if (!stakingToken.transfer(burnAddress, amount))
-            revert TransferFailed(address(stakingToken), address(this), burnAddress, amount);
-        
-        emit TokensBurned(amount);
-    }
-    
-    /**
-     * @notice Add liquidity to pool
-     * @param amount Amount to add
-     */
-    function _addLiquidity(uint256 amount) internal {
-        if (!stakingToken.transfer(liquidityPool, amount))
-            revert TransferFailed(address(stakingToken), address(this), liquidityPool, amount);
-        
-        emit LiquidityInjected(amount);
-    }
     
     /**
      * @notice Calculate voting power using quadratic voting
