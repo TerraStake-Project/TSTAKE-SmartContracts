@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.30;
+pragma solidity 0.8.28;
 
-interface ITerraStakeGovernance {
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+
+/**
+ * @title ITerraStakeGovernance (Upgradeable, Secure, OpenZeppelin 5.2.x)
+ * @notice Secure interface for on-chain governance, treasury management, and fee control in the TerraStake ecosystem.
+ */
+interface ITerraStakeGovernance is IERC165 {
     // ================================
-    // 🔹 Proposal Enums & Structs
+    // 🔹 Governance Enums & Structs
     // ================================
     enum ProposalStatus { Active, Timelocked, Vetoed, Executed, VotingEnded }
     enum ProposalType { General, RewardDistribution, Buyback, LiquidityInjection, FeeAdjustment }
@@ -31,6 +38,13 @@ interface ITerraStakeGovernance {
         uint256 treasuryPercentage;
         uint256 voteEnd;
         bool executed;
+    }
+
+    struct TreasuryMetrics {
+        uint256 availableFunds;
+        uint256 totalYieldGenerated;
+        uint256 totalLiquidityAdded;
+        uint256 lastReinvestmentTime;
     }
 
     // ================================
@@ -79,11 +93,32 @@ interface ITerraStakeGovernance {
     function recoverERC20(address token, uint256 amount) external;
 
     // ================================
+    // 🔹 Treasury Yield Optimization
+    // ================================
+    function reinvestTreasuryYield() external;
+    function getTreasuryMetrics() external view returns (TreasuryMetrics memory);
+
+    // ================================
     // 🔹 Dynamic Fee Governance
     // ================================
-    function proposeFeeUpdate(uint256 newProjectFee, uint256 newImpactFee) external;
-    function executeFeeUpdate(uint256 proposalId) external;
-    function getCurrentFees() external view returns (uint256 projectFee, uint256 impactFee);
+    function proposeFeeUpdate(
+        uint256 newProjectFee, 
+        uint256 newImpactFee, 
+        uint256 newBuybackPercentage, 
+        uint256 newLiquidityPairingPercentage, 
+        uint256 newBurnPercentage, 
+        uint256 newTreasuryPercentage
+    ) external;
+
+    function executeFeeUpdate() external;
+    function getCurrentFees() external view returns (
+        uint256 projectFee, 
+        uint256 impactFee, 
+        uint256 buybackPercentage, 
+        uint256 liquidityPairingPercentage, 
+        uint256 burnPercentage, 
+        uint256 treasuryPercentage
+    );
 
     // ================================
     // 🔹 Halving & Economic Adjustments
@@ -101,7 +136,20 @@ interface ITerraStakeGovernance {
     function getLiquiditySettings() external view returns (bool isPairingEnabled);
 
     // ================================
-    // 🔹 Events
+    // 🔹 Governance Participation Rewards 🏆
+    // ================================
+    function distributeGovernanceRewards(address user, uint256 amount) external;
+    function claimGovernanceRewards() external;
+    function getGovernanceRewards(address user) external view returns (uint256);
+
+    // ================================
+    // 🔹 Upgradeability (UUPS Standard)
+    // ================================
+    function upgradeTo(address newImplementation) external;
+    function getImplementation() external view returns (address);
+
+    // ================================
+    // 🔹 Events (Full Transparency)
     // ================================
     event ProposalCreated(
         uint256 indexed proposalId,
@@ -124,11 +172,28 @@ interface ITerraStakeGovernance {
         uint256 newProposalThreshold,
         uint256 newMinimumHolding
     );
-    event RewardRateAdjusted(uint256 newRate, uint256 timestamp);
+    event TreasuryYieldAdjusted(uint256 newRate, uint256 timestamp);
     event TokenRecovered(address indexed token, uint256 amount, address indexed recipient);
 
-    event FeeUpdateProposed(uint256 indexed proposalId, uint256 newProjectFee, uint256 newImpactFee);
-    event FeeUpdateExecuted(uint256 indexed proposalId, uint256 newProjectFee, uint256 newImpactFee);
+    event FeeUpdateProposed(
+        uint256 indexed proposalId, 
+        uint256 newProjectFee, 
+        uint256 newImpactFee, 
+        uint256 newBuybackPercentage, 
+        uint256 newLiquidityPairingPercentage, 
+        uint256 newBurnPercentage, 
+        uint256 newTreasuryPercentage
+    );
+
+    event FeeUpdateExecuted(
+        uint256 indexed proposalId, 
+        uint256 newProjectFee, 
+        uint256 newImpactFee, 
+        uint256 newBuybackPercentage, 
+        uint256 newLiquidityPairingPercentage, 
+        uint256 newBurnPercentage, 
+        uint256 newTreasuryPercentage
+    );
 
     event HalvingApplied(uint256 newEpoch);
     event HalvingPeriodUpdated(uint256 newHalvingPeriod);
@@ -137,4 +202,9 @@ interface ITerraStakeGovernance {
     event BuybackExecuted(uint256 usdcAmount, uint256 tStakeReceived);
     event LiquidityInjected(uint256 usdcAmount, uint256 tStakeAdded);
     event LiquidityPairingUpdated(bool isEnabled);
+    event TreasuryYieldReinvested(uint256 amount, uint256 poolShare);
+    event ContractUpgraded(address indexed newImplementation);
+
+    event GovernanceRewardDistributed(address indexed user, uint256 amount);
+    event GovernanceRewardClaimed(address indexed user, uint256 amount);
 }
