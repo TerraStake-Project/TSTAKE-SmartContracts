@@ -260,8 +260,8 @@ contract TerraStakeStaking is
         
         // Update project stats in projects contract
         projectsContract.updateProjectStaking(projectId, amount, true);
-        
-        // Mark as validator if staking enough
+
+// Mark as validator if staking enough
         if (userStakingBalance >= validatorThreshold && !_validators[msg.sender]) {
             _validators[msg.sender] = true;
             emit ValidatorStatusChanged(msg.sender, true);
@@ -297,8 +297,8 @@ contract TerraStakeStaking is
         // If unstaking early, apply penalty
         if (block.timestamp < stakingEndTime) {
             uint256 timeRemaining = stakingEndTime - block.timestamp;
-
-// Calculate penalty percentage (linear from BASE_PENALTY to MAX_PENALTY)
+            
+            // Calculate penalty percentage (linear from BASE_PENALTY to MAX_PENALTY)
             uint256 penaltyPercent = BASE_PENALTY_PERCENT + 
                 ((timeRemaining * (MAX_PENALTY_PERCENT - BASE_PENALTY_PERCENT)) / positionDuration);
             
@@ -681,8 +681,12 @@ contract TerraStakeStaking is
         StakingPosition memory position = _stakingPositions[user][projectId];
         if (position.amount == 0) return 0;
         
+        // Calculate time staked using last checkpoint for fair rewards
         uint256 timeStaked = block.timestamp - position.lastCheckpoint;
-if (timeStaked == 0) return 0;
+        if (timeStaked == 0) return 0;
+        
+        // Get total time in contract for long-term bonus calculation
+        uint256 totalTimeStaked = block.timestamp - position.stakingStart;
         
         // Get APR based on staking conditions
         uint256 apr = getDynamicAPR(position.isLPStaker, position.hasNFTBoost);
@@ -693,6 +697,19 @@ if (timeStaked == 0) return 0;
         // Calculate base rewards
         // formula: amount * apr * timeStaked * tierMultiplier / (100 * 365 days * 10000)
         uint256 rewards = (position.amount * apr * timeStaked * tierMultiplier) / (100 * 365 days * 10000);
+        
+        // ✅ Gradual Bonus Structure
+        // Adding time-based bonuses to reward long-term stakers
+        if (totalTimeStaked >= 18 * 30 days) {
+            // +8% bonus for staking 18+ months
+            rewards += (rewards * 8) / 100;
+        } else if (totalTimeStaked >= 15 * 30 days) {
+            // +5% bonus for staking 15-18 months
+            rewards += (rewards * 5) / 100;
+        } else if (totalTimeStaked >= 12 * 30 days) {
+            // +3% bonus for staking 12-15 months
+            rewards += (rewards * 3) / 100;
+        }
         
         return rewards;
     }
@@ -1020,3 +1037,4 @@ if (timeStaked == 0) return 0;
         emit ERC20Recovered(token, amount, recipient);
     }
 }
+
