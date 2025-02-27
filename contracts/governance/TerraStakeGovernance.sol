@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
 import "../interfaces/ITerraStakeGovernance.sol";
@@ -18,7 +19,7 @@ import "../interfaces/ITerraStakeLiquidityGuard.sol";
  * @title TerraStakeGovernance
  * @author TerraStake Protocol Team
  * @notice Governance contract for the TerraStake Protocol with advanced voting, 
- * proposal management, treasury control, and economic adjustments
+ * proposal management, treasury control, economic adjustments, and validator safety
  */
 contract TerraStakeGovernance is 
     Initializable, 
@@ -27,11 +28,14 @@ contract TerraStakeGovernance is
     UUPSUpgradeable,
     ITerraStakeGovernance
 {
+    using ECDSA for bytes32;
+
     // -------------------------------------------
     // 🔹 Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
     
     uint8 public constant PROPOSAL_TYPE_STANDARD = 0;
     uint8 public constant PROPOSAL_TYPE_FEE_UPDATE = 1;
@@ -39,11 +43,18 @@ contract TerraStakeGovernance is
     uint8 public constant PROPOSAL_TYPE_CONTRACT_UPDATE = 3;
     uint8 public constant PROPOSAL_TYPE_PENALTY = 4;
     uint8 public constant PROPOSAL_TYPE_EMERGENCY = 5;
+    uint8 public constant PROPOSAL_TYPE_VALIDATOR = 6;
     
     uint256 public constant TIMELOCK_DURATION = 2 days;
     uint256 public constant PENALTY_FOR_VIOLATION = 5; // 5% of stake
     uint256 public constant TWO_YEARS = 730 days;
     uint24 public constant POOL_FEE = 3000; // 0.3% pool fee for Uniswap v3
+    
+    // Validator safety thresholds
+    uint256 public constant CRITICAL_VALIDATOR_THRESHOLD = 3;  // Absolute minimum
+    uint256 public constant REDUCED_VALIDATOR_THRESHOLD = 7;   // Limited governance
+    uint256 public constant OPTIMAL_VALIDATOR_THRESHOLD = 15;  // Full governance
+    uint8 public constant GUARDIAN_QUORUM = 3;                 // Minimum guardians for override
     
     // -------------------------------------------
     // 🔹 State Variables
@@ -89,6 +100,36 @@ contract TerraStakeGovernance is
     mapping(uint256 => mapping(address => bool)) public hasVoted;
     mapping(bytes32 => bool) public executedHashes;
     
+    // Validator safety mechanism
+    uint8 public governanceTier; // 0=Emergency, 1=Reduced, 2=Full
+    bool public bootstrapMode;
+    uint256 public bootstrapEndTime;
+    uint256 public temporaryThresholdEndTime;
+    uint256 public originalValidatorThreshold;
+    mapping(address => bool) public guardianCouncil;
+    uint8 public guardianCount;
+    
+    // Execution nonces to prevent replay attacks
+    mapping(uint256 => bool) public executedNonces;
+    uint256 public currentNonce;
+
+    // -------------------------------------------
+    // 🔹 Events
+    // -------------------------------------------
+    
+    // Validator safety events
+    event GovernanceTierUpdated(uint8 tier, uint256 validatorCount);
+    event BootstrapModeConfigured(uint256 duration);
+    event BootstrapModeExited();
+    event EmergencyThresholdReduction(uint256 newThreshold, uint256 duration);
+    event ThresholdResetScheduled(uint256 resetTime);
+    event ValidatorHealthCheck(uint256 validatorCount, uint256 totalStaked, uint256 avgStakePerValidator, uint8 governanceTier);
+    event GuardianAdded(address guardian);
+    event GuardianRemoved(address guardian);
+    event GuardianOverrideExecuted(address executor, bytes4 operation, address target);
+    event ValidatorProposalCreated(uint256 proposalId, uint256 newThreshold);
+    event ValidatorRecruitmentInitiated(uint256 incentiveAmount, uint256 targetCount);
+    
     // -------------------------------------------
     // 🔹 Errors
     // -------------------------------------------
@@ -102,6 +143,37 @@ contract TerraStakeGovernance is
     error InvalidParameters();
     error GovernanceViolation();
     error Unauthorized();
+    error InsufficientValidators();
+    error ProposalTypeNotAllowed();
+    error InvalidGuardianSignatures();
+    error NonceAlreadyExecuted();
+    
+    // -------------------------------------------
+    // 🔹 Modifiers
+    // -------------------------------------------
+    
+    /**
+     * @notice Validator count safety check for critical functions
+     */
+    modifier validatorSafetyCheck() {
+        if (!bootstrapMode) {
+            uint256 validatorCount = stakingContract.getValidatorCount();
+            if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
+                revert InsufficientValidators();
+            }
+        }
+        _;
+    }
+    
+    /**
+     * @notice Check if proposal type is allowed in current governance tier
+     */
+    modifier allowedProposalType(uint8 proposalType) {
+        if (!isProposalTypeAllowed(proposalType)) {
+            revert ProposalTypeNotAllowed();
+        }
+        _;
+    }
     
     // -------------------------------------------
     // 🔹 Initializer & Upgrade Control
@@ -141,6 +213,7 @@ contract TerraStakeGovernance is
         _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
         _grantRole(UPGRADER_ROLE, _initialAdmin);
         _grantRole(GOVERNANCE_ROLE, _initialAdmin);
+        _grantRole(GUARDIAN_ROLE, _initialAdmin);
         
         // Initialize contract references
         stakingContract = ITerraStakeStaking(_stakingContract);
@@ -175,6 +248,21 @@ contract TerraStakeGovernance is
         
         // Enable liquidity pairing by default
         liquidityPairingEnabled = true;
+        
+        // Initialize validator safety mechanisms
+        bootstrapMode = true;
+        bootstrapEndTime = block.timestamp + 90 days; // 3 month bootstrap period by default
+        guardianCount = 1; // Initial admin is first guardian
+        guardianCouncil[_initialAdmin] = true;
+        
+        // Store original validator threshold
+        originalValidatorThreshold = stakingContract.validatorThreshold();
+        
+        // Set initial governance tier
+        governanceTier = 0; // Start in emergency tier until sufficient validators
+        
+        // Initialize nonce
+        currentNonce = 1;
     }
     
     /**
@@ -184,1160 +272,1071 @@ contract TerraStakeGovernance is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
-    // 🔹 Proposal Creation & Execution
+    // 🔹 Validator Safety Mechanisms
     // -------------------------------------------
     
     /**
-     * @notice Creates a standard proposal with arbitrary calldata and target
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param callData Data to be executed if proposal passes
-     * @param target Target contract address for execution
-     * @return proposalId The ID of the newly created proposal
+     * @notice Updates governance tier based on validator count
+     * @return The updated governance tier
      */
-    function createStandardProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bytes calldata callData,
-        address target
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        if (target == address(0)) revert InvalidParameters();
+    function updateGovernanceTier() public returns (uint8) {
+        uint256 validatorCount = stakingContract.getValidatorCount();
         
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            callData, 
-            target, 
-            PROPOSAL_TYPE_STANDARD
-        );
+        uint8 newTier;
+        if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
+            newTier = 0; // Emergency tier
+        } else if (validatorCount < OPTIMAL_VALIDATOR_THRESHOLD) {
+            newTier = 1; // Reduced tier
+        } else {
+            newTier = 2; // Full tier
+        }
         
-        return proposalId;
+        if (newTier != governanceTier) {
+            governanceTier = newTier;
+            emit GovernanceTierUpdated(governanceTier, validatorCount);
+        }
+        
+        return governanceTier;
     }
     
     /**
-     * @notice Creates a proposal to update fee structure
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param projectSubmissionFee New project submission fee
-     * @param impactReportingFee New impact reporting fee
-     * @param buybackPercentage New percentage allocated for token buybacks
-     * @param liquidityPairingPercentage New percentage allocated for liquidity pairing
-     * @param burnPercentage New percentage allocated for token burns
-     * @param treasuryPercentage New percentage allocated for treasury
-     * @return proposalId The ID of the newly created proposal
+     * @notice Validates if proposal type is allowed in current governance tier
+     * @param proposalType The type of proposal to validate
+     * @return True if proposal type is allowed
      */
-    function createFeeUpdateProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint256 buybackPercentage,
-        uint256 liquidityPairingPercentage,
-        uint256 burnPercentage,
-        uint256 treasuryPercentage
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
+    function isProposalTypeAllowed(uint8 proposalType) public view returns (bool) {
+        // Always ensure governance tier is up to date
+        uint256 validatorCount = stakingContract.getValidatorCount();
+        uint8 effectiveTier;
         
-        // Ensure percentages add up to 100%
-        if (buybackPercentage + liquidityPairingPercentage + burnPercentage + treasuryPercentage != 100) 
-            revert InvalidParameters();
-            
-        // Check cooldown period
-        if (block.timestamp < lastFeeUpdateTime + feeUpdateCooldown) revert TimelockNotExpired();
+        if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
+            effectiveTier = 0; // Emergency tier
+        } else if (validatorCount < OPTIMAL_VALIDATOR_THRESHOLD) {
+            effectiveTier = 1; // Reduced tier
+        } else {
+            effectiveTier = 2; // Full tier
+        }
         
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for fee proposals
-            address(0), // No target for fee proposals
-            PROPOSAL_TYPE_FEE_UPDATE
-        );
+        if (effectiveTier == 0) {
+            // Emergency tier: Only emergency, validator-related, and penalty proposals
+            return proposalType == PROPOSAL_TYPE_EMERGENCY ||
+                   proposalType == PROPOSAL_TYPE_VALIDATOR ||
+                   proposalType == PROPOSAL_TYPE_PENALTY;
+        } else if (effectiveTier == 1) {
+            // Reduced tier: All except contract updates
+            return proposalType != PROPOSAL_TYPE_CONTRACT_UPDATE;
+        }
         
-        // Store fee-specific data
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.feeData = FeeProposal(
-            projectSubmissionFee,
-            impactReportingFee,
-            buybackPercentage,
-            liquidityPairingPercentage,
-            burnPercentage,
-            treasuryPercentage,
-            proposals[proposalId].endTime,
-            false
-        );
-        
-        emit FeeProposalCreated(
-            proposalId,
-            projectSubmissionFee,
-            impactReportingFee,
-            buybackPercentage,
-            liquidityPairingPercentage,
-            burnPercentage,
-            treasuryPercentage
-        );
-        
-        return proposalId;
+        // Full tier: All proposal types allowed
+        return true;
     }
     
     /**
-     * @notice Creates a proposal to update governance parameters
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param _votingDuration New voting period duration
-     * @param _proposalThreshold New threshold for proposal creation
-     * @param _minimumHolding New minimum token holding to vote
-     * @param _feeUpdateCooldown New cooldown period for fee updates
-     * @return proposalId The ID of the newly created proposal
+     * @notice Configure bootstrap mode for initial validator set building
+     * @param duration How long bootstrap mode should last
      */
-    function createParamUpdateProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 _votingDuration,
-        uint256 _proposalThreshold,
-        uint256 _minimumHolding,
-        uint256 _feeUpdateCooldown
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for parameter proposals
-            address(0), // No target for parameter proposals
-            PROPOSAL_TYPE_PARAM_UPDATE
-        );
-        
-        // Store parameter data
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.numericParams = new uint256[](4);
-        extData.numericParams[0] = _votingDuration;
-        extData.numericParams[1] = _proposalThreshold;
-        extData.numericParams[2] = _minimumHolding;
-        extData.numericParams[3] = _feeUpdateCooldown;
-        
-        return proposalId;
+    function setValidatorBootstrap(uint256 duration) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(bootstrapMode, "Bootstrap mode already ended");
+        bootstrapEndTime = block.timestamp + duration;
+emit BootstrapModeConfigured(duration);
     }
     
     /**
-     * @notice Creates a proposal to update contract references
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param _stakingContract New staking contract address
-     * @param _rewardDistributor New reward distributor contract address
-     * @param _liquidityGuard New liquidity guard contract address
-     * @param _treasuryWallet New treasury wallet address
-     * @return proposalId The ID of the newly created proposal
+     * @notice Exit bootstrap mode when sufficient validators exist
      */
-    function createContractUpdateProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        address _stakingContract,
-        address _rewardDistributor,
-        address _liquidityGuard,
-        address _treasuryWallet
-    ) external nonReentrant returns (uint256) {
-uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for contract update proposals
-            address(0), // No target for contract update proposals
-            PROPOSAL_TYPE_CONTRACT_UPDATE
+    function exitBootstrapMode() external {
+        require(bootstrapMode, "Already exited bootstrap mode");
+        require(
+            block.timestamp > bootstrapEndTime || 
+            stakingContract.getValidatorCount() >= OPTIMAL_VALIDATOR_THRESHOLD,
+            "Cannot exit bootstrap: insufficient validators or time"
+        );
+        bootstrapMode = false;
+        emit BootstrapModeExited();
+    }
+
+    /**
+     * @notice Temporarily reduce validator threshold to encourage participation
+     * @param newThreshold Temporary validator threshold
+     * @param duration How long the reduction should last
+     */
+    function emergencyReduceValidatorThreshold(
+        uint256 newThreshold,
+        uint256 duration
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        require(
+            stakingContract.getValidatorCount() < CRITICAL_VALIDATOR_THRESHOLD,
+            "Not in emergency state"
         );
         
-        // Store contract addresses
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.contractAddresses = new address[](4);
-        extData.contractAddresses[0] = _stakingContract;
-        extData.contractAddresses[1] = _rewardDistributor;
-        extData.contractAddresses[2] = _liquidityGuard;
-        extData.contractAddresses[3] = _treasuryWallet;
+        // Store original threshold if not already stored
+        if (temporaryThresholdEndTime == 0) {
+            originalValidatorThreshold = stakingContract.validatorThreshold();
+        }
         
-        return proposalId;
-    }
-    
-    /**
-     * @notice Creates a proposal to penalize a governance violator
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param violator Address of the violator
-     * @param reason Reason for the penalty
-     * @return proposalId The ID of the newly created proposal
-     */
-    function createPenaltyProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        address violator,
-        string calldata reason
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        if (violator == address(0)) revert InvalidParameters();
-        
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for penalty proposals
-            address(0), // No target for penalty proposals
-            PROPOSAL_TYPE_PENALTY
-        );
-        
-        // Store violator address
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.accountsToUpdate = new address[](1);
-        extData.accountsToUpdate[0] = violator;
-        
-        return proposalId;
-    }
-    
-    /**
-     * @notice Create emergency proposal for critical operations
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param haltOperations Whether to halt protocol operations
-     * @return proposalId The ID of the newly created proposal
-     */
-    function createEmergencyProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bool haltOperations
-    ) external nonReentrant returns (uint256) {
-        // Only governance role members can create emergency proposals
-        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) revert Unauthorized();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for emergency proposals
-            address(0), // No target for emergency proposals
-            PROPOSAL_TYPE_EMERGENCY
-        );
-        
-        // Store emergency action flag
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.boolParams = new bool[](1);
-        extData.boolParams[0] = haltOperations;
-        
-        return proposalId;
-    }
-    
-    /**
-     * @notice Pardon a previously penalized governor (requires DAO vote)
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param violator Address to pardon
-     * @return proposalId The ID of the newly created proposal
-     */
-    function createPardonProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        address violator
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        if (!penalizedGovernors[violator]) revert InvalidParameters(); // Can only pardon if currently penalized
-        
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for pardon proposals
-            address(0), // No target for pardon proposals
-            PROPOSAL_TYPE_PENALTY
-        );
-        
-        // Store violator address with special flag for pardon
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.accountsToUpdate = new address[](1);
-        extData.accountsToUpdate[0] = violator;
-        extData.boolParams = new bool[](1);
-        extData.boolParams[0] = true; // true for pardon vs false for penalize
-        
-        return proposalId;
-    }
-    
-    /**
-     * @notice Create a proposal to adjust staking reward rate
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param newRate New staking reward rate
-     * @return proposalId The ID of the newly created proposal
-     */
-    function createRewardRateAdjustmentProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 newRate
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        
-        // Create proposal with reward rate adjustment calldata
+        // Implement temporary reduction via stakingContract
         bytes memory callData = abi.encodeWithSelector(
-            ITerraStakeRewardDistributor.setRewardRate.selector,
-            newRate
+            ITerraStakeStaking.setValidatorThreshold.selector,
+            newThreshold
         );
         
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            callData, 
-            address(rewardDistributor), 
-            PROPOSAL_TYPE_STANDARD
-        );
+        (bool success, ) = address(stakingContract).call(callData);
+        require(success, "Threshold update failed");
         
-        return proposalId;
+        // Schedule return to normal threshold
+        _scheduleThresholdReset(duration);
+        
+        emit EmergencyThresholdReduction(newThreshold, duration);
     }
     
     /**
-     * @notice Create a proposal to execute token buyback using rewards
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param usdcAmount Amount of USDC to use for buyback
-     * @return proposalId The ID of the newly created proposal
+     * @notice Schedule threshold reset after temporary reduction expires
+     * @param duration Duration of temporary threshold reduction
      */
-    function createBuybackProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 usdcAmount
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        if (usdcAmount == 0) revert InvalidParameters();
-        
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // Custom execution in executeBuybackProposal
-            address(0), 
-            PROPOSAL_TYPE_STANDARD
-        );
-        
-        // Store buyback amount
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.numericParams = new uint256[](1);
-        extData.numericParams[0] = usdcAmount;
-        
-        return proposalId;
+    function _scheduleThresholdReset(uint256 duration) internal {
+        temporaryThresholdEndTime = block.timestamp + duration;
+        emit ThresholdResetScheduled(temporaryThresholdEndTime);
     }
     
     /**
-     * @notice Create a proposal to toggle liquidity pairing
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param enabled Whether to enable or disable liquidity pairing
-     * @return proposalId The ID of the newly created proposal
+     * @notice Reset validator threshold to original value after temporary reduction expires
      */
-    function createLiquidityPairingProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bool enabled
-    ) external nonReentrant returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < proposalThreshold) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
+    function resetValidatorThreshold() external {
+        require(temporaryThresholdEndTime > 0, "No threshold reset scheduled");
+        require(block.timestamp >= temporaryThresholdEndTime, "Temporary threshold still active");
         
-        uint256 proposalId = _createBaseProposal(
-            proposalHash, 
-            description, 
-            "", // No calldata for liquidity pairing proposals
-            address(0), // No target for liquidity pairing proposals
-            PROPOSAL_TYPE_STANDARD
+        bytes memory callData = abi.encodeWithSelector(
+            ITerraStakeStaking.setValidatorThreshold.selector,
+            originalValidatorThreshold
         );
         
-        // Store liquidity pairing flag
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.boolParams = new bool[](1);
-        extData.boolParams[0] = enabled;
+        (bool success, ) = address(stakingContract).call(callData);
+        require(success, "Threshold reset failed");
         
-        return proposalId;
+        temporaryThresholdEndTime = 0;
     }
     
     /**
-     * @notice Internal function to create the base proposal
-     * @param proposalHash Hash of the proposal details
-     * @param description Description of the proposal
-     * @param callData Data to be executed if proposal passes
-     * @param target Target contract address for execution
-     * @param proposalType Type of the proposal
-     * @return proposalId The ID of the newly created proposal
+     * @notice Emits validator health status for offchain monitoring
      */
-    function _createBaseProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bytes memory callData,
+    function checkValidatorHealth() external {
+        uint256 validatorCount = stakingContract.getValidatorCount();
+        uint256 totalStaked = stakingContract.totalStakedTokens();
+        uint256 avgStakePerValidator = validatorCount > 0 ? totalStaked / validatorCount : 0;
+        
+        emit ValidatorHealthCheck(
+            validatorCount,
+            totalStaked,
+            avgStakePerValidator,
+            governanceTier
+        );
+    }
+    
+    /**
+     * @notice Add a guardian to the guardian council
+     * @param guardian Address of the new guardian
+     */
+    function addGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(guardian != address(0), "Invalid guardian address");
+        require(!guardianCouncil[guardian], "Already a guardian");
+        
+        guardianCouncil[guardian] = true;
+        guardianCount++;
+        _grantRole(GUARDIAN_ROLE, guardian);
+        
+        emit GuardianAdded(guardian);
+    }
+    
+    /**
+     * @notice Remove a guardian from the guardian council
+     * @param guardian Address of the guardian to remove
+     */
+    function removeGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(guardianCouncil[guardian], "Not a guardian");
+        require(guardianCount > 1, "Cannot remove last guardian");
+        
+        guardianCouncil[guardian] = false;
+        guardianCount--;
+        _revokeRole(GUARDIAN_ROLE, guardian);
+        
+        emit GuardianRemoved(guardian);
+    }
+    
+    /**
+     * @notice Validate guardian signatures for an emergency override
+     * @param operation Function selector to call
+     * @param target Contract to call
+     * @param data Call data
+     * @param signatures Guardian signatures approving this action
+     * @return True if signatures are valid
+     */
+    function validateGuardianSignatures(
+        bytes4 operation,
         address target,
-        uint8 proposalType
-    ) internal returns (uint256) {
-        // Ensure proposal hash has not been executed already
-        if (executedHashes[proposalHash]) revert ProposalAlreadyExecuted();
+        bytes calldata data,
+        bytes[] calldata signatures
+    ) public view returns (bool) {
+        require(signatures.length >= GUARDIAN_QUORUM, "Insufficient signatures");
         
-        // Increment proposal count and create new proposal
+        // Hash the operation details with current nonce to prevent replay
+        bytes32 messageHash = keccak256(abi.encodePacked(
+            operation,
+            target,
+            data,
+            currentNonce
+        ));
+        
+        // Prefix the hash according to EIP-191
+        bytes32 prefixedHash = keccak256(abi.encodePacked(
+            "\x19Ethereum Signed Message:\n32",
+            messageHash
+        ));
+        
+        // Track signers to prevent duplicates
+        address[] memory signers = new address[](signatures.length);
+        uint256 validSignatures = 0;
+        
+        // Validate each signature
+        for (uint256 i = 0; i < signatures.length; i++) {
+            address signer = prefixedHash.recover(signatures[i]);
+            
+            // Check if signer is a guardian
+            if (guardianCouncil[signer]) {
+                // Check for duplicate signers
+                bool isDuplicate = false;
+                for (uint256 j = 0; j < validSignatures; j++) {
+                    if (signers[j] == signer) {
+                        isDuplicate = true;
+                        break;
+                    }
+                }
+                
+                if (!isDuplicate) {
+                    signers[validSignatures] = signer;
+                    validSignatures++;
+                }
+            }
+        }
+        
+        return validSignatures >= GUARDIAN_QUORUM;
+    }
+    
+    /**
+     * @notice Override with guardian approval during extreme validator shortage
+     * @param operation Function selector to call
+     * @param target Contract to call
+     * @param data Call data
+     * @param signatures Guardian signatures approving this action
+     */
+    function guardianOverride(
+        bytes4 operation,
+        address target,
+        bytes calldata data,
+        bytes[] calldata signatures
+    ) external nonReentrant {
+        require(stakingContract.getValidatorCount() < CRITICAL_VALIDATOR_THRESHOLD, "Not in emergency");
+        
+        if (!validateGuardianSignatures(operation, target, data, signatures)) {
+            revert InvalidGuardianSignatures();
+        }
+        
+        if (executedNonces[currentNonce]) {
+            revert NonceAlreadyExecuted();
+        }
+        
+        // Mark nonce as executed
+        executedNonces[currentNonce] = true;
+        currentNonce++;
+        
+        // Execute the call
+        (bool success, ) = target.call(data);
+        require(success, "Guardian override failed");
+        
+        emit GuardianOverrideExecuted(msg.sender, operation, target);
+    }
+    
+    /**
+     * @notice Create a validator-specific proposal to adjust thresholds or incentives
+     * @param description Description of the proposal
+     * @param newThreshold New validator threshold if applicable
+     * @param incentives Additional incentives for validators if applicable
+     * @return proposalId ID of the created proposal
+     */
+    function createValidatorProposal(
+        string calldata description,
+        uint256 newThreshold,
+        uint256 incentives
+    ) external onlyRole(GOVERNANCE_ROLE) returns (uint256) {
+        // Create proposal with validator-specific parameters
         proposalCount++;
         uint256 proposalId = proposalCount;
         
-        // Set up proposal timing
-        uint256 startTime = block.timestamp;
-        uint256 endTime = startTime + votingDuration;
-        uint256 timelockEnd = endTime + TIMELOCK_DURATION;
+        proposals[proposalId] = Proposal({
+            id: proposalId,
+            proposer: msg.sender,
+            description: description,
+            proposalType: PROPOSAL_TYPE_VALIDATOR,
+            createTime: block.timestamp,
+            voteStart: block.timestamp,
+            voteEnd: block.timestamp + votingDuration,
+            forVotes: 0,
+            againstVotes: 0,
+            executed: false,
+            canceled: false
+        });
         
-        // Create proposal
-        Proposal storage newProposal = proposals[proposalId];
-        newProposal.id = proposalId;
-        newProposal.proposer = msg.sender;
-        newProposal.hashOfProposal = proposalHash;
-        newProposal.startTime = startTime;
-        newProposal.endTime = endTime;
-        newProposal.forVotes = 0;
-        newProposal.againstVotes = 0;
-        newProposal.executed = false;
-        newProposal.callData = callData;
-        newProposal.target = target;
-        newProposal.timelockEnd = timelockEnd;
+        // Store extended data specific to validator proposals
+        bytes memory validatorData = abi.encode(newThreshold, incentives);
+        proposalExtendedData[proposalId] = ExtendedProposalData({
+            customData: validatorData,
+            timelockExpiry: block.timestamp + TIMELOCK_DURATION + votingDuration
+        });
         
-        // Set proposal type
+        emit ValidatorProposalCreated(proposalId, newThreshold);
+        return proposalId;
+    }
+    
+    /**
+     * @notice Initiate an emergency validator recruitment drive
+     * @param incentiveAmount Amount of tokens to incentivize new validators
+     * @param targetCount Target number of validators
+     */
+    function initiateValidatorRecruitment(
+        uint256 incentiveAmount,
+        uint256 targetCount
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        require(
+            stakingContract.getValidatorCount() < REDUCED_VALIDATOR_THRESHOLD,
+            "Not in validator shortage"
+        );
+        
+        // Implementation would involve:
+        // 1. Setting up incentives in the staking contract
+        // 2. Allocating tokens for validator bonuses
+        // 3. Setting expiration for the recruitment drive
+        
+        // Placeholder for actual implementation
+        emit ValidatorRecruitmentInitiated(incentiveAmount, targetCount);
+    }
+    
+    // -------------------------------------------
+    // 🔹 Core Governance Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Create a new governance proposal
+     * @param description Description of the proposal
+     * @param proposalType Type of the proposal
+     * @param callData Data to be executed if the proposal passes
+     * @param targets Addresses of contracts to call
+     * @return proposalId ID of the created proposal
+     */
+    function createProposal(
+        string calldata description,
+        uint8 proposalType,
+        bytes[] calldata callData,
+        address[] calldata targets
+    ) external nonReentrant allowedProposalType(proposalType) returns (uint256) {
+        if (tStakeToken.balanceOf(msg.sender) < proposalThreshold) {
+            revert GovernanceThresholdNotMet();
+        }
+        
+        // Require proper input parameters
+        if (callData.length != targets.length || callData.length == 0) {
+            revert InvalidParameters();
+        }
+        
+        // Create the proposal
+        proposalCount++;
+        uint256 proposalId = proposalCount;
+        
+        proposals[proposalId] = Proposal({
+            id: proposalId,
+            proposer: msg.sender,
+            description: description,
+            proposalType: proposalType,
+            createTime: block.timestamp,
+            voteStart: block.timestamp,
+            voteEnd: block.timestamp + votingDuration,
+            forVotes: 0,
+            againstVotes: 0,
+            executed: false,
+            canceled: false
+        });
+        
+        // Create execution hash and store
+        bytes memory proposalData = abi.encode(targets, callData);
+        proposalExtendedData[proposalId] = ExtendedProposalData({
+            customData: proposalData,
+            timelockExpiry: block.timestamp + TIMELOCK_DURATION + votingDuration
+        });
+        
+        // Emit proposal created event
+        emit ProposalCreated(
+            proposalId,
+            msg.sender,
+            description,
+            proposalType,
+            block.timestamp,
+            block.timestamp + votingDuration
+        );
+        
+        return proposalId;
+    }
+    
+    /**
+     * @notice Cast vote on an open proposal
+     * @param proposalId ID of the proposal
+     * @param support True for for, false for against
+     */
+    function castVote(uint256 proposalId, bool support) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+        
+        if (block.timestamp > proposal.voteEnd) {
+            revert InvalidProposalState();
+        }
+        
+        if (hasVoted[proposalId][msg.sender]) {
+            revert InvalidVote();
+        }
+        
+        uint256 weight = tStakeToken.balanceOf(msg.sender);
+        if (weight < minimumHolding) {
+            revert GovernanceThresholdNotMet();
+        }
+        
+        // Record the vote
+        if (support) {
+            proposal.forVotes += weight;
+        } else {
+            proposal.againstVotes += weight;
+        }
+        
+        hasVoted[proposalId][msg.sender] = true;
+        totalVotesCast++;
+        
+        emit VoteCast(proposalId, msg.sender, support, weight);
+    }
+    
+    /**
+     * @notice Execute a passed proposal after timelock
+     * @param proposalId ID of the proposal to execute
+     */
+    function executeProposal(uint256 proposalId) 
+        external 
+        nonReentrant 
+        validatorSafetyCheck 
+    {
+        Proposal storage proposal = proposals[proposalId];
+        
+        if (proposal.id == 0) {
+            revert ProposalDoesNotExist();
+        }
+        
+        if (proposal.executed) {
+            revert ProposalAlreadyExecuted();
+        }
+        
+        if (block.timestamp <= proposal.voteEnd) {
+            revert ProposalNotReady();
+        }
+        
+        // Check if the proposal passed
+        bool passed = proposal.forVotes > proposal.againstVotes;
+        if (!passed) {
+            revert InvalidProposalState();
+        }
+        
+        // Check timelock
         ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        extData.proposalType = proposalType;
+        if (block.timestamp < extData.timelockExpiry) {
+            revert TimelockNotExpired();
+        }
+        
+        // Execute based on proposal type
+        if (proposal.proposalType == PROPOSAL_TYPE_FEE_UPDATE) {
+            _executeFeeUpdate(proposalId);
+        } else if (proposal.proposalType == PROPOSAL_TYPE_VALIDATOR) {
+            _executeValidatorUpdate(proposalId);
+        } else {
+            // Standard proposal
+            (address[] memory targets, bytes[] memory callData) = abi.decode(
+                extData.customData,
+                (address[], bytes[])
+            );
+            
+            for (uint256 i = 0; i < targets.length; i++) {
+                (bool success, ) = targets[i].call(callData[i]);
+                require(success, "Proposal execution failed");
+            }
+        }
+        
+        // Mark as executed
+        proposal.executed = true;
+        totalProposalsExecuted++;
+        
+        emit ProposalExecuted(proposalId);
+    }
+    
+    /**
+* @notice Execute fee structure update from proposal
+     * @param proposalId ID of the fee proposal
+     */
+    function _executeFeeUpdate(uint256 proposalId) internal {
+        // Require cooldown period has passed
+        if (block.timestamp < lastFeeUpdateTime + feeUpdateCooldown) {
+            revert InvalidProposalState();
+        }
+        
+        // Decode the fee proposal data
+        FeeProposal memory newFees = abi.decode(
+            proposalExtendedData[proposalId].customData,
+            (FeeProposal)
+        );
+        
+        // Validate fee percentages sum to 100%
+        if (newFees.buybackPercentage + 
+            newFees.liquidityPairingPercentage + 
+            newFees.burnPercentage + 
+            newFees.treasuryPercentage != 100) {
+            revert InvalidParameters();
+        }
+        
+        // Update fee structure
+        currentFeeStructure = newFees;
+        lastFeeUpdateTime = block.timestamp;
+        
+        emit FeeStructureUpdated(
+            newFees.projectSubmissionFee,
+            newFees.impactReportingFee,
+            newFees.buybackPercentage,
+            newFees.liquidityPairingPercentage,
+            newFees.burnPercentage,
+            newFees.treasuryPercentage
+        );
+    }
+    
+    /**
+     * @notice Execute validator-specific update from proposal
+     * @param proposalId ID of the validator proposal
+     */
+    function _executeValidatorUpdate(uint256 proposalId) internal {
+        // Decode the validator proposal data
+        (uint256 newThreshold, uint256 incentives) = abi.decode(
+            proposalExtendedData[proposalId].customData,
+            (uint256, uint256)
+        );
+        
+        // Update validator threshold if specified
+        if (newThreshold > 0) {
+            bytes memory callData = abi.encodeWithSelector(
+                ITerraStakeStaking.setValidatorThreshold.selector,
+                newThreshold
+            );
+            
+            (bool success, ) = address(stakingContract).call(callData);
+            require(success, "Validator threshold update failed");
+            
+            // Update original threshold for future resets
+            originalValidatorThreshold = newThreshold;
+        }
+        
+        // Apply validator incentives if specified
+        if (incentives > 0) {
+            // Implementation depends on reward mechanism
+            // This is a placeholder for actual incentive distribution
+            bytes memory callData = abi.encodeWithSelector(
+                ITerraStakeRewardDistributor.addValidatorIncentive.selector,
+                incentives
+            );
+            
+            (bool success, ) = address(rewardDistributor).call(callData);
+            require(success, "Validator incentive update failed");
+        }
+    }
+    
+    /**
+     * @notice Cancel a proposal
+     * @param proposalId ID of the proposal to cancel
+     */
+    function cancelProposal(uint256 proposalId) external {
+        Proposal storage proposal = proposals[proposalId];
+        
+        if (proposal.id == 0) {
+            revert ProposalDoesNotExist();
+        }
+        
+        // Only the proposer or an admin can cancel
+        if (msg.sender != proposal.proposer && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert Unauthorized();
+        }
+        
+        if (proposal.executed) {
+            revert ProposalAlreadyExecuted();
+        }
+        
+        proposal.canceled = true;
+        
+        emit ProposalCanceled(proposalId);
+    }
+    
+    // -------------------------------------------
+    // 🔹 Treasury Management Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Create a fee proposal
+     * @param description Description of the fee proposal
+     * @param projectSubmissionFee New project submission fee
+     * @param impactReportingFee New impact reporting fee
+     * @param buybackPercentage Percentage for buybacks
+     * @param liquidityPairingPercentage Percentage for liquidity pairing
+     * @param burnPercentage Percentage for burning
+     * @param treasuryPercentage Percentage for treasury
+     * @return proposalId ID of the created proposal
+     */
+    function createFeeProposal(
+        string calldata description,
+        uint256 projectSubmissionFee,
+        uint256 impactReportingFee,
+        uint8 buybackPercentage,
+        uint8 liquidityPairingPercentage,
+        uint8 burnPercentage,
+        uint8 treasuryPercentage
+    ) external nonReentrant allowedProposalType(PROPOSAL_TYPE_FEE_UPDATE) returns (uint256) {
+        if (tStakeToken.balanceOf(msg.sender) < proposalThreshold) {
+            revert GovernanceThresholdNotMet();
+        }
+        
+        // Validate percentages add up to 100%
+        if (buybackPercentage + liquidityPairingPercentage + burnPercentage + treasuryPercentage != 100) {
+            revert InvalidParameters();
+        }
+        
+        // Create the proposal
+        proposalCount++;
+        uint256 proposalId = proposalCount;
+        
+        FeeProposal memory feeProposal = FeeProposal({
+            projectSubmissionFee: projectSubmissionFee,
+            impactReportingFee: impactReportingFee,
+            buybackPercentage: buybackPercentage,
+            liquidityPairingPercentage: liquidityPairingPercentage,
+            burnPercentage: burnPercentage,
+            treasuryPercentage: treasuryPercentage,
+            voteEnd: block.timestamp + votingDuration,
+            executed: false
+        });
+        
+        proposals[proposalId] = Proposal({
+            id: proposalId,
+            proposer: msg.sender,
+            description: description,
+            proposalType: PROPOSAL_TYPE_FEE_UPDATE,
+            createTime: block.timestamp,
+            voteStart: block.timestamp,
+            voteEnd: block.timestamp + votingDuration,
+            forVotes: 0,
+            againstVotes: 0,
+            executed: false,
+            canceled: false
+        });
+        
+        // Store fee proposal data
+        proposalExtendedData[proposalId] = ExtendedProposalData({
+            customData: abi.encode(feeProposal),
+            timelockExpiry: block.timestamp + TIMELOCK_DURATION + votingDuration
+        });
         
         emit ProposalCreated(
             proposalId,
             msg.sender,
-            proposalHash,
-            startTime,
-            endTime,
             description,
-            proposalType
+            PROPOSAL_TYPE_FEE_UPDATE,
+            block.timestamp,
+            block.timestamp + votingDuration
         );
         
         return proposalId;
     }
     
     /**
-     * @notice Cast a vote on a proposal
-     * @param proposalId ID of the proposal to vote on
-     * @param support True for vote in favor, false for vote against
+     * @notice Perform a buyback of TSTAKE tokens
+     * @param usdcAmount Amount of USDC to use for buyback
      */
-    function castVote(uint256 proposalId, bool support) external nonReentrant {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+    function performBuyback(uint256 usdcAmount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        require(usdcAmount > 0, "Amount must be greater than 0");
+        require(usdcToken.balanceOf(address(this)) >= usdcAmount, "Insufficient USDC balance");
         
-        Proposal storage proposal = proposals[proposalId];
-        if (block.timestamp <= proposal.startTime) revert ProposalNotReady();
-        if (block.timestamp > proposal.endTime) revert InvalidProposalState();
-        if (proposal.executed) revert ProposalAlreadyExecuted();
-        if (hasVoted[proposalId][msg.sender]) revert InvalidVote();
-        
-        // Check if caller meets minimum holding
-        uint256 votingPower = stakingContract.governanceVotes(msg.sender);
-        if (votingPower < minimumHolding) revert GovernanceThresholdNotMet();
-        if (penalizedGovernors[msg.sender]) revert GovernanceViolation();
-        
-        // Mark as voted
-        hasVoted[proposalId][msg.sender] = true;
-        
-        // Apply quadratic voting
-        uint256 quadraticVotingPower = sqrt(votingPower);
-        
-        // Tally votes
-        if (support) {
-            proposal.forVotes += quadraticVotingPower;
-        } else {
-            proposal.againstVotes += quadraticVotingPower;
-        }
-        
-        totalVotesCast++;
-        
-        emit GovernanceVoteCast(msg.sender, proposalId, support);
-    }
-    
-    /**
-     * @notice Execute a proposal that has passed voting
-     * @param proposalId ID of the proposal to execute
-     */
-    function executeProposal(uint256 proposalId) external nonReentrant {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
-        
-        Proposal storage proposal = proposals[proposalId];
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        
-        if (proposal.executed) revert ProposalAlreadyExecuted();
-        if (block.timestamp <= proposal.endTime) revert ProposalNotReady();
-        if (block.timestamp < proposal.timelockEnd) revert TimelockNotExpired();
-        if (proposal.forVotes <= proposal.againstVotes) revert GovernanceThresholdNotMet();
-        
-        // Mark as executed
-        proposal.executed = true;
-        executedHashes[proposal.hashOfProposal] = true;
-        totalProposalsExecuted++;
-        
-        // Execute based on proposal type
-        uint8 pType = extData.proposalType;
-        
-        bool success = true;
-        
-        if (pType == PROPOSAL_TYPE_STANDARD) {
-            // Execute standard proposal with calldata
-            if (proposal.target != address(0) && proposal.callData.length > 0) {
-                (bool callSuccess, ) = proposal.target.call(proposal.callData);
-                success = callSuccess;
-            }
-        } 
-        else if (pType == PROPOSAL_TYPE_FEE_UPDATE) {
-            _executeFeeUpdate(proposalId);
-        } 
-        else if (pType == PROPOSAL_TYPE_PARAM_UPDATE) {
-            _executeParamUpdate(proposalId);
-        } 
-        else if (pType == PROPOSAL_TYPE_CONTRACT_UPDATE) {
-            _executeContractUpdate(proposalId);
-        } 
-        else if (pType == PROPOSAL_TYPE_PENALTY) {
-            _executePenalty(proposalId);
-        } 
-        else if (pType == PROPOSAL_TYPE_EMERGENCY) {
- _executeEmergency(proposalId);
-        }
-        
-        emit ProposalExecuted(proposalId, msg.sender);
-    }
-    
-    /**
-     * @notice Execute a token buyback proposal
-     * @param proposalId ID of the buyback proposal
-     */
-    function executeBuybackProposal(uint256 proposalId) external nonReentrant {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
-        
-        Proposal storage proposal = proposals[proposalId];
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        
-        if (proposal.executed) revert ProposalAlreadyExecuted();
-        if (block.timestamp <= proposal.endTime) revert ProposalNotReady();
-        if (block.timestamp < proposal.timelockEnd) revert TimelockNotExpired();
-        if (proposal.forVotes <= proposal.againstVotes) revert GovernanceThresholdNotMet();
-        
-        // Mark as executed
-        proposal.executed = true;
-        executedHashes[proposal.hashOfProposal] = true;
-        totalProposalsExecuted++;
-        
-        // Execute buyback
-        uint256 usdcAmount = extData.numericParams[0];
-        
-        // Ensure treasury has enough USDC
-        require(usdcToken.balanceOf(treasuryWallet) >= usdcAmount, "Insufficient USDC in treasury");
-        
-        // Transfer USDC from treasury to this contract for the swap
-        usdcToken.transferFrom(treasuryWallet, address(this), usdcAmount);
-        
-        // Approve Uniswap router to spend USDC
+        // Approve USDC for the router
         usdcToken.approve(address(uniswapRouter), usdcAmount);
         
-        // Set swap parameters
+        // Define the path
         ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
             tokenIn: address(usdcToken),
             tokenOut: address(tStakeToken),
             fee: POOL_FEE,
-            recipient: treasuryWallet,
+            recipient: address(this),
             deadline: block.timestamp + 15 minutes,
             amountIn: usdcAmount,
-            amountOutMinimum: 0, // Allow any amount (assumes TWAP protection)
-            sqrtPriceLimitX96: 0 // No price limit
+            amountOutMinimum: 0, // Consider implementing a minimum output check
+            sqrtPriceLimitX96: 0
         });
         
-        // Execute swap and get amount of TStake received
+        // Execute the swap
         uint256 amountOut = uniswapRouter.exactInputSingle(params);
         
-        emit RewardBuybackExecuted(usdcAmount, amountOut);
-        emit ProposalExecuted(proposalId, msg.sender);
+        emit BuybackExecuted(usdcAmount, amountOut);
     }
     
     /**
-     * @notice Execute liquidity pairing proposal
-     * @param proposalId ID of the liquidity pairing proposal
+     * @notice Add liquidity to TSTAKE/USDC pair
+     * @param tStakeAmount Amount of TSTAKE tokens to add
+     * @param usdcAmount Amount of USDC to add
      */
-    function executeLiquidityPairingProposal(uint256 proposalId) external nonReentrant {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+    function addLiquidity(uint256 tStakeAmount, uint256 usdcAmount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        require(liquidityPairingEnabled, "Liquidity pairing disabled");
+        require(tStakeAmount > 0 && usdcAmount > 0, "Amounts must be greater than 0");
+        require(tStakeToken.balanceOf(address(this)) >= tStakeAmount, "Insufficient TSTAKE balance");
+        require(usdcToken.balanceOf(address(this)) >= usdcAmount, "Insufficient USDC balance");
         
-        Proposal storage proposal = proposals[proposalId];
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
+        // Transfer tokens to liquidity guard for proper LP management
+        tStakeToken.transfer(address(liquidityGuard), tStakeAmount);
+        usdcToken.transfer(address(liquidityGuard), usdcAmount);
         
-        if (proposal.executed) revert ProposalAlreadyExecuted();
-        if (block.timestamp <= proposal.endTime) revert ProposalNotReady();
-        if (block.timestamp < proposal.timelockEnd) revert TimelockNotExpired();
-        if (proposal.forVotes <= proposal.againstVotes) revert GovernanceThresholdNotMet();
+        // Call addLiquidity on the liquidity guard
+        liquidityGuard.addLiquidity(tStakeAmount, usdcAmount);
         
-        // Mark as executed
-        proposal.executed = true;
-        executedHashes[proposal.hashOfProposal] = true;
-        totalProposalsExecuted++;
-        
-        // Toggle liquidity pairing
-        liquidityPairingEnabled = extData.boolParams[0];
-        
-        emit LiquidityPairingToggled(liquidityPairingEnabled);
-        emit ProposalExecuted(proposalId, msg.sender);
+        emit LiquidityAdded(tStakeAmount, usdcAmount);
     }
     
     /**
-     * @notice Execute a fee update proposal
-     * @param proposalId ID of the fee update proposal
+     * @notice Burn TSTAKE tokens from treasury
+     * @param amount Amount to burn
      */
-    function _executeFeeUpdate(uint256 proposalId) internal {
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        FeeProposal storage feeProposal = extData.feeData;
+    function burnTokens(uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        require(amount > 0, "Amount must be greater than 0");
+        require(tStakeToken.balanceOf(address(this)) >= amount, "Insufficient balance to burn");
         
-        // Update current fee structure
-        currentFeeStructure = FeeProposal({
-            projectSubmissionFee: feeProposal.projectSubmissionFee,
-            impactReportingFee: feeProposal.impactReportingFee,
-            buybackPercentage: feeProposal.buybackPercentage,
-            liquidityPairingPercentage: feeProposal.liquidityPairingPercentage,
-            burnPercentage: feeProposal.burnPercentage,
-            treasuryPercentage: feeProposal.treasuryPercentage,
-            voteEnd: 0,
-            executed: true
-        });
-        
-        // Update last fee update time
-        lastFeeUpdateTime = block.timestamp;
-        
-        emit FeeStructureUpdated(
-            feeProposal.projectSubmissionFee,
-            feeProposal.impactReportingFee,
-            feeProposal.buybackPercentage,
-            feeProposal.liquidityPairingPercentage,
-            feeProposal.burnPercentage,
-            feeProposal.treasuryPercentage
+        // Assuming token has a burn function, otherwise send to dead address
+        (bool success, ) = address(tStakeToken).call(
+            abi.encodeWithSignature("burn(uint256)", amount)
         );
+        
+        // If burn function doesn't exist, send to dead address
+        if (!success) {
+            tStakeToken.transfer(address(0xdead), amount);
+        }
+        
+        emit TokensBurned(amount);
     }
     
     /**
-     * @notice Execute a parameter update proposal
-     * @param proposalId ID of the parameter update proposal
+     * @notice Transfer tokens from treasury to specified address
+     * @param token Token address
+     * @param recipient Recipient address
+     * @param amount Amount to transfer
      */
-    function _executeParamUpdate(uint256 proposalId) internal {
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
+    function treasuryTransfer(
+        address token,
+        address recipient, 
+        uint256 amount
+    ) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        require(amount > 0, "Amount must be greater than 0");
+        require(recipient != address(0), "Invalid recipient");
         
-        // Update governance parameters
-        votingDuration = extData.numericParams[0];
-        proposalThreshold = extData.numericParams[1];
-        minimumHolding = extData.numericParams[2];
-        feeUpdateCooldown = extData.numericParams[3];
+        IERC20(token).transfer(recipient, amount);
         
-        emit GovernanceParametersUpdated(
-            votingDuration,
-            proposalThreshold,
-            minimumHolding
-        );
-    }
-    
-    /**
-     * @notice Execute a contract update proposal
-     * @param proposalId ID of the contract update proposal
-     */
-    function _executeContractUpdate(uint256 proposalId) internal {
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        
-        address newStakingContract = extData.contractAddresses[0];
-        address newRewardDistributor = extData.contractAddresses[1];
-        address newLiquidityGuard = extData.contractAddresses[2];
-        address newTreasuryWallet = extData.contractAddresses[3];
-        
-        // Update contract references (if not zero address)
-        if (newStakingContract != address(0)) {
-            stakingContract = ITerraStakeStaking(newStakingContract);
-        }
-        
-        if (newRewardDistributor != address(0)) {
-            rewardDistributor = ITerraStakeRewardDistributor(newRewardDistributor);
-        }
-        
-        if (newLiquidityGuard != address(0)) {
-            liquidityGuard = ITerraStakeLiquidityGuard(newLiquidityGuard);
-        }
-        
-        if (newTreasuryWallet != address(0)) {
-            treasuryWallet = newTreasuryWallet;
-            emit TreasuryWalletUpdated(newTreasuryWallet);
-        }
-        
-        emit GovernanceContractsUpdated(
-            address(stakingContract),
-            address(rewardDistributor),
-            address(liquidityGuard)
-        );
-    }
-    
-    /**
-     * @notice Execute a penalty proposal
-     * @param proposalId ID of the penalty proposal
-     */
-    function _executePenalty(uint256 proposalId) internal {
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        address violator = extData.accountsToUpdate[0];
-        
-        // Check if this is a pardon proposal
-        bool isPardon = extData.boolParams.length > 0 && extData.boolParams[0];
-        
-        if (isPardon) {
-            // Remove penalty
-            penalizedGovernors[violator] = false;
-        } else {
-            // Apply penalty
-            penalizedGovernors[violator] = true;
-            emit GovernanceViolationDetected(violator, PENALTY_FOR_VIOLATION);
-        }
-    }
-    
-    /**
-     * @notice Execute an emergency proposal
-     * @param proposalId ID of the emergency proposal
-     */
-    function _executeEmergency(uint256 proposalId) internal {
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        bool haltOperations = extData.boolParams[0];
-        
-        // Execute emergency action (to be implemented in specific contracts)
-        if (haltOperations) {
-            // Signal emergency halt
-            emit EmergencyActionTriggered(proposalId, "OPERATIONS_HALTED");
-        } else {
-            // Signal emergency resolution
-            emit EmergencyActionResolved(proposalId, "OPERATIONS_RESUMED");
-        }
-    }
-    
-    /**
-     * @notice Process multiple proposals in a single transaction
-     * @param proposalIds Array of proposal IDs to process
-     */
-    function batchProcessProposals(uint256[] calldata proposalIds) external nonReentrant {
-        uint256 successCount = 0;
-        
-        for (uint256 i = 0; i < proposalIds.length; i++) {
-            uint256 proposalId = proposalIds[i];
-            
-            // Skip invalid proposals
-            if (proposalId == 0 || proposalId > proposalCount) continue;
-            
-            Proposal storage proposal = proposals[proposalId];
-            
-            // Check if proposal can be executed
-            if (proposal.executed ||
-                block.timestamp <= proposal.endTime ||
-                block.timestamp < proposal.timelockEnd ||
-                proposal.forVotes <= proposal.againstVotes) {
-                continue;
-            }
-            
-            // Mark as executed
-            proposal.executed = true;
-            executedHashes[proposal.hashOfProposal] = true;
-            totalProposalsExecuted++;
-            
-            // Execute based on proposal type
-            ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-            uint8 pType = extData.proposalType;
-            
-            if (pType == PROPOSAL_TYPE_STANDARD) {
-                // Execute standard proposal with calldata
-                if (proposal.target != address(0) && proposal.callData.length > 0) {
-                    (bool callSuccess, ) = proposal.target.call(proposal.callData);
-                    if (callSuccess) {
-                        successCount++;
-                    }
-                }
-            } 
-            else if (pType == PROPOSAL_TYPE_FEE_UPDATE) {
-                _executeFeeUpdate(proposalId);
-                successCount++;
-            } 
-            else if (pType == PROPOSAL_TYPE_PARAM_UPDATE) {
-                _executeParamUpdate(proposalId);
-                successCount++;
-            } 
-            else if (pType == PROPOSAL_TYPE_CONTRACT_UPDATE) {
-                _executeContractUpdate(proposalId);
-                successCount++;
-            } 
-            else if (pType == PROPOSAL_TYPE_PENALTY) {
-                _executePenalty(proposalId);
-                successCount++;
-            } 
-            else if (pType == PROPOSAL_TYPE_EMERGENCY) {
-                _executeEmergency(proposalId);
-                successCount++;
-            }
-            
-            emit ProposalExecuted(proposalId, msg.sender);
-        }
-        
-        emit BatchProposalsProcessed(proposalIds, successCount);
-    }
-    
-    /**
-     * @notice Check if a proposal can be executed
-     * @param proposalId ID of the proposal to check
-     * @return True if the proposal can be executed
-     */
-    function canExecuteProposal(uint256 proposalId) external view returns (bool) {
-        if (proposalId == 0 || proposalId > proposalCount) return false;
-        
-        Proposal storage proposal = proposals[proposalId];
-        
-        return (
-            !proposal.executed &&
-            block.timestamp > proposal.endTime &&
-            block.timestamp >= proposal.timelockEnd &&
-            proposal.forVotes > proposal.againstVotes
-        );
+        emit TreasuryTransfer(token, recipient, amount);
     }
     
     // -------------------------------------------
-    // 🔹 Halving & Reward Management
+    // 🔹 Reward Distribution Functions
     // -------------------------------------------
     
     /**
-     * @notice Trigger automatic halving if the time has come
+     * @notice Initiate token halving
      */
-    function triggerAutomaticHalving() external nonReentrant {
-        if (block.timestamp < lastHalvingTime + TWO_YEARS) revert TimelockNotExpired();
-        _applyHalving(true);
-    }
-    
-    /**
-     * @notice Apply halving to the reward rate
-     * @param isAutomatic Whether this is an automatic halving or manual triggered
-     */
-    function _applyHalving(bool isAutomatic) internal {
-        // Can only proceed if automatic halving is due or called through governance
-        if (isAutomatic && block.timestamp < lastHalvingTime + TWO_YEARS) revert TimelockNotExpired();
+    function initiateHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        require(block.timestamp >= lastHalvingTime + TWO_YEARS, "Halving not due yet");
         
-        // Cut reward rate in half
-        uint256 currentRate = rewardDistributor.rewardRate();
-        uint256 newRate = currentRate / 2;
-        
-        // Update the reward rate in distributor
-        rewardDistributor.setRewardRate(newRate);
-        
-        // Update halving state
         lastHalvingTime = block.timestamp;
         halvingEpoch++;
         
-        emit HalvingTriggered(halvingEpoch, block.timestamp, isAutomatic);
+        // Update emission rate in the reward distributor
+        rewardDistributor.updateEmissionRate();
         
-        // Schedule the next automatic halving
-        emit AutomaticHalvingScheduled(block.timestamp + TWO_YEARS);
+        emit HalvingInitiated(halvingEpoch);
+    }
+    
+    /**
+     * @notice Update validator reward rate
+     * @param newRewardRate New reward rate for validators
+     */
+    function updateValidatorRewardRate(uint256 newRewardRate) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        validatorSafetyCheck 
+    {
+        rewardDistributor.setValidatorRewardRate(newRewardRate);
+        
+        emit ValidatorRewardRateUpdated(newRewardRate);
     }
     
     // -------------------------------------------
-    // 🔹 Emergency Management
+    // 🔹 Protocol Parameter Functions
     // -------------------------------------------
     
     /**
-     * @notice Emergency function to recover ERC20 tokens sent to this contract
-     * @param token Address of the token to recover
-     * @param amount Amount of tokens to recover
+     * @notice Update governance parameters
+     * @param newVotingDuration New voting duration
+     * @param newProposalThreshold New proposal threshold
+     * @param newMinimumHolding New minimum holding requirement
      */
-    function recoverERC20(address token, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        IERC20(token).transfer(treasuryWallet, amount);
-        emit TokenRecovered(token, amount, treasuryWallet);
-    }
-    
-    // -------------------------------------------
-    // 🔹 Utility Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Perform square root calculation for quadratic voting
-     * @param x Value to find the square root of
-     * @return y The square root value
-     */
-    function sqrt(uint256 x) internal pure returns (uint256 y) {
-        if (x == 0) return 0;
+    function updateGovernanceParameters(
+        uint256 newVotingDuration,
+        uint256 newProposalThreshold,
+        uint256 newMinimumHolding
+    ) external onlyRole(GOVERNANCE_ROLE) validatorSafetyCheck {
+        // Require reasonable voting duration
+        require(newVotingDuration >= 1 days && newVotingDuration <= 14 days, "Invalid voting duration");
         
-        uint256 z = (x + 1) / 2;
-        y = x;
+        votingDuration = newVotingDuration;
+        proposalThreshold = newProposalThreshold;
+        minimumHolding = newMinimumHolding;
         
-        while (z < y) {
-            y = z;
-            z = (x / z + z) / 2;
-        }
-    }
-    
-    // -------------------------------------------
-// 🔹 View Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Validate that governance parameters are within safe ranges
-     * @return True if all parameters are valid
-     */
-    function validateGovernanceParameters() external view returns (bool) {
-        return (
-            votingDuration >= 1 days && // Minimum 1 day voting period
-            votingDuration <= 14 days && // Maximum 14 days voting period
-            proposalThreshold >= 100 * 10**18 && // Minimum 100 tokens
-            minimumHolding <= proposalThreshold && // Minimum holding <= proposal threshold
-            feeUpdateCooldown >= 7 days // Minimum 7 days cooldown
+        emit GovernanceParametersUpdated(
+            newVotingDuration,
+            newProposalThreshold,
+            newMinimumHolding
         );
+    }
+    
+    /**
+     * @notice Update treasury address
+     * @param newTreasuryWallet New treasury wallet address
+     */
+    function updateTreasuryWallet(address newTreasuryWallet) external onlyRole(GOVERNANCE_ROLE) {
+        require(newTreasuryWallet != address(0), "Invalid treasury address");
+        
+        treasuryWallet = newTreasuryWallet;
+        
+        emit TreasuryWalletUpdated(newTreasuryWallet);
+    }
+    
+    /**
+     * @notice Toggle liquidity pairing
+     * @param enabled Whether liquidity pairing is enabled
+     */
+    function toggleLiquidityPairing(bool enabled) external onlyRole(GOVERNANCE_ROLE) {
+        liquidityPairingEnabled = enabled;
+        
+        emit LiquidityPairingToggled(enabled);
+    }
+    
+    // -------------------------------------------
+    // 🔹 Governance Penalty Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Penalize a governor for violating rules
+     * @param governor Address of the governor to penalize
+     * @param reason Reason for the penalty
+     */
+    function penalizeGovernor(address governor, string calldata reason) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+    {
+        require(!penalizedGovernors[governor], "Governor already penalized");
+        require(hasRole(GOVERNANCE_ROLE, governor), "Address is not a governor");
+        
+        penalizedGovernors[governor] = true;
+        
+        // If staking system allows, implement penalty to stake
+        if (address(stakingContract) != address(0)) {
+            uint256 stake = stakingContract.getValidatorStake(governor);
+            if (stake > 0) {
+                uint256 penaltyAmount = (stake * PENALTY_FOR_VIOLATION) / 100;
+                stakingContract.slashValidator(governor, penaltyAmount);
+            }
+        }
+        
+        // Revoke governance role
+        _revokeRole(GOVERNANCE_ROLE, governor);
+        
+        emit GovernorPenalized(governor, reason);
+    }
+    
+    /**
+ * @notice Restore a penalized governor
+     * @param governor Address of the governor to restore
+     */
+    function restoreGovernor(address governor) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(penalizedGovernors[governor], "Governor not penalized");
+        
+        penalizedGovernors[governor] = false;
+        _grantRole(GOVERNANCE_ROLE, governor);
+        
+        emit GovernorRestored(governor);
+    }
+    
+    // -------------------------------------------
+    // 🔹 View Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Get details of a proposal
+     * @param proposalId ID of the proposal
+     * @return Proposal details
+     */
+    function getProposal(uint256 proposalId) external view returns (Proposal memory) {
+        return proposals[proposalId];
+    }
+    
+    /**
+     * @notice Get extended data for a proposal
+     * @param proposalId ID of the proposal
+     * @return Extended proposal data
+     */
+    function getProposalExtendedData(uint256 proposalId) external view returns (ExtendedProposalData memory) {
+        return proposalExtendedData[proposalId];
+    }
+    
+    /**
+     * @notice Check if an account has voted on a proposal
+     * @param proposalId ID of the proposal
+     * @param account Account to check
+     * @return Whether the account has voted
+     */
+    function hasAccountVoted(uint256 proposalId, address account) external view returns (bool) {
+        return hasVoted[proposalId][account];
     }
     
     /**
      * @notice Get the current fee structure
-     * @return The current fee structure
+     * @return Current fee structure
      */
     function getCurrentFeeStructure() external view returns (FeeProposal memory) {
         return currentFeeStructure;
     }
     
     /**
-     * @notice Get a proposal by ID
-     * @param proposalId ID of the proposal to get
-     * @return The proposal data
-     */
-    function getProposal(uint256 proposalId) external view returns (Proposal memory) {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
-        return proposals[proposalId];
-    }
-    
-    /**
-     * @notice Get extended data for a proposal
-     * @param proposalId ID of the proposal to get
-     * @return Extended proposal data
-     */
-    function getProposalExtendedData(uint256 proposalId) external view returns (ExtendedProposalData memory) {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
-        return proposalExtendedData[proposalId];
-    }
-    
-    /**
-     * @notice Check if a proposal is still in its active voting period
-     * @param proposalId ID of the proposal to check
-     * @return True if the proposal is active
-     */
-    function isProposalActive(uint256 proposalId) external view returns (bool) {
-        if (proposalId == 0 || proposalId > proposalCount) return false;
-        
-        Proposal storage proposal = proposals[proposalId];
-        return (
-            block.timestamp >= proposal.startTime &&
-            block.timestamp <= proposal.endTime &&
-            !proposal.executed
-        );
-    }
-    
-    /**
-     * @notice Check if a proposal has succeeded in voting
-     * @param proposalId ID of the proposal to check
-     * @return True if the proposal has succeeded
-     */
-    function hasProposalSucceeded(uint256 proposalId) external view returns (bool) {
-        if (proposalId == 0 || proposalId > proposalCount) return false;
-        
-        Proposal storage proposal = proposals[proposalId];
-        return (
-            proposal.forVotes > proposal.againstVotes &&
-            block.timestamp > proposal.endTime &&
-            !proposal.executed
-        );
-    }
-    
-    /**
-     * @notice Get the unclaimed rewards percentage
-     * @return The percentage of unclaimed rewards
-     */
-    function getUnclaimedRewardsPercentage() external view returns (uint256) {
-        return rewardDistributor.getUnclaimedRewardsPercentage();
-    }
-    
-    /**
-     * @notice Get time until next halving
-     * @return Seconds until next halving (0 if overdue)
-     */
-    function getTimeUntilNextHalving() external view returns (uint256) {
-        uint256 nextHalvingTime = lastHalvingTime + TWO_YEARS;
-        if (block.timestamp >= nextHalvingTime) {
-            return 0;
-        }
-        return nextHalvingTime - block.timestamp;
-    }
-    
-    /**
-     * @notice Get voting power for an account
-     * @param account Address to check
-     * @return Voting power of the account
-     */
-    function getVotingPower(address account) external view returns (uint256) {
-        return stakingContract.governanceVotes(account);
-    }
-    
-    /**
-     * @notice Get quadratic voting power for an account
-     * @param account Address to check
-     * @return Quadratic voting power of the account
-     */
-    function getQuadraticVotingPower(address account) external view returns (uint256) {
-        uint256 votingPower = stakingContract.governanceVotes(account);
-        return sqrt(votingPower);
-    }
-    
-    /**
-     * @notice Check if an account has voted on a proposal
-     * @param proposalId ID of the proposal to check
-     * @param account Address to check
-     * @return True if the account has voted
-     */
-    function hasAccountVoted(uint256 proposalId, address account) external view returns (bool) {
-        if (proposalId == 0 || proposalId > proposalCount) return false;
-        return hasVoted[proposalId][account];
-    }
-    
-    /**
-     * @notice Check if an account meets the minimum holding requirement
-     * @param account Address to check
-     * @return True if the account meets the minimum holding
-     */
-    function meetsMinimumHolding(address account) external view returns (bool) {
-        uint256 votingPower = stakingContract.governanceVotes(account);
-        return votingPower >= minimumHolding;
-    }
-    
-    /**
-     * @notice Get proposal voting statistics
-     * @param proposalId ID of the proposal to check
-     * @return forVotes Total votes in favor
-     * @return againstVotes Total votes against
-     * @return totalVoters Count of total voters for this proposal
-     */
-    function getProposalVotingStats(uint256 proposalId) external view returns (
-        uint256 forVotes,
-        uint256 againstVotes,
-        uint256 totalVoters
-    ) {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
-        
-        Proposal storage proposal = proposals[proposalId];
-        forVotes = proposal.forVotes;
-        againstVotes = proposal.againstVotes;
-        
-        // For simplicity, we don't track exact voter count per proposal
-        // This would need a counter in the proposal structure
-        totalVoters = 0; // This is a placeholder
-    }
-    
-    /**
-     * @notice Get remaining time for proposal voting
-     * @param proposalId ID of the proposal to check
-     * @return Time remaining in seconds (0 if ended)
-     */
-    function getProposalTimeRemaining(uint256 proposalId) external view returns (uint256) {
-        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
-        
-        Proposal storage proposal = proposals[proposalId];
-        if (block.timestamp >= proposal.endTime) {
-            return 0;
-        }
-        return proposal.endTime - block.timestamp;
-    }
-    
-    /**
-     * @notice Get the current implementation address (for UUPS)
-     * @return The implementation address
-     */
-    function getImplementation() external view returns (address) {
-        return _getImplementation();
-    }
-    
-    /**
-     * @notice Check if the protocol pricing is stable
-     * @return True if price is stable
-     */
-    function isPriceStable() external view returns (bool) {
-        return liquidityGuard.isPriceStable();
-    }
-    
-    /**
-     * @notice Get total votes cast across all proposals
-     * @return The total number of votes cast
-     */
-    function getTotalVotesCast() external view returns (uint256) {
-        return totalVotesCast;
-    }
-    
-    /**
-     * @notice Get overall governance statistics
-     * @return propCount Total number of proposals
-     * @return executedCount Total number of executed proposals
-     * @return activeProposalCount Number of currently active proposals
-     */
-    function getGovernanceStats() external view returns (
-        uint256 propCount,
-        uint256 executedCount,
-        uint256 activeProposalCount
-    ) {
-        propCount = proposalCount;
-        executedCount = totalProposalsExecuted;
-        
-        // Calculate active proposals (could be optimized with a counter)
-        uint256 active = 0;
-        for (uint256 i = 1; i <= proposalCount; i++) {
-            Proposal storage prop = proposals[i];
-            if (!prop.executed && 
-                block.timestamp >= prop.startTime && 
-                block.timestamp <= prop.endTime) {
-                active++;
-            }
-        }
-        
-        activeProposalCount = active;
-    }
-    
-    /**
-     * @notice Batch check if multiple accounts meet minimum holding
-     * @param accounts Array of addresses to check
-     * @return Array of booleans indicating if each account meets minimum
-     */
-    function batchCheckMinimumHolding(address[] calldata accounts) external view returns (bool[] memory) {
-        bool[] memory results = new bool[](accounts.length);
-        
-        for (uint256 i = 0; i < accounts.length; i++) {
-            uint256 votingPower = stakingContract.governanceVotes(accounts[i]);
-            results[i] = votingPower >= minimumHolding;
-        }
-        
-        return results;
-    }
-    
-    /**
-     * @notice Get the timestamp of the next halving
-     * @return Timestamp when next halving will occur
+     * @notice Get the next halving time
+     * @return Timestamp of the next halving
      */
     function getNextHalvingTime() external view returns (uint256) {
         return lastHalvingTime + TWO_YEARS;
     }
     
     /**
-     * @notice Implementation of the {IERC165} interface
-     * @param interfaceId Interface ID to check
-     * @return True if the interface is supported
+     * @notice Get validator safety details
+     * @return Current governance tier, validator count, bootstrap status, and threshold details
      */
-    function supportsInterface(bytes4 interfaceId) public view virtual override(AccessControlEnumerableUpgradeable) returns (bool) {
-        return
-            interfaceId == type(ITerraStakeGovernance).interfaceId ||
-            super.supportsInterface(interfaceId);
+    function getValidatorSafetyStatus() external view returns (
+        uint8 tier,
+        uint256 validatorCount,
+        bool isBootstrapActive,
+        uint256 thresholdEndTime,
+        uint256 originalThreshold
+    ) {
+        validatorCount = stakingContract.getValidatorCount();
+        
+        return (
+            governanceTier,
+            validatorCount,
+            bootstrapMode,
+            temporaryThresholdEndTime,
+            originalValidatorThreshold
+        );
+    }
+    
+    /**
+     * @notice Check if guardian quorum is achievable
+     * @return Whether guardian quorum can be achieved with current guardians
+     */
+    function isGuardianQuorumAchievable() external view returns (bool) {
+        return guardianCount >= GUARDIAN_QUORUM;
+    }
+    
+    /**
+     * @notice Check if an address is a guardian
+     * @param account Address to check
+     * @return Whether the address is a guardian
+     */
+    function isGuardian(address account) external view returns (bool) {
+        return guardianCouncil[account];
+    }
+    
+    // -------------------------------------------
+    // 🔹 Emergency Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Emergency pause of critical protocol functions
+     * @param contractAddresses Addresses of contracts to pause
+     */
+    function emergencyPause(address[] calldata contractAddresses) 
+        external 
+        onlyRole(GUARDIAN_ROLE) 
+    {
+        for (uint256 i = 0; i < contractAddresses.length; i++) {
+            // Try to call pause() on the target contract
+            (bool success, ) = contractAddresses[i].call(
+                abi.encodeWithSignature("pause()")
+            );
+            
+            require(success, "Failed to pause contract");
+        }
+        
+        emit EmergencyPauseActivated(contractAddresses);
+    }
+    
+    /**
+     * @notice Emergency unpause of critical protocol functions
+     * @param contractAddresses Addresses of contracts to unpause
+     */
+    function emergencyUnpause(address[] calldata contractAddresses) 
+        external 
+        onlyRole(GUARDIAN_ROLE) 
+    {
+        for (uint256 i = 0; i < contractAddresses.length; i++) {
+            // Try to call unpause() on the target contract
+            (bool success, ) = contractAddresses[i].call(
+                abi.encodeWithSignature("unpause()")
+            );
+            
+            require(success, "Failed to unpause contract");
+        }
+        
+        emit EmergencyPauseDeactivated(contractAddresses);
+    }
+    
+    /**
+     * @notice Emergency recovery of tokens accidentally sent to contract
+     * @param token Token address
+     * @param amount Amount to recover
+     * @param recipient Recipient address
+     */
+    function emergencyRecoverTokens(
+        address token,
+        uint256 amount,
+        address recipient
+    ) external onlyRole(GUARDIAN_ROLE) {
+        require(recipient != address(0), "Invalid recipient");
+        
+        IERC20(token).transfer(recipient, amount);
+        
+        emit EmergencyTokenRecovery(token, amount, recipient);
+    }
+    
+    // -------------------------------------------
+    // 🔹 Receive Function
+    // -------------------------------------------
+    
+    /**
+     * @notice Allow contract to receive ETH
+     */
+    receive() external payable {
+        emit EthReceived(msg.sender, msg.value);
     }
 }
