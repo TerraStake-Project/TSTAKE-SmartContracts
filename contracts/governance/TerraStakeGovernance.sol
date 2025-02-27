@@ -1312,31 +1312,45 @@ emit BootstrapModeConfigured(duration);
     }
     
     /**
-     * @notice Emergency recovery of tokens accidentally sent to contract
-     * @param token Token address
-     * @param amount Amount to recover
-     * @param recipient Recipient address
-     */
-    function emergencyRecoverTokens(
-        address token,
-        uint256 amount,
-        address recipient
-    ) external onlyRole(GUARDIAN_ROLE) {
-        require(recipient != address(0), "Invalid recipient");
-        
-        IERC20(token).transfer(recipient, amount);
-        
-        emit EmergencyTokenRecovery(token, amount, recipient);
-    }
+ * @notice Emergency recovery of tokens accidentally sent to contract
+ * @param token Token address
+ * @param amount Amount to recover
+ * @param recipient Recipient address
+ */
+function emergencyRecoverTokens(
+    address token,
+    uint256 amount,
+    address recipient
+) external onlyRole(GUARDIAN_ROLE) {
+    require(recipient != address(0), "Invalid recipient");
     
-    // -------------------------------------------
-    // 🔹 Receive Function
-    // -------------------------------------------
+    IERC20(token).transfer(recipient, amount);
     
-    /**
-     * @notice Allow contract to receive ETH
-     */
-    receive() external payable {
-        emit EthReceived(msg.sender, msg.value);
-    }
+    emit EmergencyTokenRecovery(token, amount, recipient);
+}
+
+// -------------------------------------------
+// 🔹 TStake Token Reception
+// -------------------------------------------
+
+/**
+ * @notice Handle notification of TSTAKE tokens received
+ * @dev Since ERC20 transfers don't trigger contract code, this function must be called after sending tokens
+ * @param sender Address that sent the tokens
+ * @param amount Amount of TSTAKE tokens received
+ */
+function notifyTStakeReceived(address sender, uint256 amount) external {
+    // Verify the transfer occurred by checking current balance
+    uint256 contractBalance = tStakeToken.balanceOf(address(this));
+    require(contractBalance >= amount, "TSTAKE transfer verification failed");
+    
+    emit TStakeReceived(sender, amount);
+}
+
+/**
+ * @notice Allow contract to receive TSTAKE
+ * @dev This is a fallback to maintain compatibility with ETH sends, but TSTAKE should use notifyTStakeReceived
+ */
+receive() external payable {
+    emit TStakeReceived(msg.sender, msg.value);
 }
