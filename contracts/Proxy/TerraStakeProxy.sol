@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.30;
+pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/StorageSlot.sol";
 
 /// @title TerraStakeProxy
 /// @notice Manages secure upgrades, governance control, and emergency pauses
+/// @dev Implementation adjusted for OpenZeppelin 5.2.x compatibility
 contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, ReentrancyGuard, Pausable {
     // ================================
     // 🔹 Role Definitions
@@ -22,11 +23,9 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
     // ================================
     uint256 public constant UPGRADE_TIMELOCK = 2 days; // Timelock for upgrades
     uint256 public constant UNPAUSE_DELAY = 1 days; // Delay before unpausing
-
     mapping(address => uint256) public scheduledUpgrades;
     mapping(uint256 => uint256) public scheduledUnpauses;
     mapping(address => bytes32) public implementationHashes;
-
     uint256 public version;
 
     // ================================
@@ -49,12 +48,12 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
     ) TransparentUpgradeableProxy(_logic, msg.sender, _data) {
         require(_logic != address(0), "Invalid logic address");
         require(_data.length > 0, "Initialization data required");
-
+        
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(UPGRADER_ROLE, msg.sender);
         _grantRole(PAUSER_ROLE, msg.sender);
         _grantRole(MULTISIG_ADMIN_ROLE, msg.sender);
-
+        
         version = 1;
         implementationHashes[_logic] = _getBytecodeHash(_logic);
     }
@@ -66,41 +65,45 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
         require(newImplementation != address(0), "Zero address");
         require(newImplementation.code.length > 0, "Invalid contract");
         require(scheduledUpgrades[newImplementation] == 0, "Already scheduled");
-
+        
         _validateImplementation(newImplementation);
+        
         bytes32 newBytecodeHash = _getBytecodeHash(newImplementation);
         require(newBytecodeHash != implementationHashes[_implementation()], "Same bytecode");
-
+        
         scheduledUpgrades[newImplementation] = block.timestamp + UPGRADE_TIMELOCK;
         implementationHashes[newImplementation] = newBytecodeHash;
-
+        
         emit UpgradeScheduled(newImplementation, scheduledUpgrades[newImplementation], version, newBytecodeHash);
     }
 
     function executeUpgrade(address newImplementation) external onlyRole(MULTISIG_ADMIN_ROLE) nonReentrant {
         require(scheduledUpgrades[newImplementation] != 0, "No upgrade scheduled");
         require(block.timestamp >= scheduledUpgrades[newImplementation], "Timelock active");
-
+        
         address oldImplementation = _implementation();
         require(newImplementation != oldImplementation, "Same implementation");
-
+        
         bytes32 storedHash = implementationHashes[newImplementation];
         bytes32 currentHash = _getBytecodeHash(newImplementation);
         require(storedHash == currentHash, "Bytecode mismatch");
-
+        
         bytes32 oldHash = implementationHashes[oldImplementation];
+        
         _upgradeTo(newImplementation);
+        
         delete scheduledUpgrades[newImplementation];
-
         version++;
+        
         emit UpgradeExecuted(oldImplementation, newImplementation, version, oldHash, currentHash);
     }
 
     function cancelUpgrade(address newImplementation) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
         require(scheduledUpgrades[newImplementation] != 0, "No scheduled upgrade");
+        
         delete scheduledUpgrades[newImplementation];
         delete implementationHashes[newImplementation];
-
+        
         emit UpgradeCancelled(newImplementation, msg.sender);
     }
 
@@ -115,15 +118,17 @@ contract TerraStakeProxy is TransparentUpgradeableProxy, AccessControl, Reentran
     function requestUnpause() external onlyRole(PAUSER_ROLE) nonReentrant {
         uint256 effectiveTime = block.timestamp + UNPAUSE_DELAY;
         scheduledUnpauses[block.number] = effectiveTime;
+        
         emit ProxyUnpauseRequested(msg.sender, effectiveTime);
     }
 
     function unpause() external onlyRole(PAUSER_ROLE) nonReentrant {
         require(scheduledUnpauses[block.number] != 0, "No unpause scheduled");
         require(block.timestamp >= scheduledUnpauses[block.number], "Delay active");
-
+        
         delete scheduledUnpauses[block.number];
         _unpause();
+        
         emit ProxyUnpaused(msg.sender);
     }
 
