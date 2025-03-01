@@ -34,7 +34,7 @@ contract TerraStakeToken is
     // ================================
     // 🔹 Constants
     // ================================
-    uint256 public constant MAX_SUPPLY = 3_000_000_000 * 10**18;
+    uint256 public constant MAX_SUPPLY = 10_000_000_000 * 10**18;
     uint32 public constant MIN_TWAP_PERIOD = 5 minutes;
     uint256 public constant MAX_BATCH_SIZE = 200;
     uint256 public constant PRICE_DECIMALS = 18;
