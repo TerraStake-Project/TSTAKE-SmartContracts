@@ -5,7 +5,8 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgrad
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 
 import "./interfaces/ITerraStakeSlashing.sol";
 import "./interfaces/ITerraStakeGovernance.sol";
@@ -23,6 +24,8 @@ contract TerraStakeSlashing is
     UUPSUpgradeable,
     ITerraStakeSlashing
 {
+    using SafeERC20Upgradeable for IERC20Upgradeable;
+
     // -------------------------------------------
     // 🔹 Constants
     // -------------------------------------------
@@ -33,6 +36,7 @@ contract TerraStakeSlashing is
     uint256 public constant MIN_SLASH_PERCENTAGE = 1; // 1%
     uint256 public constant MAX_SLASH_PERCENTAGE = 100; // 100%
     uint256 public constant QUORUM_PERCENTAGE = 10; // 10% of total votes required
+    uint256 public constant PERCENTAGE_DENOMINATOR = 100;
 
     // -------------------------------------------
     // 🔹 State Variables
@@ -41,7 +45,7 @@ contract TerraStakeSlashing is
     // Core contracts
     ITerraStakeStaking public stakingContract;
     ITerraStakeGovernance public governanceContract;
-    IERC20 public tStakeToken;
+    IERC20Upgradeable public tStakeToken;
     
     // Slashing parameters
     uint256 public redistributionPercentage; // percentage of slashed amount redistributed to other stakers
@@ -58,6 +62,9 @@ contract TerraStakeSlashing is
     mapping(uint256 => SlashProposal) public slashProposals;
     mapping(address => uint256) public lastSlashTime;
     mapping(address => uint256) public totalSlashedForValidator;
+    
+    // Validator status tracking
+    mapping(address => bool) public isActiveValidator;
     
     // Emergency state
     bool public emergencyPaused;
@@ -89,6 +96,9 @@ contract TerraStakeSlashing is
     );
     
     event EmergencyPauseToggled(bool paused);
+    event ValidatorStatusUpdated(address indexed validator, bool isActive);
+    event TreasuryWalletUpdated(address indexed newWallet);
+    event CoolingOffPeriodUpdated(uint256 newPeriod);
     
     // -------------------------------------------
     // 🔹 Errors
@@ -101,6 +111,11 @@ contract TerraStakeSlashing is
     error InvalidSlashingAmount();
     error SlashProposalAlreadyExecuted();
     error GovernanceQuorumNotMet();
+    error ValidatorNotActive();
+    error InvalidPercentageSum();
+    error ZeroAddressNotAllowed();
+    error SlashAmountTooSmall();
+    error InsufficientValidatorStake();
     
     // -------------------------------------------
     // 🔹 Initializer & Upgrade Control
@@ -130,6 +145,14 @@ contract TerraStakeSlashing is
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
         
+        if (_stakingContract == address(0) || 
+            _governanceContract == address(0) ||
+            _tStakeToken == address(0) ||
+            _initialAdmin == address(0) ||
+            _treasuryWallet == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+        
         // Grant roles
         _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
         _grantRole(UPGRADER_ROLE, _initialAdmin);
@@ -139,7 +162,7 @@ contract TerraStakeSlashing is
         // Initialize contract references
         stakingContract = ITerraStakeStaking(_stakingContract);
         governanceContract = ITerraStakeGovernance(_governanceContract);
-        tStakeToken = IERC20(_tStakeToken);
+        tStakeToken = IERC20Upgradeable(_tStakeToken);
         treasuryWallet = _treasuryWallet;
         
         // Initialize slashing parameters
@@ -183,9 +206,19 @@ contract TerraStakeSlashing is
         if (slashPercentage < MIN_SLASH_PERCENTAGE || slashPercentage > MAX_SLASH_PERCENTAGE) 
             revert InvalidSlashingAmount();
         
+        // Check if validator is active
+        if (!isActiveValidator[validator]) {
+            // Try to refresh validator status from staking contract
+            uint256 validatorStake = stakingContract.getValidatorStake(validator);
+            if (validatorStake == 0) revert ValidatorNotActive();
+            
+            // If validator has stake but wasn't marked as active, mark them now
+            isActiveValidator[validator] = true;
+        }
+        
         // Get validator's staked amount from staking contract
         uint256 validatorStake = stakingContract.getValidatorStake(validator);
-        if (validatorStake == 0) revert InvalidParameters();
+        if (validatorStake == 0) revert InsufficientValidatorStake();
         
         // Create the slash proposal
         slashProposalCount++;
@@ -217,13 +250,7 @@ contract TerraStakeSlashing is
             block.timestamp
         ));
         
-        string memory description = string(abi.encodePacked(
-            "Slashing proposal for validator ", 
-            addressToString(validator), 
-            " with ", 
-            uintToString(slashPercentage),
-            "% penalty."
-        ));
+        string memory description = _formatProposalDescription(validator, slashPercentage);
         
         // Submit to governance contract
         governanceContract.createStandardProposal(
@@ -262,15 +289,17 @@ contract TerraStakeSlashing is
         
         // Calculate slash amount
         uint256 currentStake = stakingContract.getValidatorStake(proposal.validator);
-        uint256 slashAmount = (currentStake * proposal.slashPercentage) / 100;
+        uint256 slashAmount = (currentStake * proposal.slashPercentage) / PERCENTAGE_DENOMINATOR;
+        
+        if (slashAmount == 0) revert SlashAmountTooSmall();
         
         // Slash the validator through staking contract
         stakingContract.slash(proposal.validator, slashAmount);
         
         // Calculate distribution
-        uint256 toRedistribute = (slashAmount * redistributionPercentage) / 100;
-        uint256 toBurn = (slashAmount * burnPercentage) / 100;
-        uint256 toTreasury = (slashAmount * treasuryPercentage) / 100;
+        uint256 toRedistribute = (slashAmount * redistributionPercentage) / PERCENTAGE_DENOMINATOR;
+        uint256 toBurn = (slashAmount * burnPercentage) / PERCENTAGE_DENOMINATOR;
+        uint256 toTreasury = slashAmount - toRedistribute - toBurn; // Ensure no rounding errors
         
         // Redistribute slashed tokens
         if (toRedistribute > 0) {
@@ -320,8 +349,8 @@ contract TerraStakeSlashing is
         uint256 _treasuryPercentage
     ) external onlyRole(GOVERNANCE_ROLE) {
         // Ensure percentages add up to 100%
-        if (_redistributionPercentage + _burnPercentage + _treasuryPercentage != 100) 
-            revert InvalidParameters();
+        if (_redistributionPercentage + _burnPercentage + _treasuryPercentage != PERCENTAGE_DENOMINATOR) 
+            revert InvalidPercentageSum();
         
         redistributionPercentage = _redistributionPercentage;
         burnPercentage = _burnPercentage;
@@ -339,7 +368,8 @@ contract TerraStakeSlashing is
      * @param _coolingOffPeriod New cooling off period in seconds
      */
     function updateCoolingOffPeriod(uint256 _coolingOffPeriod) external onlyRole(GOVERNANCE_ROLE) {
-        coolingOffPeriod = _coolingOffPeriod;
+         coolingOffPeriod = _coolingOffPeriod;
+        emit CoolingOffPeriodUpdated(_coolingOffPeriod);
     }
     
     /**
@@ -347,8 +377,20 @@ contract TerraStakeSlashing is
      * @param _treasuryWallet New treasury wallet address
      */
     function updateTreasuryWallet(address _treasuryWallet) external onlyRole(GOVERNANCE_ROLE) {
-        if (_treasuryWallet == address(0)) revert InvalidParameters();
+        if (_treasuryWallet == address(0)) revert ZeroAddressNotAllowed();
         treasuryWallet = _treasuryWallet;
+        emit TreasuryWalletUpdated(_treasuryWallet);
+    }
+    
+    /**
+     * @notice Update validator active status
+     * @param validator Validator address
+     * @param active Whether validator is active
+     */
+    function updateValidatorStatus(address validator, bool active) external onlyRole(GOVERNANCE_ROLE) {
+        if (validator == address(0)) revert ZeroAddressNotAllowed();
+        isActiveValidator[validator] = active;
+        emit ValidatorStatusUpdated(validator, active);
     }
     
     // -------------------------------------------
@@ -370,7 +412,8 @@ contract TerraStakeSlashing is
      * @param amount Amount to recover
      */
     function recoverERC20(address token, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        IERC20(token).transfer(treasuryWallet, amount);
+        if (token == address(0)) revert ZeroAddressNotAllowed();
+        IERC20Upgradeable(token).safeTransfer(treasuryWallet, amount);
     }
     
     // -------------------------------------------
@@ -382,7 +425,7 @@ contract TerraStakeSlashing is
      * @param proposalId ID of the proposal
      * @return Slash proposal details
      */
-function getSlashProposal(uint256 proposalId) external view returns (SlashProposal memory) {
+    function getSlashProposal(uint256 proposalId) external view returns (SlashProposal memory) {
         if (proposalId == 0 || proposalId > slashProposalCount) revert ProposalDoesNotExist();
         return slashProposals[proposalId];
     }
@@ -429,39 +472,51 @@ function getSlashProposal(uint256 proposalId) external view returns (SlashPropos
     
     /**
      * @notice Get all active slash proposals
-     * @return ids Array of active proposal IDs
+     * @return activeProposals Array of active proposal details
      */
-    function getActiveSlashProposals() external view returns (uint256[] memory) {
-        uint256 count = 0;
+    function getActiveSlashProposals() external view returns (SlashProposal[] memory) {
+        uint256 activeCount = 0;
         
-        // Count active proposals
+        // First, count active proposals
         for (uint256 i = 1; i <= slashProposalCount; i++) {
             if (!slashProposals[i].executed) {
-                count++;
+                activeCount++;
             }
         }
         
-        // Collect active proposal IDs
-        uint256[] memory activeIds = new uint256[](count);
-        uint256 index = 0;
+        // Now create and populate the array in one pass
+        SlashProposal[] memory activeProposals = new SlashProposal[](activeCount);
         
-        for (uint256 i = 1; i <= slashProposalCount; i++) {
-            if (!slashProposals[i].executed) {
-                activeIds[index] = i;
-                index++;
+        if (activeCount > 0) {
+            uint256 index = 0;
+            for (uint256 i = 1; i <= slashProposalCount; i++) {
+                if (!slashProposals[i].executed) {
+                    activeProposals[index] = slashProposals[i];
+                    index++;
+                }
             }
         }
         
-        return activeIds;
+        return activeProposals;
     }
     
     /**
      * @notice Check if a validator can be slashed
      * @param validator Validator address
-     * @return True if validator can be slashed
+     * @return canSlash True if validator can be slashed
+     * @return isActive True if validator is active
      */
-    function canSlashValidator(address validator) external view returns (bool) {
-        return block.timestamp >= lastSlashTime[validator] + coolingOffPeriod;
+    function canSlashValidator(address validator) external view returns (bool canSlash, bool isActive) {
+        isActive = isActiveValidator[validator];
+        
+        // If not marked as active, check staking contract
+        if (!isActive) {
+            uint256 stake = stakingContract.getValidatorStake(validator);
+            isActive = stake > 0;
+        }
+        
+        canSlash = isActive && block.timestamp >= lastSlashTime[validator] + coolingOffPeriod;
+        return (canSlash, isActive);
     }
     
     /**
@@ -480,11 +535,11 @@ function getSlashProposal(uint256 proposalId) external view returns (SlashPropos
         uint256 toTreasury
     ) {
         uint256 validatorStake = stakingContract.getValidatorStake(validator);
-        total = (validatorStake * slashPercentage) / 100;
+        total = (validatorStake * slashPercentage) / PERCENTAGE_DENOMINATOR;
         
-        toRedistribute = (total * redistributionPercentage) / 100;
-        toBurn = (total * burnPercentage) / 100;
-        toTreasury = (total * treasuryPercentage) / 100;
+        toRedistribute = (total * redistributionPercentage) / PERCENTAGE_DENOMINATOR;
+        toBurn = (total * burnPercentage) / PERCENTAGE_DENOMINATOR;
+        toTreasury = total - toRedistribute - toBurn; // Using subtraction prevents rounding errors
         
         return (total, toRedistribute, toBurn, toTreasury);
     }
@@ -512,42 +567,54 @@ function getSlashProposal(uint256 proposalId) external view returns (SlashPropos
     }
     
     // -------------------------------------------
-    // 🔹 Helper Functions
+    // 🔹 Internal Helper Functions
     // -------------------------------------------
     
     /**
-     * @notice Convert address to string
-     * @param addr Address to convert
-     * @return string representation
+     * @notice Format proposal description
+     * @param validator Validator address
+     * @param percentage Slash percentage
+     * @return description Formatted description string
      */
-    function addressToString(address addr) internal pure returns (string memory) {
-        bytes memory addressBytes = abi.encodePacked(addr);
-        bytes memory stringBytes = new bytes(42);
+    function _formatProposalDescription(address validator, uint256 percentage) internal pure returns (string memory) {
+        // For gas efficiency, this only formats a simple description. More extensive formatting should be done off-chain.
+        return string(abi.encodePacked("Slash validator ", _addressToHexString(validator), " at ", _uintToString(percentage), "% penalty"));
+    }
+    
+    /**
+     * @notice Convert address to hex string
+     * @param addr Address to convert
+     * @return result Hex string representation
+     */
+    function _addressToHexString(address addr) internal pure returns (string memory) {
+        return _bytesToHexString(abi.encodePacked(addr));
+    }
+    
+    /**
+     * @notice Convert bytes to hex string
+     * @param buffer Bytes to convert
+     * @return result Hex string representation
+     */
+    function _bytesToHexString(bytes memory buffer) internal pure returns (string memory) {
+        bytes memory hexChars = "0123456789abcdef";
+        bytes memory result = new bytes(2 + buffer.length * 2);
+        result[0] = "0";
+        result[1] = "x";
         
-        stringBytes[0] = '0';
-        stringBytes[1] = 'x';
-        
-        for (uint256 i = 0; i < 20; i++) {
-            bytes1 leftNibble = bytes1(uint8(addressBytes[i]) / 16);
-            bytes1 rightNibble = bytes1(uint8(addressBytes[i]) % 16);
-            
-            stringBytes[2 + i * 2] = leftNibble < 10 
-                ? bytes1(uint8(leftNibble) + 48) 
-                : bytes1(uint8(leftNibble) + 87);
-            stringBytes[2 + i * 2 + 1] = rightNibble < 10 
-                ? bytes1(uint8(rightNibble) + 48) 
-                : bytes1(uint8(rightNibble) + 87);
+        for (uint256 i = 0; i < buffer.length; i++) {
+            result[2 + i * 2] = hexChars[uint8(buffer[i] >> 4)];
+            result[3 + i * 2] = hexChars[uint8(buffer[i] & 0x0f)];
         }
         
-        return string(stringBytes);
+        return string(result);
     }
     
     /**
      * @notice Convert uint to string
      * @param value Uint to convert
-     * @return string representation
+     * @return result String representation
      */
-    function uintToString(uint256 value) internal pure returns (string memory) {
+    function _uintToString(uint256 value) internal pure returns (string memory) {
         if (value == 0) {
             return "0";
         }
@@ -576,5 +643,5 @@ function getSlashProposal(uint256 proposalId) external view returns (SlashPropos
      * variables without shifting down storage in the inheritance chain.
      * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
      */
-    uint256[45] private __gap;
+    uint256[40] private __gap;
 }
