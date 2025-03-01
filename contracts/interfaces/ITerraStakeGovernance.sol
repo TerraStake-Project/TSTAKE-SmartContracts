@@ -1,258 +1,247 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../interfaces/ITerraStakeTreasuryManager.sol";
+import "../interfaces/ITerraStakeValidatorSafety.sol";
+import "../interfaces/ITerraStakeGuardianCouncil.sol";
 
 /**
  * @title ITerraStakeGovernance
- * @notice Interface for the TerraStakeGovernance contract that manages governance operations
- * in the TerraStake ecosystem including voting, proposal creation and execution, fee adjustments,
- * and economic controls.
+ * @notice Interface for the main governance contract of the TerraStake Protocol
+ * @dev Integrates treasury management, validator safety, and guardian council functions
  */
-interface ITerraStakeGovernance is IERC165 {
+interface ITerraStakeGovernance {
+    // -------------------------------------------
+    // 🔹 Enums
+    // -------------------------------------------
+    
+    // Proposal states
+    enum ProposalState {
+        Pending,
+        Active,
+        Canceled,
+        Defeated,
+        Succeeded,
+        Queued,
+        Expired,
+        Executed
+    }
+    
+    // Proposal types
+    enum ProposalType {
+        Standard,
+        Parameter,
+        Emergency,
+        Upgrade
+    }
+    
+    // Vote types
+    enum VoteType {
+        Against,
+        For,
+        Abstain
+    }
+    
     // -------------------------------------------
     // 🔹 Structs
     // -------------------------------------------
     
-    struct Proposal {
-        uint256 id;
-        address proposer;
-        bytes32 hashOfProposal;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 forVotes;
-        uint256 againstVotes;
-        bool executed;
-        bytes callData;
-        address target;
-        uint256 timelockEnd;
+    struct Receipt {
+        bool hasVoted;
+        VoteType support;
+        uint256 votes;
     }
     
-    struct FeeProposal {
-        uint256 projectSubmissionFee;
-        uint256 impactReportingFee;
-        uint256 buybackPercentage;
-        uint256 liquidityPairingPercentage;
-        uint256 burnPercentage;
-        uint256 treasuryPercentage;
-        uint256 voteEnd;
-        bool executed;
-    }
-    
-    struct ExtendedProposalData {
-        uint8 proposalType;
-        FeeProposal feeData;
-        address[] contractAddresses;
-        uint256[] numericParams;
-        address[] accountsToUpdate;
-        bool[] boolParams;
-    }
-
     // -------------------------------------------
-    // 🔹 Core Governance Functions
+    // 🔹 Events
     // -------------------------------------------
     
-    function createStandardProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bytes calldata callData,
-        address target
-    ) external returns (uint256);
+    event ProposalCreated(
+        uint256 indexed proposalId,
+        address indexed proposer,
+        address[] targets,
+        uint256[] values,
+        bytes[] calldatas,
+        uint256 startBlock,
+        uint256 endBlock,
+        string description,
+        ProposalType proposalType
+    );
     
-    function createFeeUpdateProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint256 buybackPercentage,
-        uint256 liquidityPairingPercentage,
-        uint256 burnPercentage,
-        uint256 treasuryPercentage
-    ) external returns (uint256);
+    event ProposalCanceled(uint256 indexed proposalId);
+    event ProposalQueued(uint256 indexed proposalId, uint256 queueTime);
+    event ProposalExecuted(uint256 indexed proposalId);
     
-    function createParamUpdateProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 _votingDuration,
-        uint256 _proposalThreshold,
-        uint256 _minimumHolding,
-        uint256 _feeUpdateCooldown
-    ) external returns (uint256);
+    event VoteCast(
+        address indexed voter,
+        uint256 indexed proposalId,
+        uint8 support,
+        uint256 weight,
+        string reason
+    );
     
-    function createContractUpdateProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        address _stakingContract,
-        address _rewardDistributor,
-        address _liquidityGuard,
-        address _treasuryWallet
-    ) external returns (uint256);
+    event ValidatorSupport(
+        address indexed validator,
+        uint256 indexed proposalId,
+        bool support
+    );
     
-    function createPenaltyProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        address violator,
-        string calldata reason
-    ) external returns (uint256);
-    
-    function createEmergencyProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bool haltOperations
-    ) external returns (uint256);
-    
-    function createPardonProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        address violator
-    ) external returns (uint256);
-    
-    function createRewardRateAdjustmentProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 newRate
-    ) external returns (uint256);
-    
-    function createBuybackProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        uint256 usdcAmount
-    ) external returns (uint256);
-    
-    function createLiquidityPairingProposal(
-        bytes32 proposalHash,
-        string calldata description,
-        bool enabled
-    ) external returns (uint256);
-    
-    function castVote(uint256 proposalId, bool support) external;
-    
-    function executeProposal(uint256 proposalId) external;
-    
-    function executeBuybackProposal(uint256 proposalId) external;
-    
-    function executeLiquidityPairingProposal(uint256 proposalId) external;
-    
-    function batchProcessProposals(uint256[] calldata proposalIds) external;
-    
-    function canExecuteProposal(uint256 proposalId) external view returns (bool);
+    event GovernanceParameterUpdated(string parameter, uint256 oldValue, uint256 newValue);
+    event ModuleUpdated(string moduleName, address oldModule, address newModule);
     
     // -------------------------------------------
-    // 🔹 Halving and Reward Management
+    // 🔹 Errors
     // -------------------------------------------
     
-    function triggerAutomaticHalving() external;
+    error Unauthorized();
+    error InvalidParameters();
+    error InvalidProposalState();
+    error ProposalNotActive();
+    error ProposalExpired();
+    error AlreadyVoted();
+    error InsufficientVotingPower();
+    error InvalidTargetCount();
+    error EmptyProposal();
+    error TooManyActions();
+    error InvalidState();
     
     // -------------------------------------------
-    // 🔹 Emergency Management
+    // 🔹 Constants
     // -------------------------------------------
     
-    function recoverERC20(address token, uint256 amount) external;
+    function GOVERNANCE_ROLE() external view returns (bytes32);
+    function UPGRADER_ROLE() external view returns (bytes32);
+    function GUARDIAN_ROLE() external view returns (bytes32);
+    function VALIDATOR_ROLE() external view returns (bytes32);
+    
+    // -------------------------------------------
+    // 🔹 State Variables
+    // -------------------------------------------
+    
+    function treasuryManager() external view returns (ITerraStakeTreasuryManager);
+    function validatorSafety() external view returns (ITerraStakeValidatorSafety);
+    function guardianCouncil() external view returns (ITerraStakeGuardianCouncil);
+    function tStakeToken() external view returns (IERC20);
+    
+    function proposalThreshold() external view returns (uint256);
+    function votingDelay() external view returns (uint256);
+    function votingPeriod() external view returns (uint256);
+    function executionDelay() external view returns (uint256);
+    function executionPeriod() external view returns (uint256);
+    function proposalCount() external view returns (uint256);
+    
+    function proposals(uint256 proposalId) external view returns (
+        uint256 id,
+        address proposer,
+        ProposalType proposalType,
+        uint256 startBlock,
+        uint256 endBlock,
+        uint256 forVotes,
+        uint256 againstVotes,
+        uint256 abstainVotes,
+        bool canceled,
+        bool executed,
+        uint256 queueTime
+    );
+    
+    function receipts(uint256 proposalId, address voter) external view returns (
+        bool hasVoted,
+        VoteType support,
+        uint256 votes
+    );
+    
+    function latestProposalIds(address proposer) external view returns (uint256);
+    
+    // -------------------------------------------
+    // 🔹 Initialization
+    // -------------------------------------------
+    
+    function initialize(
+        address _treasuryManager,
+        address _validatorSafety,
+        address _guardianCouncil,
+        address _tStakeToken,
+        address _initialAdmin
+    ) external;
+    
+    // -------------------------------------------
+    // 🔹 Proposal Creation and Management
+    // -------------------------------------------
+    
+    function propose(
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        string memory description,
+        ProposalType proposalType
+    ) external returns (uint256);
+    
+    function castVote(
+        uint256 proposalId,
+        uint8 support,
+        string memory reason
+    ) external;
+    
+    function validatorSupport(uint256 proposalId, bool support) external;
+    
+    function queueProposal(uint256 proposalId) external;
+    
+    function executeProposal(uint256 proposalId) external payable;
+    
+    function cancelProposal(uint256 proposalId) external;
+    
+    // -------------------------------------------
+    // 🔹 Governance Parameter Management
+    // -------------------------------------------
+    
+    function updateProposalThreshold(uint256 newThreshold) external;
+    
+    function updateVotingDelay(uint256 newVotingDelay) external;
+    
+    function updateVotingPeriod(uint256 newVotingPeriod) external;
+    
+    function updateExecutionDelay(uint256 newExecutionDelay) external;
+    
+    function updateExecutionPeriod(uint256 newExecutionPeriod) external;
+    
+    // -------------------------------------------
+    // 🔹 Module Management
+    // -------------------------------------------
+    
+    function updateTreasuryManager(address newTreasuryManager) external;
+    
+    function updateValidatorSafety(address newValidatorSafety) external;
+    
+    function updateGuardianCouncil(address newGuardianCouncil) external;
+    
+    // -------------------------------------------
+    // 🔹 Emergency Controls
+    // -------------------------------------------
+    
+    function pause() external;
+    
+    function unpause() external;
     
     // -------------------------------------------
     // 🔹 View Functions
     // -------------------------------------------
     
-    function validateGovernanceParameters() external view returns (bool);
+    function getProposalState(uint256 proposalId) external view returns (ProposalState);
     
-    function getCurrentFeeStructure() external view returns (FeeProposal memory);
+    function getProposalDetails(uint256 proposalId) external view returns (
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        string memory description
+    );
     
-    function getProposal(uint256 proposalId) external view returns (Proposal memory);
-    
-    function getProposalExtendedData(uint256 proposalId) external view returns (ExtendedProposalData memory);
-    
-    function isProposalActive(uint256 proposalId) external view returns (bool);
+    function getProposalVotes(uint256 proposalId) external view returns (
+        uint256 againstVotes,
+        uint256 forVotes,
+        uint256 abstainVotes,
+        uint256 validatorSupport
+    );
     
     function hasProposalSucceeded(uint256 proposalId) external view returns (bool);
-    
-    function getUnclaimedRewardsPercentage() external view returns (uint256);
-    
-    function getTimeUntilNextHalving() external view returns (uint256);
-    
-    function getVotingPower(address account) external view returns (uint256);
-    
-    function getQuadraticVotingPower(address account) external view returns (uint256);
-    
-    function hasAccountVoted(uint256 proposalId, address account) external view returns (bool);
-    
-    function meetsMinimumHolding(address account) external view returns (bool);
-    
-    function getProposalVotingStats(uint256 proposalId) external view returns (
-        uint256 forVotes,
-        uint256 againstVotes,
-        uint256 totalVoters
-    );
-    
-    function getProposalTimeRemaining(uint256 proposalId) external view returns (uint256);
-    
-    function getImplementation() external view returns (address);
-    
-    function isPriceStable() external view returns (bool);
-    
-    function getTotalVotesCast() external view returns (uint256);
-    
-    function getGovernanceStats() external view returns (
-        uint256 propCount,
-        uint256 executedCount,
-        uint256 activeProposalCount
-    );
-    
-    function batchCheckMinimumHolding(address[] calldata accounts) external view returns (bool[] memory);
-    
-    function getNextHalvingTime() external view returns (uint256);
-
-    // -------------------------------------------
-    // 🔹 Events
-    // -------------------------------------------
-    
-    event GovernanceParametersUpdated(uint256 newVotingDuration, uint256 newProposalThreshold, uint256 newMinimumHolding);
-    event RewardRateAdjusted(uint256 newRate, uint256 timestamp);
-    event TokenRecovered(address indexed token, uint256 amount, address indexed recipient);
-    event LiquidityPairingToggled(bool enabled);
-    event HalvingTriggered(uint256 epoch, uint256 timestamp, bool isAutomatic);
-    event ProposalExecuted(uint256 indexed proposalId, address indexed executor);
-    event GovernanceVoteCast(address indexed voter, uint256 indexed proposalId, bool vote);
-    event GovernanceViolationDetected(address indexed violator, uint256 penaltyAmount);
-    
-    event ProposalCreated(
-        uint256 indexed proposalId,
-        address indexed proposer,
-        bytes32 hashOfProposal,
-        uint256 startTime,
-        uint256 endTime,
-        string description,
-        uint8 proposalType
-    );
-    
-    event FeeProposalCreated(
-        uint256 proposalId,
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint256 buybackPercentage,
-        uint256 liquidityPairingPercentage,
-        uint256 burnPercentage,
-        uint256 treasuryPercentage
-    );
-    
-    event FeeStructureUpdated(
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint256 buybackPercentage,
-        uint256 liquidityPairingPercentage,
-        uint256 burnPercentage,
-        uint256 treasuryPercentage
-    );
-    
-    event GovernanceContractsUpdated(
-        address stakingContract,
-        address rewardDistributor,
-        address liquidityGuard
-    );
-    
-    event TreasuryWalletUpdated(address newTreasuryWallet);
-    event RewardBuybackExecuted(uint256 usdcAmount, uint256 tokensReceived);
-    event AutomaticHalvingScheduled(uint256 nextHalvingTime);
-    event EmergencyActionTriggered(uint256 proposalId, string action);
-    event EmergencyActionResolved(uint256 proposalId, string action);
-    event BatchProposalsProcessed(uint256[] proposalIds, uint256 successCount);
 }
