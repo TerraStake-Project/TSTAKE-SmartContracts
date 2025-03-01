@@ -5,11 +5,14 @@ import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/acce
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ITerraStakeProjects} from "../interfaces/ITerraStakeProjects.sol";
+import {ITerraStakeMarketPlace} from "../interfaces/ITerraStakeMarketPlace.sol";
 
 /**
  * @title TerraStakeProjects 
- * @notice Manages projects, staking, impact tracking, and governance-driven fees.
+ * @notice Manages projects, staking, impact tracking, governance-driven fees, and NFT integration.
  */
 contract TerraStakeProjects is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, ITerraStakeProjects {
     // ====================================================
@@ -32,6 +35,11 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
     address public liquidityPool;
     address public stakingContract;
     address public rewardsContract;
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    
+    // NFT Integration
+    address public nftContract;
+    mapping(ProjectCategory => string) private categoryImageURI;
     
     // Category metadata with real-world requirements
     mapping(ProjectCategory => CategoryInfo) public categoryInfo;
@@ -81,6 +89,10 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
     // ====================================================
     // 📣 Enhanced Events
     // ====================================================
+    // NFT related events
+    event ImpactNFTMinted(uint256 indexed projectId, bytes32 indexed reportHash, address recipient);
+    event NFTContractSet(address indexed nftContract);
+    
     // Additional events for REC management
     event RECVerified(uint256 indexed projectId, bytes32 indexed recId, address verifier);
     event RECRetired(uint256 indexed projectId, bytes32 indexed recId, address retirer, string purpose);
@@ -97,6 +109,9 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
     
     // Project metadata update event
     event ProjectMetadataUpdated(uint256 indexed projectId, string name);
+    
+    // Fee management events
+    event TokensBurned(uint256 amount);
 
     // ====================================================
     // 🚀 Initialization
@@ -265,6 +280,127 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
             verificationStandard: "BS 8001:2017",
             impactWeight: 85
         });
+        
+        // Community Development projects
+        categoryInfo[ProjectCategory.CommunityDevelopment] = CategoryInfo({
+            name: "Community Development",
+            description: "Local sustainability initiatives and social impact projects",
+            standardBodies: ["B Corp", "Social Value International", "Community Development Financial Institutions"],
+            metricUnits: ["People Impacted", "Jobs Created", "Community Resources Generated"],
+            verificationStandard: "Social Return on Investment Framework",
+            impactWeight: 75
+        });
+    }
+
+    // ====================================================
+    // 🔹 NFT Integration Functions
+    // ====================================================
+    
+    function setNFTContract(address _nftContract) external onlyRole(GOVERNANCE_ROLE) {
+        if (_nftContract == address(0)) revert("Invalid address");
+        nftContract = _nftContract;
+        emit NFTContractSet(_nftContract);
+        
+        // Initialize default category images
+        _initializeCategoryImages();
+    }
+
+    function _initializeCategoryImages() internal {
+        categoryImageURI[ProjectCategory.CarbonCredit] = "ipfs://QmXyZ1234567890carbon/";
+        categoryImageURI[ProjectCategory.RenewableEnergy] = "ipfs://QmXyZ1234567890renewable/";
+        categoryImageURI[ProjectCategory.OceanCleanup] = "ipfs://QmXyZ1234567890ocean/";
+        categoryImageURI[ProjectCategory.Reforestation] = "ipfs://QmXyZ1234567890forest/";
+        categoryImageURI[ProjectCategory.Biodiversity] = "ipfs://QmXyZ1234567890biodiversity/";
+        categoryImageURI[ProjectCategory.SustainableAg] = "ipfs://QmXyZ1234567890agriculture/";
+        categoryImageURI[ProjectCategory.WasteManagement] = "ipfs://QmXyZ1234567890waste/";
+        categoryImageURI[ProjectCategory.WaterConservation] = "ipfs://QmXyZ1234567890water/";
+        categoryImageURI[ProjectCategory.PollutionControl] = "ipfs://QmXyZ1234567890pollution/";
+        categoryImageURI[ProjectCategory.HabitatRestoration] = "ipfs://QmXyZ1234567890habitat/";
+        categoryImageURI[ProjectCategory.GreenBuilding] = "ipfs://QmXyZ1234567890building/";
+        categoryImageURI[ProjectCategory.CircularEconomy] = "ipfs://QmXyZ1234567890circular/";
+        categoryImageURI[ProjectCategory.CommunityDevelopment] = "ipfs://QmXyZ1234567890community/";
+    }
+    
+    function setCategoryImageURI(ProjectCategory category, string calldata uri) external onlyRole(GOVERNANCE_ROLE) {
+        categoryImageURI[category] = uri;
+    }
+    
+    function getCategoryImageURI(ProjectCategory category) external view returns (string memory) {
+        return categoryImageURI[category];
+    }
+    
+    function mintImpactNFT(uint256 projectId, bytes32 reportHash, address recipient) external {
+        // Only validators, verifiers, or governance can mint NFTs
+        if (!hasRole(VALIDATOR_ROLE, msg.sender) && 
+            !hasRole(VERIFIER_ROLE, msg.sender) && 
+            !hasRole(GOVERNANCE_ROLE, msg.sender)) {
+            revert("Not authorized");
+        }
+        
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        if (nftContract == address(0)) revert("NFT contract not set");
+        
+        // Ensure project is active and verified
+        if (projectStateData[projectId].state != ProjectState.Active) revert("Project not active");
+        if (projectVerifications[projectId].verificationDate == 0) revert("Project not verified");
+        
+        // Get project category and metadata for the NFT
+        ProjectCategory category = projectStateData[projectId].category;
+        string memory projectName = projectMetadata[projectId].name;
+        
+        // Create NFT metadata
+        string memory tokenURI = _generateTokenURI(projectId, category, projectName, reportHash);
+        
+        // Call the NFT contract to mint the token
+        (bool success, ) = nftContract.call(
+            abi.encodeWithSignature(
+                "mintImpactNFT(address,uint256,string,bytes32)", 
+                recipient, 
+                projectId, 
+                tokenURI, 
+                reportHash
+            )
+        );
+        require(success, "NFT minting failed");
+        
+        emit ImpactNFTMinted(projectId, reportHash, recipient);
+    }
+    
+    function _generateTokenURI(
+        uint256 projectId, 
+        ProjectCategory category, 
+        string memory projectName, 
+        bytes32 reportHash
+    ) internal view returns (string memory) {
+        // Simplified JSON generation for demonstration
+        // In production, this would construct complete metadata JSON
+        string memory baseURI = categoryImageURI[category];
+        string memory tokenId = Strings.toString(projectId);
+        
+        return string(abi.encodePacked(
+            baseURI,
+            tokenId,
+            "?name=", projectName,
+            "&category=", Strings.toString(uint256(category)),
+            "&reportHash=", _bytes32ToString(reportHash)
+        ));
+    }
+    
+    function _bytes32ToString(bytes32 _bytes) internal pure returns (string memory) {
+        bytes memory bytesArray = new bytes(64);
+        for (uint256 i = 0; i < 32; i++) {
+            bytesArray[i*2] = _byteToChar(_bytes[i] >> 4);
+            bytesArray[i*2+1] = _byteToChar(_bytes[i] & 0x0f);
+        }
+        return string(bytesArray);
+    }
+    
+    function _byteToChar(bytes1 b) internal pure returns (bytes1) {
+        if (b < bytes1(uint8(10))) {
+            return bytes1(uint8(b) + 0x30);
+        } else {
+            return bytes1(uint8(b) + 0x57);
+        }
     }
 
     // ====================================================
@@ -315,8 +451,6 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
         projectImpactRequirements[newProjectId] = categoryRequirements[category];
 
         // Set up initial permissions - owner has all permissions
-        projectPermissions[newProjectId][msg.sender][
-// Set up initial permissions - owner has all permissions
         projectPermissions[newProjectId][msg.sender][EDIT_METADATA_PERMISSION] = true;
         projectPermissions[newProjectId][msg.sender][UPLOAD_DOCS_PERMISSION] = true;
         projectPermissions[newProjectId][msg.sender][SUBMIT_REPORTS_PERMISSION] = true;
@@ -526,512 +660,504 @@ contract TerraStakeProjects is Initializable, AccessControlUpgradeable, Reentran
     {
         if (!projectMetadata[projectId].exists) revert("Invalid project ID");
         
-        // Require payment of verification fee
-        if (!tStakeToken.transferFrom(msg.sender, address(this), fees.verificationFee))
-            revert("Fee transfer failed");
-            
-        uint256 treasuryAmount = (fees.verificationFee * 70) / 100;
-        uint256 buybackAmount = (fees.verificationFee * 30) / 100;
-
-        tStakeToken.transfer(treasury, treasuryAmount);
-        _executeBuyback(buybackAmount);
-        
         projectVerifications[projectId] = VerificationData({
             verifier: msg.sender,
             verificationDate: block.timestamp,
             verificationReportHash: reportHash
         });
         
+        // Move to Active state after verification
+        ProjectState oldState = projectStateData[projectId].state;
+        projectStateData[projectId].state = ProjectState.Active;
+        projectStateData[projectId].isActive = true;
+        
+        emit ProjectStateChanged(projectId, oldState, ProjectState.Active);
         emit VerificationSubmitted(projectId, msg.sender, reportHash);
     }
     
-    function reportMetric(uint256 projectId, string calldata metricType, string calldata metricValue) 
-        external 
-        override 
-        nonReentrant
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        
-        // Check permissions for metrics reporting
-        if (!hasProjectPermission(projectId, msg.sender, SUBMIT_REPORTS_PERMISSION) && 
-            !hasRole(STAKER_ROLE, msg.sender)) {
-            revert("Not authorized");
-        }
-        
-        emit MetricsReported(projectId, metricType, metricValue);
-    }
-    
-    function setCategoryMultiplier(ProjectCategory category, uint256 multiplier) 
-        external 
-        override 
-        onlyRole(GOVERNANCE_ROLE) 
-    {
-        categoryInfo[category].impactWeight = multiplier;
-        
-        emit CategoryMultiplierUpdated(category, multiplier);
-    }
-    
-    function setImpactRequirement(
-        ProjectCategory category,
-        uint256 minimumImpact,
-        uint256 verificationFrequency,
-        string[] calldata requiredDocuments,
-        uint256 qualityThreshold,
-        uint256 minimumScale
-    ) external override onlyRole(GOVERNANCE_ROLE) {
-        ImpactRequirement memory requirement = ImpactRequirement({
-            minimumImpact: minimumImpact,
-            verificationFrequency: verificationFrequency,
-            requiredDocuments: requiredDocuments,
-            qualityThreshold: qualityThreshold,
-            minimumScale: minimumScale
-        });
-        
-        categoryRequirements[category] = requirement;
-        
-        emit ImpactRequirementUpdated(category, minimumImpact);
-    }
-    
     function updateFeeStructure(
-        uint256 projectSubmissionFee, 
-        uint256 categoryChangeFee, 
-        uint256 impactReportingFee, 
-        uint256 verificationFee
-    ) external override onlyRole(GOVERNANCE_ROLE) {
+        uint256 projectSubmissionFee,
+        uint256 impactReportingFee,
+        uint256 verificationFee,
+        uint256 categoryChangeFee
+    ) external onlyRole(GOVERNANCE_ROLE) {
         fees = FeeStructure({
             projectSubmissionFee: projectSubmissionFee,
             impactReportingFee: impactReportingFee,
-            categoryChangeFee: categoryChangeFee,
-            verificationFee: verificationFee
+            verificationFee: verificationFee,
+            categoryChangeFee: categoryChangeFee
         });
         
         emit FeeStructureUpdated(
-            projectSubmissionFee, 
-            impactReportingFee, 
-            verificationFee, 
+            projectSubmissionFee,
+            impactReportingFee,
+            verificationFee,
             categoryChangeFee
         );
     }
-
-    // ====================================================
-    // 🔹 Project Analytics & Reporting
-    // ====================================================
-    function updateProjectDataFromChainlink(uint256 projectId, int256 price) external {
-        // This function would typically be called by an oracle contract
-        // For demonstration, we'll allow governance role to update
-        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) revert("Not authorized");
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        
-        projectStateData[projectId].lastReportedValue = price;
-        
-        emit ProjectDataUpdated(projectId, price);
-    }
     
-    function updateProjectAnalytics(
-        uint256 projectId,
-        uint256 totalImpact,
-        uint256 carbonOffset,
-        uint256 stakingEfficiency,
-        uint256 communityEngagement
-    ) external override onlyRole(GOVERNANCE_ROLE) {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        
-        projectAnalytics[projectId] = ProjectAnalytics({
-            totalImpact: totalImpact,
-            carbonOffset: carbonOffset,
-            stakingEfficiency: stakingEfficiency,
-            communityEngagement: communityEngagement
+    function updateCategoryRequirements(
+        ProjectCategory category,
+        uint256 minImpact,
+        uint256 minReportFrequency,
+        uint256 minStakingPeriod,
+        uint256 minValidations
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        categoryRequirements[category] = ImpactRequirement({
+            minimumImpactValue: minImpact,
+            minimumReportingFrequency: minReportFrequency,
+            minimumStakingPeriod: minStakingPeriod,
+            minimumValidations: minValidations
         });
         
-        emit AnalyticsUpdated(projectId, totalImpact);
+        emit CategoryRequirementsUpdated(
+            category,
+            minImpact,
+            minReportFrequency,
+            minStakingPeriod,
+            minValidations
+        );
     }
     
-    function getProjectAnalytics(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (ProjectAnalytics memory) 
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        return projectAnalytics[projectId];
+    function setTreasuryAddress(address _treasury) external onlyRole(GOVERNANCE_ROLE) {
+        require(_treasury != address(0), "Invalid treasury address");
+        treasury = _treasury;
+        emit TreasuryUpdated(_treasury);
     }
     
-    function getImpactReports(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (ImpactReport[] memory) 
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        return projectImpactReports[projectId];
+    function setLiquidityPoolAddress(address _liquidityPool) external onlyRole(GOVERNANCE_ROLE) {
+        require(_liquidityPool != address(0), "Invalid liquidity pool address");
+        liquidityPool = _liquidityPool;
+        emit LiquidityPoolUpdated(_liquidityPool);
+    }
+    
+    function setStakingContract(address _stakingContract) external onlyRole(GOVERNANCE_ROLE) {
+        require(_stakingContract != address(0), "Invalid staking contract address");
+        stakingContract = _stakingContract;
+        emit StakingContractUpdated(_stakingContract);
+    }
+    
+    function setRewardsContract(address _rewardsContract) external onlyRole(GOVERNANCE_ROLE) {
+        require(_rewardsContract != address(0), "Invalid rewards contract address");
+        rewardsContract = _rewardsContract;
+        emit RewardsContractUpdated(_rewardsContract);
     }
 
     // ====================================================
-    // 🔹 Enhanced REC Management
+    // 🔹 Project Collaboration & Permission Management
     // ====================================================
-    function submitRECReport(uint256 projectId, RECData memory rec) 
-        external 
-        override 
-        nonReentrant 
-    {
+    function grantProjectPermission(
+        uint256 projectId, 
+        address user, 
+        bytes32 permission
+    ) external nonReentrant {
         if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        if (projectStateData[projectId].category != ProjectCategory.RenewableEnergy)
-            revert("Project not renewable energy");
-            
-        // Check permissions for REC reporting
-        if (!hasProjectPermission(projectId, msg.sender, SUBMIT_REPORTS_PERMISSION) && 
-            !hasRole(STAKER_ROLE, msg.sender)) {
+        
+        // Only the project owner or someone with manage collaborators permission can grant permissions
+        if (projectStateData[projectId].owner != msg.sender && 
+            !projectPermissions[projectId][msg.sender][MANAGE_COLLABORATORS_PERMISSION]) {
             revert("Not authorized");
         }
-            
-        projectRECs[projectId].push(rec);
         
-        emit RECReportSubmitted(projectId, rec.recId);
+        projectPermissions[projectId][user][permission] = true;
+        emit ProjectPermissionUpdated(projectId, user, permission, true);
     }
     
-    function verifyRECOnchain(uint256 projectId, bytes32 recId) 
+    function revokeProjectPermission(
+        uint256 projectId, 
+        address user, 
+        bytes32 permission
+    ) external nonReentrant {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        
+        // Only the project owner or someone with manage collaborators permission can revoke permissions
+        if (projectStateData[projectId].owner != msg.sender && 
+            !projectPermissions[projectId][msg.sender][MANAGE_COLLABORATORS_PERMISSION]) {
+            revert("Not authorized");
+        }
+        
+        // Cannot revoke owner's permissions
+        if (projectStateData[projectId].owner == user) {
+            revert("Cannot revoke owner permissions");
+        }
+        
+        projectPermissions[projectId][user][permission] = false;
+        emit ProjectPermissionUpdated(projectId, user, permission, false);
+    }
+    
+    function hasProjectPermission(
+        uint256 projectId, 
+        address user, 
+        bytes32 permission
+    ) public view returns (bool) {
+        // Project owner always has all permissions
+        return projectStateData[projectId].owner == user || 
+               projectPermissions[projectId][user][permission];
+    }
+    
+    function transferProjectOwnership(uint256 projectId, address newOwner) external nonReentrant {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        if (projectStateData[projectId].owner != msg.sender) revert("Not project owner");
+        if (newOwner == address(0)) revert("Invalid new owner");
+        
+        // Transfer ownership
+        address oldOwner = projectStateData[projectId].owner;
+        projectStateData[projectId].owner = newOwner;
+        
+        // Grant all permissions to new owner
+        projectPermissions[projectId][newOwner][EDIT_METADATA_PERMISSION] = true;
+        projectPermissions[projectId][newOwner][UPLOAD_DOCS_PERMISSION] = true;
+        projectPermissions[projectId][newOwner][SUBMIT_REPORTS_PERMISSION] = true;
+        projectPermissions[projectId][newOwner][MANAGE_COLLABORATORS_PERMISSION] = true;
+        
+        emit ProjectOwnershipTransferred(projectId, oldOwner, newOwner);
+    }
+
+    // ====================================================
+    // 🔹 REC (Renewable Energy Certificate) Management
+    // ====================================================
+    function registerREC(
+        uint256 projectId, 
+        uint256 energyAmount, 
+        uint256 issuanceDate, 
+        string calldata source, 
+        bytes32 recId
+    ) external onlyRole(VERIFIER_ROLE) {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        if (projectStateData[projectId].category != ProjectCategory.RenewableEnergy) 
+            revert("Project not in renewable energy category");
+        
+        projectRECs[projectId].push(RECData({
+            recId: recId,
+            energyAmount: energyAmount,
+            issuanceDate: issuanceDate,
+            expirationDate: issuanceDate + 365 days,
+            source: source,
+            status: RECStatus.Active,
+            owner: projectStateData[projectId].owner,
+            retirementReason: "",
+            externalRegistryId: ""
+        }));
+        
+        emit RECRegistered(projectId, recId, energyAmount);
+    }
+    
+    function retireREC(uint256 projectId, bytes32 recId, string calldata purpose) external {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        
+        // Find and update the REC
+        bool found = false;
+        for (uint256 i = 0; i < projectRECs[projectId].length; i++) {
+            if (projectRECs[projectId][i].recId == recId) {
+                // Only the REC owner can retire it
+                if (projectRECs[projectId][i].owner != msg.sender) revert("Not REC owner");
+                if (projectRECs[projectId][i].status != RECStatus.Active) revert("REC not active");
+                
+                projectRECs[projectId][i].status = RECStatus.Retired;
+                projectRECs[projectId][i].retirementReason = purpose;
+                found = true;
+                
+                emit RECRetired(projectId, recId, msg.sender, purpose);
+                break;
+            }
+        }
+        
+        if (!found) revert("REC not found");
+    }
+    
+    function transferREC(uint256 projectId, bytes32 recId, address to) external {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        if (to == address(0)) revert("Invalid recipient");
+        
+        // Find and update the REC
+        bool found = false;
+        for (uint256 i = 0; i < projectRECs[projectId].length; i++) {
+            if (projectRECs[projectId][i].recId == recId) {
+                // Only the REC owner can transfer it
+                if (projectRECs[projectId][i].owner != msg.sender) revert("Not REC owner");
+                if (projectRECs[projectId][i].status != RECStatus.Active) revert("REC not active");
+                
+                projectRECs[projectId][i].owner = to;
+                found = true;
+                
+                emit RECTransferred(projectId, recId, msg.sender, to);
+                break;
+            }
+        }
+        
+        if (!found) revert("REC not found");
+    }
+    
+    function setRECExternalRegistry(uint256 projectId, bytes32 recId, string calldata externalId) 
         external 
         onlyRole(VERIFIER_ROLE) 
     {
         if (!projectMetadata[projectId].exists) revert("Invalid project ID");
         
+        // Find and update the REC
         bool found = false;
-        RECData[] storage recs = projectRECs[projectId];
-        
-        for (uint256 j = 0; j < recs.length; j++) {
-            if (recs[j].recId == recId) {
-                recs[j].isVerified = true;
-                recs[j].verificationDate = block.timestamp;
-                recs[j].verifier = msg.sender;
+        for (uint256 i = 0; i < projectRECs[projectId].length; i++) {
+            if (projectRECs[projectId][i].recId == recId) {
+                projectRECs[projectId][i].externalRegistryId = externalId;
                 found = true;
+                
+                emit RECRegistrySync(projectId, recId, externalId);
                 break;
             }
         }
-require(found, "REC not found");
-        emit RECVerified(projectId, recId, msg.sender);
+        
+        if (!found) revert("REC not found");
     }
-
-    function retireREC(uint256 projectId, bytes32 recId, string calldata purpose) 
+    
+    function getProjectRECs(uint256 projectId) external view returns (RECData[] memory) {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        return projectRECs[projectId];
+    }
+    
+    // ====================================================
+    // 🔹 Project Data Management
+    // ====================================================
+    function updateProjectMetadata(
+        uint256 projectId,
+        string calldata name,
+        string calldata description,
+        string calldata location,
+        string calldata impactMetrics,
+        bytes32 ipfsHash
+    ) external {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        
+        // Check edit permissions
+        if (!hasProjectPermission(projectId, msg.sender, EDIT_METADATA_PERMISSION)) {
+            revert("Not authorized");
+        }
+        
+        // Update the metadata
+        if (bytes(name).length > 0) projectMetadata[projectId].name = name;
+        if (bytes(description).length > 0) projectMetadata[projectId].description = description;
+        if (bytes(location).length > 0) projectMetadata[projectId].location = location;
+        if (bytes(impactMetrics).length > 0) projectMetadata[projectId].impactMetrics = impactMetrics;
+        if (ipfsHash != bytes32(0)) projectMetadata[projectId].ipfsHash = ipfsHash;
+        
+        emit ProjectMetadataUpdated(projectId, projectMetadata[projectId].name);
+    }
+    
+    function setProjectImpactRequirements(
+        uint256 projectId,
+        uint256 minImpact,
+        uint256 minReportFrequency,
+        uint256 minStakingPeriod,
+        uint256 minValidations
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        
+        projectImpactRequirements[projectId] = ImpactRequirement({
+            minimumImpactValue: minImpact,
+            minimumReportingFrequency: minReportFrequency,
+            minimumStakingPeriod: minStakingPeriod,
+            minimumValidations: minValidations
+        });
+        
+        emit ProjectImpactRequirementsUpdated(
+            projectId,
+            minImpact,
+            minReportFrequency,
+            minStakingPeriod,
+            minValidations
+        );
+    }
+    
+    function changeProjectCategory(uint256 projectId, ProjectCategory newCategory) 
         external 
         nonReentrant 
     {
         if (!projectMetadata[projectId].exists) revert("Invalid project ID");
         
-        bool found = false;
-        RECData[] storage recs = projectRECs[projectId];
-        
-        for (uint256 j = 0; j < recs.length; j++) {
-            if (recs[j].recId == recId && !recs[j].isRetired) {
-                // Ensure it's verified before retiring
-                require(recs[j].isVerified, "REC not verified");
-                
-                recs[j].isRetired = true;
-                recs[j].retirementDate = block.timestamp;
-                recs[j].retirer = msg.sender;
-                recs[j].retirementPurpose = purpose;
-                found = true;
-                break;
-            }
-        }
-        
-        require(found, "REC not found or already retired");
-        emit RECRetired(projectId, recId, msg.sender, purpose);
-    }
-
-    function transferREC(uint256 projectId, bytes32 recId, address to)
-        external
-        nonReentrant
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        if (to == address(0)) revert("Invalid recipient");
-        
-        bool found = false;
-        RECData[] storage recs = projectRECs[projectId];
-        
-        for (uint256 j = 0; j < recs.length; j++) {
-            if (recs[j].recId == recId) {
-                // Only owner can transfer
-                require(recs[j].owner == msg.sender, "Not the REC owner");
-                // Cannot transfer retired RECs
-                require(!recs[j].isRetired, "REC already retired");
-                
-                address from = recs[j].owner;
-                recs[j].owner = to;
-                found = true;
-                
-                emit RECTransferred(projectId, recId, from, to);
-                break;
-            }
-        }
-        
-        require(found, "REC not found");
-    }
-
-    function syncRECWithExternalRegistry(uint256 projectId, bytes32 recId, string calldata externalId)
-        external
-        onlyRole(VALIDATOR_ROLE)
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        
-        bool found = false;
-        RECData[] storage recs = projectRECs[projectId];
-        
-        for (uint256 j = 0; j < recs.length; j++) {
-            if (recs[j].recId == recId) {
-                recs[j].externalRegistryId = externalId;
-                found = true;
-                break;
-            }
-        }
-        
-        require(found, "REC not found");
-        emit RECRegistrySync(projectId, recId, externalId);
-    }
-    
-    function getREC(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (RECData memory) 
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        if (projectRECs[projectId].length == 0) revert("No RECs for project");
-        
-        // Return the most recent REC
-        return projectRECs[projectId][projectRECs[projectId].length - 1];
-    }
-    
-    function getAllRECs(uint256 projectId)
-        external
-        view
-        returns (RECData[] memory)
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        return projectRECs[projectId];
-    }
-    
-    function verifyREC(bytes32 recId) 
-        external 
-        view 
-        override 
-        returns (bool) 
-    {
-        // In a real implementation, this would verify the REC against an external registry
-        // For demonstration, we'll just check if it exists in any project
-        for (uint256 i = 0; i < projectCount; i++) {
-            RECData[] storage recs = projectRECs[i];
-            for (uint256 j = 0; j < recs.length; j++) {
-                if (recs[j].recId == recId && recs[j].isVerified && !recs[j].isRetired) {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
-    
-    // ====================================================
-    // 🔹 Enhanced Permission Management
-    // ====================================================
-    function setProjectPermission(
-        uint256 projectId, 
-        address user, 
-        bytes32 permission, 
-        bool granted
-    ) external {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        
-        // Only the project owner or governance/admin can change permissions
-        if (projectStateData[projectId].owner != msg.sender && 
-            !hasRole(GOVERNANCE_ROLE, msg.sender) && 
-            !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+        // Only governance or project owner can change category
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender) && 
+            projectStateData[projectId].owner != msg.sender) {
             revert("Not authorized");
         }
         
-        // Users can't modify their own collaborator management permissions
-        if (user == msg.sender && permission == MANAGE_COLLABORATORS_PERMISSION && !granted) {
-            revert("Cannot revoke own management");
+        // Collect category change fee if sender is not governance
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) {
+            if (!tStakeToken.transferFrom(msg.sender, address(this), fees.categoryChangeFee))
+                revert("Fee transfer failed");
+                
+            uint256 treasuryAmount = (fees.categoryChangeFee * 45) / 100;
+            uint256 buybackAmount = (fees.categoryChangeFee * 5) / 100;
+    
+            tStakeToken.transfer(treasury, treasuryAmount);
+            _executeBuyback(buybackAmount);
         }
         
-        projectPermissions[projectId][user][permission] = granted;
-        emit ProjectPermissionUpdated(projectId, user, permission, granted);
+        ProjectCategory oldCategory = projectStateData[projectId].category;
+        projectStateData[projectId].category = newCategory;
+        
+        // Update the project's impact requirements to match the new category
+        projectImpactRequirements[projectId] = categoryRequirements[newCategory];
+        
+        emit ProjectCategoryChanged(projectId, oldCategory, newCategory);
     }
     
-    // Helper function to check project-specific permissions
-    function hasProjectPermission(uint256 projectId, address user, bytes32 permission) 
-        public 
+    // ====================================================
+    // 🔹 Utility Functions
+    // ====================================================
+    function _executeBuyback(uint256 amount) internal {
+        if (amount == 0) return;
+        
+        // Burn 50% of tokens by sending to dead address
+        uint256 burnAmount = amount / 2;
+        if (burnAmount > 0) {
+            // Instead of trying to call a burn method, transfer to burn address
+            tStakeToken.transfer(BURN_ADDRESS, burnAmount);
+            emit TokensBurned(burnAmount);
+        }
+        
+        // Send remaining to liquidity pool for buyback
+        uint256
+ remainingAmount = amount - burnAmount;
+        if (remainingAmount > 0 && liquidityPool != address(0)) {
+            // Transfer tokens to liquidity pool for buyback
+            tStakeToken.transfer(liquidityPool, remainingAmount);
+        }
+    }
+    
+    function getProject(uint256 projectId) 
+        external 
         view 
-        returns (bool) 
+        returns (
+            ProjectData memory metadata,
+            ProjectStateData memory stateData,
+            ValidationData memory validation,
+            VerificationData memory verification,
+            ProjectAnalytics memory analytics
+        ) 
     {
-        // Project owner, governance, and admin always have permissions
-        if (projectStateData[projectId].owner == user || 
-            hasRole(GOVERNANCE_ROLE, user) || 
-            hasRole(DEFAULT_ADMIN_ROLE, user)) {
-            return true;
-        }
-        
-        return projectPermissions[projectId][user][permission];
-    }
-    
-    // Check multiple permissions at once for a user on a project
-    function checkProjectPermissions(uint256 projectId, address user, bytes32[] calldata permissions)
-        external
-        view
-        returns (bool[] memory)
-    {
-        bool[] memory results = new bool[](permissions.length);
-        
-        for (uint256 i = 0; i < permissions.length; i++) {
-            results[i] = hasProjectPermission(projectId, user, permissions[i]);
-        }
-        
-        return results;
-    }
-    
-    // Update project metadata with permission checks
-    function updateProjectMetadata(
-        uint256 projectId,
-        string memory name,
-        string memory description,
-        string memory location,
-        string memory impactMetrics
-    ) external {
         if (!projectMetadata[projectId].exists) revert("Invalid project ID");
         
-        // Check if user has metadata edit permission
-        if (!hasProjectPermission(projectId, msg.sender, EDIT_METADATA_PERMISSION)) {
-            revert("Not authorized to edit metadata");
-        }
-        
-        projectMetadata[projectId].name = name;
-        projectMetadata[projectId].description = description;
-        projectMetadata[projectId].location = location;
-        projectMetadata[projectId].impactMetrics = impactMetrics;
-        
-        emit ProjectMetadataUpdated(projectId, name);
+        return (
+            projectMetadata[projectId],
+            projectStateData[projectId],
+            projectValidations[projectId],
+            projectVerifications[projectId],
+            projectAnalytics[projectId]
+        );
     }
-
-    // ====================================================
-    // 🔹 Contract Management
-    // ====================================================
-    function setContracts(address _stakingContract, address _rewardsContract) 
+    
+    function getProjectCount() external view returns (uint256) {
+        return projectCount;
+    }
+    
+    function getProjectImpactReports(uint256 projectId) 
         external 
-        onlyRole(GOVERNANCE_ROLE) 
+        view 
+        returns (ImpactReport[] memory) 
     {
-        if (_stakingContract == address(0) || _rewardsContract == address(0))
-            revert("Invalid addresses");
-            
-        stakingContract = _stakingContract;
-        rewardsContract = _rewardsContract;
-        
-        emit ContractsSet(_stakingContract, _rewardsContract);
+        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
+        return projectImpactReports[projectId];
     }
     
-    function setTreasury(address _treasury) external onlyRole(GOVERNANCE_ROLE) {
-        if (_treasury == address(0)) revert("Invalid address");
-        treasury = _treasury;
-    }
-    
-    function setLiquidityPool(address _liquidityPool) external onlyRole(GOVERNANCE_ROLE) {
-        if (_liquidityPool == address(0)) revert("Invalid address");
-        liquidityPool = _liquidityPool;
-    }
-    
-    // ====================================================
-    // 🔹 Internal Fee Management
-    // ====================================================
-    function _executeBuyback(uint256 amount) private {
-        if (amount > 0 && liquidityPool != address(0)) {
-            tStakeToken.transfer(liquidityPool, amount);
-        }
-    }
-    
-    // ====================================================
-    // 🔹 Category-Specific Utilities
-    // ====================================================
-    function getCategoryRequirements(ProjectCategory category)
-        external
-        view
-        returns (ImpactRequirement memory)
-    {
-        return categoryRequirements[category];
-    }
-    
-    function getCategoryInfo(ProjectCategory category)
-        external
-        view
-        returns (CategoryInfo memory)
+    function getCategoryInfo(ProjectCategory category) 
+        external 
+        view 
+        returns (CategoryInfo memory) 
     {
         return categoryInfo[category];
     }
     
-    function calculateCategoryImpact(uint256 projectId, uint256 baseImpact)
-        external
-        view
-        returns (uint256)
-    {
-        if (!projectMetadata[projectId].exists) revert("Invalid project ID");
-        
-        ProjectCategory category = projectStateData[projectId].category;
-        uint256 weight = categoryInfo[category].impactWeight;
-        
-        return (baseImpact * weight) / 100;
-    }
-    
-    // ====================================================
-    // 🔹 Convenience Batch Functions for Gas Efficiency
-    // ====================================================
-    function batchGetProjectDetails(uint256[] calldata projectIds) 
+    function getProjectsByOwner(address owner) 
         external 
         view 
-        returns (
-            ProjectData[] memory metadata,
-            ProjectStateData[] memory state,
-            ProjectAnalytics[] memory analytics
-        ) 
+        returns (uint256[] memory) 
     {
-        metadata = new ProjectData[](projectIds.length);
-        state = new ProjectStateData[](projectIds.length);
-        analytics = new ProjectAnalytics[](projectIds.length);
+        uint256[] memory ownedProjects = new uint256[](projectCount);
+        uint256 count = 0;
         
-        for (uint256 i = 0; i < projectIds.length; i++) {
-            uint256 projectId = projectIds[i];
-            if (projectMetadata[projectId].exists) {
-                metadata[i] = projectMetadata[projectId];
-                state[i] = projectStateData[projectId];
-                analytics[i] = projectAnalytics[projectId];
+        for (uint256 i = 0; i < projectCount; i++) {
+            if (projectStateData[i].owner == owner && projectMetadata[i].exists) {
+                ownedProjects[count] = i;
+                count++;
             }
         }
         
-        return (metadata, state, analytics);
+        // Resize array to actual count
+        uint256[] memory result = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = ownedProjects[i];
+        }
+        
+        return result;
     }
     
-    // Batch operation to update multiple permissions at once
-    function batchSetProjectPermissions(
-        uint256 projectId,
-        address[] calldata users,
-        bytes32[] calldata permissions,
-        bool[] calldata values
-    ) external {
+    function getProjectsByCategory(ProjectCategory category) 
+        external 
+        view 
+        returns (uint256[] memory) 
+    {
+        uint256[] memory categoryProjects = new uint256[](projectCount);
+        uint256 count = 0;
+        
+        for (uint256 i = 0; i < projectCount; i++) {
+            if (projectStateData[i].category == category && projectMetadata[i].exists) {
+                categoryProjects[count] = i;
+                count++;
+            }
+        }
+        
+        // Resize array to actual count
+        uint256[] memory result = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = categoryProjects[i];
+        }
+        
+        return result;
+    }
+    
+    function getActiveProjects() 
+        external 
+        view 
+        returns (uint256[] memory) 
+    {
+        uint256[] memory activeProjects = new uint256[](projectCount);
+        uint256 count = 0;
+        
+        for (uint256 i = 0; i < projectCount; i++) {
+            if (projectStateData[i].isActive && projectMetadata[i].exists) {
+                activeProjects[count] = i;
+                count++;
+            }
+        }
+        
+        // Resize array to actual count
+        uint256[] memory result = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = activeProjects[i];
+        }
+        
+        return result;
+    }
+    
+    // Allows staking contract to update project staking data
+    function updateProjectStaking(uint256 projectId, uint256 newTotalStaked, uint256 newRewardPool) 
+        external 
+    {
+        if (msg.sender != stakingContract && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
+            revert("Not authorized");
         if (!projectMetadata[projectId].exists) revert("Invalid project ID");
         
-        // Only the project owner or someone with collaborator management permission can do this
-        if (projectStateData[projectId].owner != msg.sender && 
-            !hasRole(GOVERNANCE_ROLE, msg.sender) &&
-            !hasProjectPermission(projectId, msg.sender, MANAGE_COLLABORATORS_PERMISSION)) {
-            revert("Not authorized");
-        }
+        projectStateData[projectId].totalStaked = newTotalStaked;
+        projectStateData[projectId].rewardPool = newRewardPool;
         
-        require(users.length == permissions.length && permissions.length == values.length, "Array lengths mismatch");
-        
-        for (uint256 i = 0; i < users.length; i++) {
-            // Skip attempts to remove own management permission
-            if (users[i] == msg.sender && permissions[i] == MANAGE_COLLABORATORS_PERMISSION && !values[i]) {
-                continue;
-            }
-            
-            projectPermissions[projectId][users[i]][permissions[i]] = values[i];
-            emit ProjectPermissionUpdated(projectId, users[i], permissions[i], values[i]);
-        }
+        emit ProjectStakingUpdated(projectId, newTotalStaked, newRewardPool);
+    }
+    
+    // Emergency function to recover tokens accidentally sent to contract
+    function recoverERC20(address tokenAddress, uint256 amount) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+    {
+        IERC20(tokenAddress).transfer(msg.sender, amount);
+        emit TokenRecovered(tokenAddress, msg.sender, amount);
     }
 }
