@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.30;
+pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
+import "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 
@@ -27,7 +27,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     uint256 public constant MAX_TOKENS_FOR_ITO = 300_000_000 * 10**18;
     uint256 public constant DEFAULT_MIN_PURCHASE_USDC = 1_000 * 10**6;
     uint256 public constant DEFAULT_MAX_PURCHASE_USDC = 150_000 * 10**6;
-
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant MULTISIG_ROLE = keccak256("MULTISIG_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
@@ -39,11 +38,9 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     IERC20 public immutable usdcToken;
     INonfungiblePositionManager public immutable positionManager;
     IUniswapV3Pool public immutable uniswapPool;
-
     address public immutable treasuryMultiSig;
     address public immutable stakingRewards;
     address public immutable liquidityPool;
-
     uint256 public startingPrice = 0.10 * 10**18;
     uint256 public endingPrice = 0.20 * 10**18;
     uint256 public priceDuration = 30 days;
@@ -53,11 +50,9 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     uint256 public itoEndTime;
     uint256 public minPurchaseUSDC;
     uint256 public maxPurchaseUSDC;
-
     bool public purchasesPaused;
     mapping(address => uint256) public purchasedAmounts;
     mapping(address => bool) public blacklist;
-
     enum ITOState { NotStarted, Active, Ended }
     ITOState public itoState;
 
@@ -65,7 +60,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     // 🔹 Vesting Struct & Variables
     // ================================
     enum VestingType { Treasury, Staking, Liquidity }
-
     struct VestingSchedule {
         uint256 totalAmount;
         uint256 initialUnlock; // percentage (e.g. 10 for 10%)
@@ -74,7 +68,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         uint256 claimedAmount;
         uint256 lastClaimTime;
     }
-
     mapping(VestingType => VestingSchedule) public vestingSchedules;
 
     // ================================
@@ -108,7 +101,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         require(_tStakeToken != address(0) && _usdcToken != address(0), "Invalid token addresses");
         require(_positionManager != address(0) && _uniswapPool != address(0), "Invalid Uniswap addresses");
         require(_treasuryMultiSig != address(0) && _stakingRewards != address(0), "Invalid operational addresses");
-
         tStakeToken = IBurnableERC20(_tStakeToken);
         usdcToken = IERC20(_usdcToken);
         positionManager = INonfungiblePositionManager(_positionManager);
@@ -116,14 +108,11 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         treasuryMultiSig = _treasuryMultiSig;
         stakingRewards = _stakingRewards;
         liquidityPool = _liquidityPool;
-
         itoStartTime = block.timestamp;
         itoEndTime = block.timestamp + priceDuration;
         itoState = ITOState.NotStarted;
-
         minPurchaseUSDC = DEFAULT_MIN_PURCHASE_USDC;
         maxPurchaseUSDC = DEFAULT_MAX_PURCHASE_USDC;
-
         _setupRoles(admin);
         _initializeVesting();
     }
@@ -210,10 +199,8 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     function getCurrentPrice() public view returns (uint256) {
         if (block.timestamp >= itoEndTime) return endingPrice;
         if (itoStartTime == 0 || itoStartTime >= itoEndTime) return startingPrice;
-
         uint256 elapsed = block.timestamp - itoStartTime;
         if (elapsed >= priceDuration) return endingPrice;
-
         uint256 priceIncrease = ((endingPrice - startingPrice) * elapsed) / priceDuration;
         return startingPrice + priceIncrease;
     }
@@ -238,19 +225,15 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         require(!purchasesPaused, "Purchases paused");
         require(!blacklist[msg.sender], "Address blacklisted");
         require(usdcAmount >= minPurchaseUSDC && usdcAmount <= maxPurchaseUSDC, "Invalid purchase amount");
-
         uint256 tokenAmount = (usdcAmount * 10**18) / getCurrentPrice();
         require(tokenAmount >= minTokensOut, "Slippage exceeded");
         require(tokensSold + tokenAmount <= MAX_TOKENS_FOR_ITO, "Exceeds allocation");
-
         require(usdcToken.transferFrom(msg.sender, address(this), usdcAmount), "USDC transfer failed");
         _distributeUSDC(usdcAmount);
         require(tStakeToken.transfer(msg.sender, tokenAmount), "Token transfer failed");
-
         tokensSold += tokenAmount;
         accumulatedUSDC += usdcAmount;
         purchasedAmounts[msg.sender] += tokenAmount;
-
         emit TokensPurchased(msg.sender, usdcAmount, tokenAmount, block.timestamp);
     }
 
@@ -261,11 +244,9 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         uint256 treasuryShare = (amount * 40) / 100;
         uint256 stakingShare = (amount * 35) / 100;
         uint256 liquidityShare = amount - (treasuryShare + stakingShare);
-
         vestingSchedules[VestingType.Treasury].totalAmount += treasuryShare;
         vestingSchedules[VestingType.Staking].totalAmount += stakingShare;
         vestingSchedules[VestingType.Liquidity].totalAmount += liquidityShare;
-
         _addLiquidity(liquidityShare);
     }
 
@@ -279,14 +260,12 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         // Calculate the corresponding amount of tStake tokens based on the current price.
         uint256 tStakeAmount = (liquidityUSDCAmount * 10**18) / getCurrentPrice();
         tStakeToken.approve(address(positionManager), tStakeAmount);
-
         // Retrieve the current tick from the Uniswap pool.
         (, int24 currentTick, , , , ,) = uniswapPool.slot0();
         // Define a simple tick range around the current tick.
         int24 tickSpacing = 60; // Typical tick spacing for a 0.3% fee tier.
         int24 tickLower = currentTick - (10 * tickSpacing);
         int24 tickUpper = currentTick + (10 * tickSpacing);
-
         // Set up the mint parameters for creating a new position.
         INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
             token0: address(usdcToken),
@@ -301,7 +280,6 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
             recipient: liquidityPool,
             deadline: block.timestamp + 15 minutes
         });
-
         // Mint the liquidity position.
         (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = positionManager.mint(params);
         emit LiquidityAdded(amount0, amount1, block.timestamp);
