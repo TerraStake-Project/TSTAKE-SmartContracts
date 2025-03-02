@@ -1,362 +1,364 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/IERC1155Upgradeable.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 /**
- * @title ITerraStakeNFT
- * @notice Comprehensive interface for the upgradeable TerraStakeNFT contract with advanced functionalities
- * @dev This interface defines all external functions and events for the TerraStakeNFT contract
+ * @title ITerraStakeFractionalizer
+ * @dev Interface for TerraStake NFT fractionalization contract
+ * @notice This interface supports the fractionalization of impact NFTs into tradable ERC-20 tokens
+ * with TSTAKE as the ecosystem token
  */
-interface ITerraStakeNFT is IERC1155Upgradeable {
-    // =====================================================
-    // Structs
-    // =====================================================
-    struct FeeDistribution {
-        uint256 stakingShare;
-        uint256 liquidityShare;
-        uint256 treasuryShare;
-        uint256 burnShare;
-    }
+interface ITerraStakeFractionalizer is IERC165 {
+    // ====================================================
+    // 🔹 Structs
+    // ====================================================
     
-    struct PerformanceMetrics {
-        uint256 totalImpact;
-        uint256 carbonOffset;
-        uint256 efficiencyScore;
-        uint256 lastUpdated;
-        uint256 verifiedImpact;
-        bytes32 metricHash;
-    }
-    
-    struct NFTMetadata {
-        string ipfsUri;
-        uint256 projectId;
-        uint256 impactValue;
-        bool isTradable;
-        string location;
-        uint256 capacity;
-        uint256 certificationDate;
-        string projectType;
-        bool isVerified;
-        uint256 version;
-        PerformanceMetrics performance;
-        uint256 mintingFee;
-        bytes32 projectDataHash;
-        bytes32 impactReportHash;
-        address originalMinter;
-        uint256 originalMintTimestamp;
-        bytes32 verificationProofHash;
-    }
-    
-    struct CarbonRetirement {
-        uint256 tokenId;
-        uint256 amount;
-        address retiringEntity;
-        address beneficiary;
-        string reason;
-        uint256 timestamp;
-        bytes32 retirementId;
-    }
-    
-    struct StakedImpact {
-        uint256 tokenId;
-        uint256 impactAmount;
-        uint256 stakingTimestamp;
-        uint256 unlockTimestamp;
-        address staker;
-        bool active;
-    }
-    
-    struct VerificationRecord {
-        uint256 tokenId;
-        uint256 verifiedAmount;
-        uint256 timestamp;
-        string methodologyId;
-        string verifierName;
-        string externalVerifierId;
-        bytes32 verificationProof;
-        address verifier;
+    /**
+     * @dev Struct to store vault information for a fractionalized NFT
+     */
+    struct Vault {
+        uint256 tokenId;             // Original NFT token ID
+        uint256 projectId;           // Project ID associated with the NFT
+        address nftContract;         // Address of the NFT contract
+        address originalOwner;       // Original owner who fractionalized the NFT
+        address fractionsToken;      // ERC-20 token address representing fractions
+        uint256 totalSupply;         // Total supply of fraction tokens
+        uint256 fractionPrice;       // Initial price per fraction in TSTAKE
+        uint256 reservePrice;        // Minimum price to buy back the entire NFT in TSTAKE
+        bool isActive;               // Whether the vault is currently active
+        uint256 creationTime;        // When the vault was created
+        bool isRedeemable;           // Whether the NFT can be redeemed
+        string name;                 // Name of the fractions token
+        string symbol;               // Symbol of the fractions token
     }
 
-    // =====================================================
-    // Events
-    // =====================================================
-    event NFTMinted(address indexed to, uint256 indexed tokenId, uint256 projectId, bytes32 projectDataHash);
-    event MintingFeeUpdated(uint256 newFee);
-    event FeeDistributed(uint256 stakingAmount, uint256 liquidityAmount, uint256 treasuryAmount, uint256 burnAmount);
-    event RandomnessRequested(uint256 indexed tokenId, uint256 indexed requestId);
-    event RandomnessReceived(uint256 indexed requestId, uint256 randomValue);
-    event MetadataUpdated(uint256 indexed tokenId, string newIpfsUri, uint256 version, bytes32 metadataHash);
-    event ProjectHashVerified(uint256 indexed tokenId, uint256 indexed projectId, bytes32 projectHash);
-    event VerificationProofAdded(uint256 indexed tokenId, bytes32 proofHash);
-    event MerkleRootSet(uint256 indexed tokenId, bytes32 merkleRoot);
-    event ContractUpgraded(address newImplementation);
-    event CarbonCreditsRetired(
-        uint256 indexed tokenId, 
-        uint256 amount, 
-        address indexed retiringEntity,
-        address indexed beneficiary, 
-        string reason, 
-        bytes32 retirementId,
-        uint256 timestamp
-    );
-    event ImpactStaked(
-        address indexed staker, 
-        uint256 indexed tokenId, 
-        uint256 impactAmount, 
-        uint256 lockPeriod, 
-        uint256 stakeId
-    );
-    event ImpactUnstaked(
-        address indexed staker,
+    // ====================================================
+    // 🔹 Events
+    // ====================================================
+    
+    /**
+     * @dev Emitted when a new NFT is fractionalized
+     */
+    event NFTFractionalized(
+        uint256 indexed vaultId,
         uint256 indexed tokenId,
-        uint256 impactAmount,
-        uint256 stakeId,
-        uint256 rewardAmount
+        uint256 indexed projectId,
+        address nftContract,
+        address fractionToken,
+        uint256 totalSupply,
+        address owner
     );
-    event ImpactVerified(
+    
+    /**
+     * @dev Emitted when an NFT is redeemed (all fractions recombined)
+     */
+    event NFTRedeemed(
+        uint256 indexed vaultId,
         uint256 indexed tokenId,
-        uint256 verifiedAmount,
-        uint256 verificationTimestamp,
-        string methodologyId,
-        string verifierName,
-        string externalVerifierId,
-        bytes32 verificationProof
-    );
-    event TokenFractionalized(
-        uint256 indexed originalTokenId,
-        uint256 indexed fractionBaseId,
-        uint256 fractionCount,
-        address indexed fractionalizer
-    );
-    event FractionsReunified(
-        uint256 indexed fractionBaseId,
-        uint256 indexed newTokenId,
-        address indexed unifier
-    );
-    event VerificationFeeUpdated(uint256 newFee);
-    event RetirementFeeUpdated(uint256 newFee);
-    event FractionalizationFeeUpdated(uint256 newFee);
-    event StakingRewardRateUpdated(uint256 newRate);
-
-    // =====================================================
-    // Initialization & Administrative Functions
-    // =====================================================
-    function initialize(
-        address _tStakeToken,
-        address _terraStakeProjects,
-        uint256 _initialMintFee,
-        address _positionManager,
-        address _uniswapPool,
-        address _terraPool,
-        address _vrfCoordinator,
-        bytes32 _keyHash,
-        uint64 _subscriptionId,
-        address _treasuryWallet,
-        address _stakingRewards
-    ) external;
-    
-    function setMintingFee(uint256 newFee) external;
-    function setVerificationFee(uint256 newFee) external;
-    function setRetirementFee(uint256 newFee) external;
-    function setFractionalizationFee(uint256 newFee) external;
-    function setStakingRewardRate(uint256 newRate) external;
-    function setFeeDistribution(
-        uint256 stakingShare,
-        uint256 liquidityShare,
-        uint256 treasuryShare,
-        uint256 burnShare
-    ) external;
-    function setVRFParameters(
-        bytes32 _keyHash,
-        uint64 _subscriptionId,
-        uint32 _callbackGasLimit,
-        uint16 _requestConfirmations
-    ) external;
-
-    // =====================================================
-    // Project Verification Functions
-    // =====================================================
-    function getProjectVerificationData(uint256 projectId) external view returns (
-        bytes32 projectDataHash,
-        bytes32 impactReportHash,
-        bool isVerified,
-        uint256 totalImpact,
-        uint8 projectState
+        address indexed redeemer,
+        uint256 redemptionPriceInTSTAKE
     );
     
-    function verifyProjectIntegrity(uint256 projectId) external view returns (
-        bool verificationStatus,
-        bytes memory verificationData
+    /**
+     * @dev Emitted when fractions are purchased
+     */
+    event FractionsPurchased(
+        uint256 indexed vaultId,
+        address indexed buyer,
+        uint256 amount,
+        uint256 tstakeAmount
     );
     
-    function setVerificationMerkleRoot(uint256 tokenId, bytes32 merkleRoot) external;
+    /**
+     * @dev Emitted when a curator fee is distributed
+     */
+    event CuratorFeeDistributed(
+        uint256 indexed vaultId,
+        address indexed curator,
+        uint256 tstakeAmount
+    );
     
-    function verifyDataWithMerkleProof(uint256 tokenId, bytes32 data, bytes32[] calldata proof) 
-        external 
-        view 
-        returns (bool);
-
-    // =====================================================
-    // Carbon Credit Retirement
-    // =====================================================
-    function retireCarbonCredits(
-        uint256 tokenId, 
-        uint256 amount, 
-        address retirementBeneficiary,
-        string calldata retirementReason
-    ) external returns (bytes32 retirementId);
+    /**
+     * @dev Emitted when impact rewards are distributed to fraction holders
+     */
+    event ImpactRewardsDistributed(
+        uint256 indexed vaultId,
+        uint256 totalTSTAKEAmount,
+        uint256 holderCount
+    );
     
-    function batchRetireCarbonCredits(
-        uint256[] calldata tokenIds,
-        uint256[] calldata amounts,
-        address beneficiary,
-        string calldata reason
-    ) external returns (bytes32[] memory);
-
-    // =====================================================
-    // Impact Staking Functionality
-    // =====================================================
-    function stakeTokenImpact(
-        uint256 tokenId, 
-        uint256 impactAmount,
-        uint256 lockPeriod
-    ) external returns (uint256 stakeId);
+    /**
+     * @dev Emitted when the TSTAKE token address is updated
+     */
+    event TSTAKETokenUpdated(address indexed newTSTAKEToken);
     
-    function unstakeImpact(uint256 stakeId) external returns (uint256 rewardAmount);
-    function getUserStakedImpacts(address user) external view returns (StakedImpact[] memory);
-    function calculatePendingRewards(address user, uint256 stakeId) external view returns (uint256 pendingReward);
+    /**
+     * @dev Emitted when a buyout offer is made
+     */
+    event BuyoutOfferMade(
+        uint256 indexed vaultId,
+        address indexed bidder,
+        uint256 tstakeAmount
+    );
 
-    // =====================================================
-    // Enhanced Impact Verification
-    // =====================================================
-    function verifyTokenImpact(
+    // ====================================================
+    // 🔹 Core Fractionalization Functions
+    // ====================================================
+    
+    /**
+     * @dev Fractionalizes an NFT into ERC-20 tokens
+     * @param tokenId The ID of the NFT to fractionalize
+     * @param nftContract The address of the NFT contract
+     * @param name The name for the fraction token
+     * @param symbol The symbol for the fraction token
+     * @param totalSupply The total number of fractions to create
+     * @param fractionPriceInTSTAKE The initial price per fraction in TSTAKE
+     * @param reservePriceInTSTAKE The reserve price for buyout in TSTAKE
+     * @return vaultId The ID of the newly created vault
+     * @return fractionToken The address of the ERC-20 token representing fractions
+     */
+    function fractionalizeNFT(
         uint256 tokenId,
-        bytes calldata impactVerificationData,
-        string calldata externalVerifierId,
-        bytes32 verificationProof
-    ) external;
+        address nftContract,
+        string calldata name,
+        string calldata symbol,
+        uint256 totalSupply,
+        uint256 fractionPriceInTSTAKE,
+        uint256 reservePriceInTSTAKE
+    ) external returns (uint256 vaultId, address fractionToken);
     
-    function batchVerifyTokens(
-        uint256[] calldata tokenIds,
-        bytes[] calldata verificationData,
-        string[] calldata externalIds,
-        bytes32[] calldata proofs
-    ) external;
-
-    // =====================================================
-    // Impact NFT Fractionalization
-    // =====================================================
-    function fractionalizeToken(
+    /**
+     * @dev Fractionalizes a TerraStake impact NFT
+     * @param tokenId The ID of the impact NFT to fractionalize
+     * @param name The name for the fraction token
+     * @param symbol The symbol for the fraction token
+     * @param totalSupply The total number of fractions to create
+     * @param fractionPriceInTSTAKE The initial price per fraction in TSTAKE
+     * @param reservePriceInTSTAKE The reserve price for buyout in TSTAKE
+     * @return vaultId The ID of the newly created vault
+     * @return fractionToken The address of the ERC-20 token representing fractions
+     */
+    function fractionalizeImpactNFT(
         uint256 tokenId,
-        uint256 fractionCount,
-        address[] calldata recipients,
-        uint256[] calldata fractionAmounts
-    ) external returns (uint256 fractionId);
+        string calldata name,
+        string calldata symbol,
+        uint256 totalSupply,
+        uint256 fractionPriceInTSTAKE,
+        uint256 reservePriceInTSTAKE
+    ) external returns (uint256 vaultId, address fractionToken);
     
-    function reunifyFractions(uint256 fractionBaseId) external returns (uint256 newTokenId);
+    /**
+     * @dev Purchases fractions of a fractionalized NFT using TSTAKE
+     * @param vaultId The ID of the vault
+     * @param amount The number of fractions to purchase
+     * @param maxTSTAKEAmount The maximum amount of TSTAKE to spend
+     */
+    function purchaseFractions(uint256 vaultId, uint256 amount, uint256 maxTSTAKEAmount) external;
+    
+    /**
+     * @dev Redeems an NFT by burning all fraction tokens
+     * @param vaultId The ID of the vault to redeem
+     */
+    function redeemNFT(uint256 vaultId) external;
+    
+    /**
+     * @dev Makes a buyout offer for a fractionalized NFT using TSTAKE
+     * @param vaultId The ID of the vault
+     * @param tstakeAmount The amount of TSTAKE offered for buyout
+     */
+    function makeBuyoutOffer(uint256 vaultId, uint256 tstakeAmount) external;
+    
+    /**
+     * @dev Accepts a buyout offer if conditions are met
+     * @param vaultId The ID of the vault
+     */
+    function acceptBuyoutOffer(uint256 vaultId) external;
+    
+    /**
+     * @dev Cancels a buyout offer made by the caller
+     * @param vaultId The ID of the vault
+     */
+    function cancelBuyoutOffer(uint256 vaultId) external;
 
-    // =====================================================
-    // Minting Functionality
-    // =====================================================
-    function mint(
-        address to,
-        uint256 projectId,
-        uint256 impactValue,
-        string memory ipfsUri,
-        bool isTradable,
-        string memory location,
-        uint256 capacity,
-        uint256 certificationDate,
-        string memory projectType
-    ) external returns (uint256);
+    // ====================================================
+    // 🔹 Reward and Fee Functions
+    // ====================================================
     
-    function batchMint(
-        address[] calldata recipients,
-        uint256[] calldata projectIds,
-        uint256[] calldata impactValues,
-        string[] calldata ipfsUris,
-        bool[] calldata tradableFlags,
-        string[] calldata locations,
-        uint256[] calldata capacities,
-        uint256[] calldata certificationDates,
-        string[] calldata projectTypes
-    ) external returns (uint256[] memory);
+    /**
+     * @dev Distributes impact rewards in TSTAKE to fraction holders
+     * @param vaultId The ID of the vault
+     * @param tstakeRewardAmount The total amount of TSTAKE to distribute
+     */
+    function distributeImpactRewards(uint256 vaultId, uint256 tstakeRewardAmount) external;
+    
+    /**
+     * @dev Claims accumulated TSTAKE rewards for a fraction holder
+     * @param vaultId The ID of the vault
+     */
+    function claimFractionRewards(uint256 vaultId) external;
+    
+    /**
+     * @dev Calculates the curator fee in TSTAKE for a transaction
+     * @param tstakeAmount The transaction amount in TSTAKE
+     * @return fee The calculated curator fee in TSTAKE
+     */
+    function calculateCuratorFee(uint256 tstakeAmount) external view returns (uint256 fee);
+    
+    /**
+     * @dev Distributes curator fees in TSTAKE to the original NFT owner
+     * @param vaultId The ID of the vault
+     * @param tstakeAmount The amount of TSTAKE to distribute
+     */
+    function distributeCuratorFee(uint256 vaultId, uint256 tstakeAmount) external;
 
-    // =====================================================
-    // Metadata Management
-    // =====================================================
-    function updateTokenMetadata(
-        uint256 tokenId, 
-        string memory newIpfsUri,
-        bool updateTradable,
-        bool newTradableState
-    ) external;
+    // ====================================================
+    // 🔹 Administrative Functions
+    // ====================================================
     
-    function updatePerformanceMetrics(
-        uint256 tokenId,
-        uint256 newTotalImpact,
-        uint256 newCarbonOffset,
-        uint256 newEfficiencyScore
-    ) external;
+    /**
+     * @dev Sets the TerraStake token (TSTAKE) address
+     * @param newTSTAKEToken The address of the TSTAKE token contract
+     */
+    function setTSTAKEToken(address newTSTAKEToken) external;
     
-    function getTokenMetadataHistory(uint256 tokenId) external view returns (NFTMetadata[] memory);
+    /**
+     * @dev Sets the NFT contract address
+     * @param newNFTContract The address of the new NFT contract
+     */
+    function setNFTContract(address newNFTContract) external;
+    
+    /**
+     * @dev Sets the projects contract address
+     * @param newProjectsContract The address of the new projects contract
+     */
+    function setProjectsContract(address newProjectsContract) external;
+    
+    /**
+     * @dev Updates the curator fee percentage
+     * @param newFeePercentage The new fee percentage (in basis points)
+     */
+    function setCuratorFee(uint256 newFeePercentage) external;
+    
+    /**
+     * @dev Updates the redemption status of a vault
+     * @param vaultId The ID of the vault
+     * @param isRedeemable Whether the vault is redeemable
+     */
+    function setVaultRedeemable(uint256 vaultId, bool isRedeemable) external;
+    
+    /**
+     * @dev Pauses all fractionalization operations
+     */
+    function pause() external;
+    
+    /**
+     * @dev Unpauses all fractionalization operations
+     */
+    function unpause() external;
+    
+    /**
+     * @dev Recovers TSTAKE tokens sent to the contract by mistake
+     * @param recipient The address to send the tokens to
+     * @param amount The amount of TSTAKE to recover
+     */
+    function recoverTSTAKE(address recipient, uint256 amount) external;
+    
+    /**
+     * @dev Recovers ERC-20 tokens sent to the contract by mistake
+     * @param tokenAddress The address of the token contract
+     * @param recipient The address to send the tokens to
+     * @param amount The amount of tokens to recover
+     */
+    function recoverERC20(address tokenAddress, address recipient, uint256 amount) external;
 
-    // =====================================================
-    // Chainlink VRF Functions
-    // =====================================================
-    function requestRandomness(uint256 tokenId) external returns (uint256 requestId);
-    function getRandomnessResult(uint256 tokenId) external view returns (uint256);
-
-    // =====================================================
-    // View Functions
-    // =====================================================
-    function nftMetadata(uint256 tokenId) external view returns (
-        string memory ipfsUri,
-        uint256 projectId,
-        uint256 impactValue,
-        bool isTradable,
-        string memory location,
-        uint256 capacity,
-        uint256 certificationDate,
-        string memory projectType,
-        bool isVerified,
-        uint256 version,
-        PerformanceMetrics memory performance,
-        uint256 mintingFee,
-        bytes32 projectDataHash,
-        bytes32 impactReportHash,
-        address originalMinter,
-        uint256 originalMintTimestamp,
-        bytes32 verificationProofHash
-    );
+    // ====================================================
+    // 🔹 View Functions
+    // ====================================================
     
-    function uri(uint256 tokenId) external view override returns (string memory);
-    function totalMinted() external view returns (uint256);
-    function mintFee() external view returns (uint256);
-    function verificationFee() external view returns (uint256);
-    function retirementFee() external view returns (uint256);
-    function fractionalizationFee() external view returns (uint256);
-    function impactStakingRewardRate() external view returns (uint256);
-    function feeDistribution() external view returns (FeeDistribution memory);
-    function carbonRetirements(bytes32 retirementId) external view returns (CarbonRetirement memory);
-    function retirementRegistry(bytes32 retirementId) external view returns (bool);
-    function totalCarbonRetired() external view returns (uint256);
-    function totalImpactStaked() external view returns (uint256);
-    function totalVerifications() external view returns (uint256);
-    function verificationRecords(uint256 tokenId, uint256 index) external view returns (VerificationRecord memory);
-    function fractionalSupplies(uint256 fractionBaseId) external view returns (uint256);
+    /**
+     * @dev Returns the TSTAKE token address
+     * @return The address of the TSTAKE token contract
+     */
+    function tstakeToken() external view returns (address);
     
-    // =====================================================
-    // Utility Functions
-    // =====================================================
-    function batchGetImpact(uint256[] calldata tokenIds) external view returns (
-        uint256 totalImpact,
-        uint256 carbonOffset
-    );
+    /**
+     * @dev Returns the NFT contract address
+     * @return The address of the NFT contract
+     */
+    function nftContract() external view returns (address);
     
-    function getProjectImpact(uint256 projectId) external returns (uint256 impact);
-    function getRemainingCarbonOffset(uint256 tokenId) external view returns (uint256);
-    function recoverERC20(address tokenAddress, uint256 amount) external;
-    function supportsInterface(bytes4 interfaceId) external view override returns (bool);
+    /**
+     * @dev Returns the projects contract address
+     * @return The address of the projects contract
+     */
+    function projectsContract() external view returns (address);
+    
+    /**
+     * @dev Gets vault information
+     * @param vaultId The ID of the vault
+     * @return Vault struct containing the vault information
+     */
+    function getVault(uint256 vaultId) external view returns (Vault memory);
+    
+    /**
+     * @dev Gets the current buyout offer for a vault
+     * @param vaultId The ID of the vault
+     * @return bidder The address of the bidder
+     * @return tstakeAmount The offer amount in TSTAKE
+     * @return timestamp The timestamp of the offer
+     */
+    function getBuyoutOffer(uint256 vaultId) external view returns (address bidder, uint256 tstakeAmount, uint256 timestamp);
+    
+    /**
+     * @dev Calculates the current buyout price in TSTAKE for a vault
+     * @param vaultId The ID of the vault
+     * @return price The current buyout price in TSTAKE
+     */
+    function calculateBuyoutPrice(uint256 vaultId) external view returns (uint256 price);
+    
+    /**
+     * @dev Checks if a user holds fractions of a vault
+     * @param vaultId The ID of the vault
+     * @param user The address of the user
+     * @return True if the user holds fractions, false otherwise
+     */
+    function isVaultFractionHolder(uint256 vaultId, address user) external view returns (bool);
+    
+    /**
+     * @dev Gets the fraction balance of a user for a vault
+     * @param vaultId The ID of the vault
+     * @param user The address of the user
+     * @return The number of fractions held
+     */
+    function getFractionBalance(uint256 vaultId, address user) external view returns (uint256);
+    
+    /**
+     * @dev Gets the accumulated TSTAKE rewards for a fraction holder
+     * @param vaultId The ID of the vault
+     * @param holder The address of the fraction holder
+     * @return The accumulated TSTAKE rewards
+     */
+    function getAccumulatedTSTAKERewards(uint256 vaultId, address holder) external view returns (uint256);
+    
+    /**
+     * @dev Gets the TSTAKE price for a specific number of fractions
+     * @param vaultId The ID of the vault
+     * @param fractionAmount The number of fractions
+     * @return The price in TSTAKE
+     */
+    function getTSTAKEPriceForFractions(uint256 vaultId, uint256 fractionAmount) external view returns (uint256);
+    
+    /**
+     * @dev Gets all vaults for a specific project
+     * @param projectId The ID of the project
+     * @return Array of vault IDs
+     */
+    function getVaultsByProject(uint256 projectId) external view returns (uint256[] memory);
+    
+    /**
+     * @dev Gets all vaults with impact rewards available in TSTAKE
+     * @return Array of vault IDs with available rewards
+     */
+    function getVaultsWithAvailableRewards() external view returns (uint256[] memory);
 }
