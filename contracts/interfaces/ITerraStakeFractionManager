@@ -1,1 +1,81 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
 
+import "@openzeppelin/contracts-upgradeable/token/ERC721/IERC721Upgradeable.sol";
+import "./ITerraStakeFractionToken.sol";
+
+interface ITerraStakeFractionManager {
+    // Structs
+    struct FractionInfo {
+        address fractionToken;
+        uint256 nftId;
+        uint256 totalSupply;
+        uint256 lockPeriodEnd;
+        bool locked;
+        address owner;
+        address nftContract;
+    }
+
+    // View Functions
+    function nftContract() external view returns (address);
+    function tokenNamePrefix() external view returns (string memory);
+    function tokenSymbolPrefix() external view returns (string memory);
+    function marketplaceContract() external view returns (address);
+    function tokenMeta() external view returns (address);
+    function getFractionInfo(uint256 nftId) external view returns (FractionInfo memory);
+    function fractionTokens(uint256 nftId) external view returns (address);
+    function isNFTFractionalized(uint256 nftId) external view returns (bool);
+    function getTokensForUser(address user) external view returns (address[] memory);
+    function getRedemptionPrice(uint256 nftId) external view returns (uint256);
+
+    // Management Functions
+    function setNFTContract(address _nftContract) external;
+    function setMarketplaceContract(address _marketplaceContract) external;
+    function setTokenPrefixes(string memory _namePrefix, string memory _symbolPrefix) external;
+    function setTokenMetaContract(address _tokenMeta) external;
+    function pause() external;
+    function unpause() external;
+
+    // User Functions
+    function fractionalize(
+        uint256 nftId,
+        uint256 fractionSupply,
+        uint256 lockTime
+    ) external returns (address);
+    
+    function redeem(uint256 nftId) external;
+    
+    function buyoutFractions(uint256 nftId, uint256 buyoutPrice) external;
+    
+    function distributeFractions(
+        uint256 nftId,
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) external;
+    
+    function mergeFractions(uint256 nftId, uint256 amount) external;
+    
+    function redeemWithPermit(
+        uint256 nftId,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+    
+    function marketplaceCallback(
+        uint256 nftId,
+        address recipient,
+        uint256 fractionSupply
+    ) external returns (address);
+
+    // Events
+    event NFTFractionalized(uint256 indexed nftId, address fractionToken, uint256 totalSupply, address indexed owner);
+    event NFTRedeemed(uint256 indexed nftId, address redeemer);
+    event FractionsDistributed(uint256 indexed nftId, address distributor, uint256 totalDistributed);
+    event FractionsMerged(uint256 indexed nftId, address indexed user, uint256 amount);
+    event BuyoutInitiated(uint256 indexed nftId, address indexed buyer, uint256 buyoutPrice);
+    event FractionLockUpdated(uint256 indexed nftId, uint256 newLockPeriodEnd);
+    event ContractsUpdated(address nftContract, address marketplace, address tokenMeta);
+    event TokenPrefixesUpdated(string namePrefix, string symbolPrefix);
+}
