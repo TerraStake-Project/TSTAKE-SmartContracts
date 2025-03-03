@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
-
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -279,7 +276,8 @@ contract TerraStakeLiquidityGuard is
     function removeLiquidity(uint256 amount) external nonReentrant {
         if (emergencyMode) revert EmergencyModeActive();
         if (amount == 0) revert InvalidParameter("amount", amount);
-                // Whitelist can bypass restrictions
+        
+        // Whitelist can bypass restrictions
         if (!liquidityWhitelist[msg.sender]) {
             // Validate cooldown period
             if (lastLiquidityRemoval[msg.sender] + liquidityRemovalCooldown > block.timestamp) {
@@ -618,43 +616,68 @@ contract TerraStakeLiquidityGuard is
                 amount1Max: type(uint128).max
             });
             
-        (uint256 collected0, uint256 collected1) = positionManager
-            .collect(collectParams);
-            
+        (uint256 collected0, uint256 collected1) = positionManager.collect(collectParams);
+        
+        // Add the collected amounts
         amount0 += collected0;
         amount1 += collected1;
         
-        // Burn the position
-        positionManager.burn(tokenId);
-        
-        // Update tracking
-        managedPositions[tokenId] = false;
-        
-        // Remove tokenId from active positions array
-        for (uint256 i = 0; i < activePositionIds.length; i++) {
+        // Remove from active positions
+        for (uint i = 0; i < activePositionIds.length; i++) {
             if (activePositionIds[i] == tokenId) {
-                // Replace with the last element and pop
+                // Replace with last element and pop
                 activePositionIds[i] = activePositionIds[activePositionIds.length - 1];
                 activePositionIds.pop();
                 break;
             }
         }
         
+        // Update tracking
+        managedPositions[tokenId] = false;
+        
         emit UniswapPositionClosed(tokenId, amount0, amount1);
+    }
+    
+    /**
+     * @notice Calculate the withdrawal fee based on withdrawal size
+     * @param user Address of the user withdrawing liquidity
+     * @param amount Amount of tokens being withdrawn
+     * @return fee The calculated fee amount
+     */
+    function getWithdrawalFee(address user, uint256 amount) public view returns (uint256) {
+        if (liquidityWhitelist[user]) {
+            return 0; // Whitelisted users pay no fees
+        }
+        
+        uint256 totalLiquidity = userLiquidity[user];
+        uint256 withdrawalPercentage = (amount * PERCENTAGE_DENOMINATOR) / totalLiquidity;
+        
+        // Progressive fee structure based on withdrawal size
+        if (withdrawalPercentage > 50) {
+            // >50% withdrawal: base fee + large withdrawal penalty
+            return (amount * (baseFeePercentage + largeLiquidityFeeIncrease)) / PERCENTAGE_DENOMINATOR;
+        } else if (withdrawalPercentage > 25) {
+            // 25-50% withdrawal: mid-tier fee
+            return (amount * (baseFeePercentage + 3)) / PERCENTAGE_DENOMINATOR; // +3% for medium withdrawals
+        }
+        
+        // <25% withdrawal: base fee only
+        return (amount * baseFeePercentage) / PERCENTAGE_DENOMINATOR;
     }
     
     /**
      * @notice Find the best position to increase liquidity based on current price
      * @param currentTick Current pool tick
-     * @return tokenId Token ID of the best position to increase
+     * @return tokenId ID of the best position to increase
      */
-    function findBestPositionToIncrease(int24 currentTick) internal view returns (uint256 tokenId) {
-        uint256 bestScore = type(uint256).max;
+    function findBestPositionToIncrease(int24 currentTick) internal view returns (uint256) {
+        uint256 bestTokenId;
+        int24 bestTickDistance = type(int24).max;
         
-        for (uint256 i = 0; i < activePositionIds.length; i++) {
-            uint256 posId = activePositionIds[i];
+        for (uint i = 0; i < activePositionIds.length; i++) {
+            uint256 tokenId = activePositionIds[i];
             
-            // Get position details
+            // Get position info
             (
                 ,
                 ,
@@ -663,440 +686,474 @@ contract TerraStakeLiquidityGuard is
                 ,
                 int24 tickLower,
                 int24 tickUpper,
-                uint128 liquidity,
                 ,
                 ,
                 ,
-            ) = positionManager.positions(posId);
+                ,
+            ) = positionManager.positions(tokenId);
             
-            // Skip positions with no liquidity
-            if (liquidity == 0) continue;
+            // Calculate how centered the current tick is within position range
+            int24 midTick = (tickLower + tickUpper) / 2;
+            int24 tickDistance = abs(midTick - currentTick);
             
-            // Check if current tick is within position range
-            if (currentTick >= tickLower && currentTick <= tickUpper) {
-                // Prefer positions where current tick is approximately centered
-                int24 distFromCenter = abs(currentTick - ((tickUpper + tickLower) / 2));
-                uint256 score = uint256(uint24(distFromCenter));
-                
-                if (score < bestScore) {
-                    bestScore = score;
-                    tokenId = posId;
-                }
+            // Check if position contains current tick and is better than current best
+            if (tickLower <= currentTick && currentTick <= tickUpper && tickDistance < bestTickDistance) {
+                bestTickDistance = tickDistance;
+                bestTokenId = tokenId;
             }
         }
         
-        // If no suitable position found, use the first active position
-        if (tokenId == 0 && activePositionIds.length > 0) {
-            tokenId = activePositionIds[0];
+        // If no suitable position found, return the first active position
+        if (bestTokenId == 0 && activePositionIds.length > 0) {
+            return activePositionIds[0];
         }
+        
+        return bestTokenId;
     }
     
     /**
-     * @notice Calculate the TWAP (Time-Weighted Average Price)
-     * @return twapPrice The TWAP price
-     */
-    function calculateTWAP() public view returns (uint256 twapPrice) {
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = twapInterval;
-        secondsAgos[1] = 0;
-        
-        (int56[] memory tickCumulatives,) = uniswapPool.observe(secondsAgos);
-        
-        int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];
-        int24 timeWeightedAverageTick = int24(tickCumulativesDelta / int56(uint56(twapInterval)));
-        
-        // Calculate price from tick
-        uint160 sqrtPriceX96 = TickMath.getSqrtRatioAtTick(timeWeightedAverageTick);
-        twapPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96) * 1e18) >> (96 * 2);
-    }
-    
-    /**
-     * @notice Validate the TWAP price against threshold
-     * @return valid True if the TWAP price is valid
-     */
-    function validateTWAPPrice() public view returns (bool valid) {
-        // Check current price vs TWAP
-        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
-        uint256 currentPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
-        uint256 twapPrice = calculateTWAP();
-        
-        // If price is below TWAP by more than deviation threshold, return false
-        uint256 priceDeviationPercentage;
-        if (currentPrice < twapPrice) {
-            priceDeviationPercentage = ((twapPrice - currentPrice) * PERCENTAGE_DENOMINATOR) / twapPrice;
-            valid = priceDeviationPercentage <= maxTwapDeviation;
-        } else {
-            valid = true; // Allow withdrawals when price is above TWAP
-        }
-    }
-    
-    /**
-     * @notice Calculate the fee for a withdrawal
-     * @param user Address of the user
-     * @param amount Amount being withdrawn
-     * @return fee The calculated fee amount
-     */
-    function getWithdrawalFee(address user, uint256 amount) public view returns (uint256 fee) {
-        // Whitelisted addresses pay no fees
-        if (feeWhitelist[user]) return 0;
-        
-        // Calculate how long the user has been staking
-        uint256 stakingDuration = block.timestamp - userVestingStart[user];
-        
-        // Early withdrawal fee (before min holding period)
-        if (stakingDuration < minHoldingPeriod) {
-            return (amount * earlyWithdrawalFee) / PERCENTAGE_DENOMINATOR;
-        }
-        
-        // Dynamic fee based on withdrawal size
-        uint256 positionSize = userLiquidity[user];
-        if (positionSize == 0) return 0;
-        
-        uint256 withdrawalPercentage = (amount * PERCENTAGE_DENOMINATOR) / positionSize;
-        
-        // Apply tiered fee structure based on percentage withdrawn
-        if (withdrawalPercentage >= 80 * (PERCENTAGE_DENOMINATOR / 100)) {
-            return (amount * largeWithdrawalFee) / PERCENTAGE_DENOMINATOR;
-        } else if (withdrawalPercentage >= 50 * (PERCENTAGE_DENOMINATOR / 100)) {
-            return (amount * mediumWithdrawalFee) / PERCENTAGE_DENOMINATOR;
-        } else if (withdrawalPercentage >= 20 * (PERCENTAGE_DENOMINATOR / 100)) {
-            return (amount * smallWithdrawalFee) / PERCENTAGE_DENOMINATOR;
-        } else {
-            return (amount * minimalWithdrawalFee) / PERCENTAGE_DENOMINATOR;
-        }
-    }
-    
-    /**
-     * @notice Absolute difference between two int24 values
-     * @param x First value
-     * @param y Second value
-     * @return z Absolute difference
+     * @notice Helper function to get absolute value of int24
+     * @param x Input value
+     * @return y Absolute value
      */
     function abs(int24 x) internal pure returns (int24) {
         return x >= 0 ? x : -x;
     }
     
+    // -------------------------------------------
+    // 🔹 TWAP Price Validation
+    // -------------------------------------------
+    
     /**
-     * @notice Add an address to the liquidity whitelist
-     * @param account Address to whitelist
+     * @notice Validate current price against TWAP to prevent flash crash exploitation
+     * @return valid Whether the current price is within allowed deviation from TWAP
      */
-    function addToLiquidityWhitelist(address account) external onlyRole(GOVERNANCE_ROLE) {
-        liquidityWhitelist[account] = true;
-        emit WhitelistUpdated(account, true, "liquidity");
+    function validateTWAPPrice() public view returns (bool) {
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        uint256 currentPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        uint256 twapPrice = calculateTWAP();
+        
+        // Prevent division by zero
+        if (twapPrice == 0) return false;
+        
+        // Price must be within tolerance range of TWAP
+        uint256 lowerBound = (twapPrice * (PERCENTAGE_DENOMINATOR - TWAP_PRICE_TOLERANCE)) / PERCENTAGE_DENOMINATOR;
+        uint256 upperBound = (twapPrice * (PERCENTAGE_DENOMINATOR + TWAP_PRICE_TOLERANCE)) / PERCENTAGE_DENOMINATOR;
+        
+        return (currentPrice >= lowerBound && currentPrice <= upperBound);
     }
     
     /**
-     * @notice Remove an address from the liquidity whitelist
-     * @param account Address to remove
+     * @notice Calculate time-weighted average price from Uniswap pool
+     * @return twapPrice The calculated TWAP value
      */
-    function removeFromLiquidityWhitelist(address account) external onlyRole(GOVERNANCE_ROLE) {
-        liquidityWhitelist[account] = false;
-        emit WhitelistUpdated(account, false, "liquidity");
-    }
-    
-    /**
-     * @notice Add an address to the fee whitelist
-     * @param account Address to whitelist
-     */
-    function addToFeeWhitelist(address account) external onlyRole(GOVERNANCE_ROLE) {
-        feeWhitelist[account] = true;
-        emit WhitelistUpdated(account, true, "fee");
-    }
-    
-    /**
-     * @notice Remove an address from the fee whitelist
-     * @param account Address to remove
-     */
-    function removeFromFeeWhitelist(address account) external onlyRole(GOVERNANCE_ROLE) {
-        feeWhitelist[account] = false;
-        emit WhitelistUpdated(account, false, "fee");
-    }
-    
-    /**
-     * @notice Update fee parameters
-     * @param _minimalWithdrawalFee Fee for small withdrawals
-     * @param _smallWithdrawalFee Fee for small withdrawals
-     * @param _mediumWithdrawalFee Fee for medium withdrawals
-     * @param _largeWithdrawalFee Fee for large withdrawals
-     * @param _earlyWithdrawalFee Fee for early withdrawals
-     */
-    function updateFees(
-        uint256 _minimalWithdrawalFee,
-        uint256 _smallWithdrawalFee,
-        uint256 _mediumWithdrawalFee,
-        uint256 _largeWithdrawalFee,
-        uint256 _earlyWithdrawalFee
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        // Validate fee values
-        if (_minimalWithdrawalFee > MAX_FEE ||
-            _smallWithdrawalFee > MAX_FEE ||
-            _mediumWithdrawalFee > MAX_FEE ||
-            _largeWithdrawalFee > MAX_FEE ||
-            _earlyWithdrawalFee > MAX_FEE) {
-            revert InvalidParameter("fee", _largeWithdrawalFee);
+    function calculateTWAP() public view returns (uint256) {
+        uint256[] memory secondsAgos = new uint256[](twapObservationTimeframes.length * 2);
+        
+        // Set up observation points for each timeframe
+        for (uint i = 0; i < twapObservationTimeframes.length; i++) {
+            secondsAgos[i*2] = twapObservationTimeframes[i];
+            secondsAgos[i*2+1] = 0; // Current observation
         }
         
-        minimalWithdrawalFee = _minimalWithdrawalFee;
-        smallWithdrawalFee = _smallWithdrawalFee;
-        mediumWithdrawalFee = _mediumWithdrawalFee;
-        largeWithdrawalFee = _largeWithdrawalFee;
-        earlyWithdrawalFee = _earlyWithdrawalFee;
+        // Get observations from Uniswap pool
+        (int56[] memory tickCumulatives, ) = uniswapPool.observe(secondsAgos);
         
-        emit FeesUpdated(_minimalWithdrawalFee, _smallWithdrawalFee, _mediumWithdrawalFee, _largeWithdrawalFee, _earlyWithdrawalFee);
+        uint256 weightedTickSum = 0;
+        uint256 totalWeight = 0;
+        
+        // Calculate TWAP for each timeframe
+        for (uint i = 0; i < twapObservationTimeframes.length; i++) {
+            uint32 timeframe = twapObservationTimeframes[i];
+            int56 tickCumulativeStart = tickCumulatives[i*2];
+            int56 tickCumulativeEnd = tickCumulatives[i*2+1];
+            
+            // Calculate average tick
+            int56 tickDiff = tickCumulativeEnd - tickCumulativeStart;
+            int24 avgTick = int24(tickDiff / int56(uint56(timeframe)));
+            
+            // Convert tick to price (1.0001^tick)
+            uint256 price = calculatePriceFromTick(avgTick);
+            uint256 weight = timeframe;
+            
+            weightedTickSum += price * weight;
+            totalWeight += weight;
+        }
+        
+        return totalWeight > 0 ? weightedTickSum / totalWeight : 0;
     }
     
     /**
-     * @notice Update time constraints
-     * @param _minHoldingPeriod Minimum holding period
-     * @param _liquidityRemovalCooldown Cooldown between liquidity removals
+     * @notice Convert tick to price
+     * @param tick The tick value
+     * @return price The price calculated from tick
      */
-    function updateTimeConstraints(
-        uint256 _minHoldingPeriod,
-        uint256 _liquidityRemovalCooldown
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        minHoldingPeriod = _minHoldingPeriod;
-        liquidityRemovalCooldown = _liquidityRemovalCooldown;
+    function calculatePriceFromTick(int24 tick) internal pure returns (uint256) {
+        // Real implementation would use more precise math
+        // This is a simplified version that approximates 1.0001^tick
         
-        emit TimeConstraintsUpdated(_minHoldingPeriod, _liquidityRemovalCooldown);
-    }
-    
-    /**
-     * @notice Update withdrawal limits
-     * @param _dailyWithdrawalLimit Daily withdrawal limit (in basis points)
-     * @param _weeklyWithdrawalLimit Weekly withdrawal limit (in basis points)
-     */
-    function updateWithdrawalLimits(
-        uint256 _dailyWithdrawalLimit,
-        uint256 _weeklyWithdrawalLimit
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        // Validate limits
-        if (_dailyWithdrawalLimit > PERCENTAGE_DENOMINATOR) {
-            revert InvalidParameter("dailyWithdrawalLimit", _dailyWithdrawalLimit);
-        }
-        if (_weeklyWithdrawalLimit > PERCENTAGE_DENOMINATOR) {
-            revert InvalidParameter("weeklyWithdrawalLimit", _weeklyWithdrawalLimit);
-        }
-        if (_weeklyWithdrawalLimit < _dailyWithdrawalLimit) {
-            revert InvalidParameter("weeklyWithdrawalLimit", _weeklyWithdrawalLimit);
+        if (tick == 0) return 1e18; // 1.0
+        
+        int256 t = int256(tick);
+        int256 base = 1.0001 * 1e18; // 1.0001 scaled to 1e18
+        bool isPositive = t > 0;
+        
+        if (!isPositive) {
+            t = -t; // Make positive for calculation
         }
         
-        dailyWithdrawalLimit = _dailyWithdrawalLimit;
-        weeklyWithdrawalLimit = _weeklyWithdrawalLimit;
+        // Calculate base^tick using repeated multiplication
+        uint256 result = 1e18; // Start with 1.0 scaled to 1e18
         
-        emit WithdrawalLimitsUpdated(_dailyWithdrawalLimit, _weeklyWithdrawalLimit);
-    }
-    
-    /**
-     * @notice Update TWAP settings
-     * @param _twapInterval TWAP observation interval
-     * @param _maxTwapDeviation Maximum allowed deviation from TWAP
-     */
-    function updateTwapSettings(
-        uint32 _twapInterval,
-        uint256 _maxTwapDeviation
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        // Validate parameters
-        if (_twapInterval < 60 || _twapInterval > 48 hours) {
-            revert InvalidParameter("twapInterval", _twapInterval);
-        }
-        if (_maxTwapDeviation > PERCENTAGE_DENOMINATOR) {
-            revert InvalidParameter("maxTwapDeviation", _maxTwapDeviation);
+        for (int256 i = 0; i < t; i++) {
+            result = (result * base) / 1e18;
         }
         
-        twapInterval = _twapInterval;
-        maxTwapDeviation = _maxTwapDeviation;
-        
-        emit TwapSettingsUpdated(_twapInterval, _maxTwapDeviation);
-    }
-    
-    /**
-     * @notice Update vesting settings
-     * @param _vestingUnlockRate Weekly vesting unlock rate (in basis points)
-     */
-    function updateVestingSettings(uint256 _vestingUnlockRate) external onlyRole(GOVERNANCE_ROLE) {
-        // Validate parameters
-        if (_vestingUnlockRate == 0 || _vestingUnlockRate > 5000) {
-            revert InvalidParameter("vestingUnlockRate", _vestingUnlockRate);
-        }
-        
-        vestingUnlockRate = _vestingUnlockRate;
-        
-        emit VestingSettingsUpdated(_vestingUnlockRate);
-    }
-    
-    /**
-     * @notice Update liquidity injection parameters
-     * @param _reinjectionThreshold Minimum amount for reinserting liquidity
-     * @param _slippageTolerance Maximum slippage tolerance for injections
-     */
-    function updateInjectionSettings(
-        uint256 _reinjectionThreshold,
-        uint8 _slippageTolerance
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        // Validate parameters
-        if (_slippageTolerance > 100) {
-            revert InvalidParameter("slippageTolerance", _slippageTolerance);
-        }
-        
-        reinjectionThreshold = _reinjectionThreshold;
-        slippageTolerance = _slippageTolerance;
-        
-        emit InjectionSettingsUpdated(_reinjectionThreshold, _slippageTolerance);
-    }
-    
-    /**
-     * @notice Emergency withdraw stuck tokens
-     * @param token Token address (zero address for ETH)
-     * @param to Recipient address
-     * @param amount Amount to withdraw
-     */
-    function emergencyWithdraw(
-        address token, 
-        address to, 
-        uint256 amount
-    ) external onlyRole(EMERGENCY_ROLE) {
-        if (token == address(0)) {
-            (bool success, ) = to.call{value: amount}("");
-            require(success, "ETH transfer failed");
+        if (isPositive) {
+            return result;
         } else {
-            IERC20(token).safeTransfer(to, amount);
+            return (1e36 / result); // Invert result for negative ticks
+        }
+    }
+    
+    // -------------------------------------------
+    // 🔹 Governance-Controlled Adjustments
+    // -------------------------------------------
+    
+    /**
+     * @notice Update liquidity withdrawal parameters with enhanced validation
+     * @param newDailyLimit New daily withdrawal limit percentage
+     * @param newWeeklyLimit New weekly withdrawal limit percentage
+     * @param newVestingRate New vesting unlock rate percentage per week
+     * @param newBaseFee New base fee percentage for withdrawals
+     */
+    function updateLiquidityParameters(
+        uint256 newDailyLimit,
+        uint256 newWeeklyLimit,
+        uint256 newVestingRate,
+        uint256 newBaseFee
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        // Upper bound validation
+        if (newDailyLimit > 20) revert InvalidParameter("newDailyLimit", newDailyLimit);
+        if (newWeeklyLimit > 50) revert InvalidParameter("newWeeklyLimit", newWeeklyLimit);
+        if (newVestingRate > 20) revert InvalidParameter("newVestingRate", newVestingRate);
+        if (newBaseFee > 5) revert InvalidParameter("newBaseFee", newBaseFee);
+        
+        // Lower bound validation
+        if (newDailyLimit < 1) revert InvalidParameter("newDailyLimit", newDailyLimit);
+        if (newWeeklyLimit < newDailyLimit) revert InvalidParameter("newWeeklyLimit", newWeeklyLimit);
+        if (newVestingRate == 0) revert InvalidParameter("newVestingRate", newVestingRate);
+        
+        // Logical consistency validation
+        if (newWeeklyLimit < 7 * newDailyLimit) {
+            emit WeeklyLimitBelowRecommended(newWeeklyLimit, 7 * newDailyLimit);
         }
         
-        emit EmergencyWithdrawal(token, to, amount);
+        dailyWithdrawalLimit = newDailyLimit;
+        weeklyWithdrawalLimit = newWeeklyLimit;
+        vestingUnlockRate = newVestingRate;
+        baseFeePercentage = newBaseFee;
+        
+        emit LiquidityParametersUpdated(
+            newDailyLimit,
+            newWeeklyLimit,
+            newVestingRate,
+            newBaseFee
+        );
     }
     
     /**
-     * @notice Set treasury address
-     * @param _treasury New treasury address
+     * @notice Update the large withdrawal fee increase
+     * @param newFeeIncrease New fee increase percentage for large withdrawals
      */
-    function setTreasury(address _treasury) external onlyRole(GOVERNANCE_ROLE) {
-        require(_treasury != address(0), "Treasury cannot be zero address");
-        treasury = ITreasury(_treasury);
-        emit TreasuryUpdated(_treasury);
+    function updateLargeLiquidityFeeIncrease(uint256 newFeeIncrease) external onlyRole(GOVERNANCE_ROLE) {
+        if (newFeeIncrease + baseFeePercentage > MAX_FEE_PERCENTAGE) 
+            revert InvalidParameter("newFeeIncrease", newFeeIncrease);
+        
+        largeLiquidityFeeIncrease = newFeeIncrease;
     }
     
     /**
-     * @notice Set reward distributor address
-     * @param _rewardDistributor New reward distributor address
+     * @notice Update the liquidity injection rate
+     * @param newRate New automatic liquidity injection rate
      */
-    function setRewardDistributor(address _rewardDistributor) external onlyRole(GOVERNANCE_ROLE) {
-        require(_rewardDistributor != address(0), "Reward distributor cannot be zero address");
-        rewardDistributor = IRewardDistributor(_rewardDistributor);
-        emit RewardDistributorUpdated(_rewardDistributor);
+    function updateLiquidityInjectionRate(uint256 newRate) external onlyRole(GOVERNANCE_ROLE) {
+        if (newRate > 10) revert InvalidParameter("newRate", newRate);
+        
+        autoLiquidityInjectionRate = newRate;
+        emit LiquidityInjectionRateUpdated(newRate);
     }
     
     /**
-     * @notice Pause the contract
+     * @notice Update the maximum liquidity cap per address
+     * @param newCap New maximum liquidity cap per address
      */
-    function pause() external onlyRole(EMERGENCY_ROLE) {
-        _pause();
+    function updateLiquidityCap(uint256 newCap) external onlyRole(GOVERNANCE_ROLE) {
+        maxLiquidityPerAddress = newCap;
+        emit LiquidityCapUpdated(newCap);
     }
     
     /**
-     * @notice Unpause the contract
+     * @notice Update the liquidity reinjection threshold
+     * @param newThreshold New minimum threshold for liquidity reinjection
      */
-    function unpause() external onlyRole(GOVERNANCE_ROLE) {
-        _unpause();
+    function updateReinjectionThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+        reinjectionThreshold = newThreshold;
+        emit LiquidityReinjectionThresholdUpdated(newThreshold);
     }
     
     /**
-     * @notice Returns a list of all active position IDs
-     * @return Array of active position IDs
+     * @notice Update the liquidity removal cooldown period
+     * @param newCooldown New cooldown period in seconds
+     */
+    function updateRemovalCooldown(uint256 newCooldown) external onlyRole(GOVERNANCE_ROLE) {
+        if (newCooldown > 30 days) revert InvalidParameter("newCooldown", newCooldown);
+        liquidityRemovalCooldown = newCooldown;
+    }
+    
+    /**
+     * @notice Update TWAP observation timeframes
+     * @param newTimeframes New array of TWAP observation timeframes in seconds
+     */
+    function updateTWAPTimeframes(uint32[] calldata newTimeframes) external onlyRole(GOVERNANCE_ROLE) {
+        if (newTimeframes.length == 0) revert InvalidParameter("newTimeframes", 0);
+        if (newTimeframes.length > 10) revert InvalidParameter("newTimeframes", newTimeframes.length);
+        
+        twapObservationTimeframes = newTimeframes;
+    }
+    
+    /**
+     * @notice Update slippage tolerance for liquidity operations
+     * @param newTolerance New slippage tolerance percentage (1-50)
+     */
+    function updateSlippageTolerance(uint256 newTolerance) external onlyRole(GOVERNANCE_ROLE) {
+        if (newTolerance < 1 || newTolerance > 50) 
+            revert InvalidParameter("newTolerance", newTolerance);
+        
+        uint256 oldTolerance = slippageTolerance;
+        slippageTolerance = newTolerance;
+        
+        emit SlippageToleranceUpdated(oldTolerance, newTolerance);
+    }
+    
+    /**
+     * @notice Update reward distributor address
+     * @param newDistributor New reward distributor address
+     */
+    function updateRewardDistributor(address newDistributor) external onlyRole(GOVERNANCE_ROLE) {
+        if (newDistributor == address(0)) revert InvalidZeroAddress("newDistributor");
+        
+        address oldDistributor = address(rewardDistributor);
+        rewardDistributor = ITerraStakeRewardDistributor(newDistributor);
+        
+        emit RewardDistributorUpdated(oldDistributor, newDistributor);
+    }
+    
+    /**
+     * @notice Update treasury address
+     * @param newTreasury New treasury address
+     */
+    function updateTreasury(address newTreasury) external onlyRole(GOVERNANCE_ROLE) {
+        if (newTreasury == address(0)) revert InvalidZeroAddress("newTreasury");
+        
+        address oldTreasury = address(treasury);
+        treasury = ITerraStakeTreasury(newTreasury);
+        
+        emit TreasuryUpdated(oldTreasury, newTreasury);
+    }
+    
+    // -------------------------------------------
+    // 🔹 Emergency Controls
+    // -------------------------------------------
+    
+    /**
+     * @notice Enable or disable emergency mode to halt withdrawals
+     * @param enabled Whether to enable emergency mode
+     */
+    function setEmergencyMode(bool enabled) external onlyRole(EMERGENCY_ROLE) {
+        emergencyMode = enabled;
+        emit EmergencyModeChanged(enabled);
+    }
+    
+    /**
+     * @notice Emergency token recovery for stuck tokens (not tStake or USDC)
+     * @param token Token address to recover
+     * @param amount Amount to recover
+     */
+    function recoverTokens(address token, uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        // Cannot withdraw tStake or USDC tokens using this method
+        if (token == address(tStakeToken) || token == address(usdcToken)) {
+            revert Unauthorized();
+        }
+        
+        IERC20Upgradeable(token).safeTransfer(msg.sender, amount);
+    }
+    
+    /**
+     * @notice Add or remove address from whitelist to bypass withdrawal restrictions
+     * @param user User address to modify
+     * @param status Whether user should be whitelisted
+     */
+    function setWhitelistStatus(address user, bool status) external onlyRole(GOVERNANCE_ROLE) {
+        liquidityWhitelist[user] = status;
+        emit AddressWhitelisted(user, status);
+    }
+    
+    // -------------------------------------------
+    // 🔹 View Functions
+    // -------------------------------------------
+    
+    /**
+     * @notice Get user's liquidity information
+     * @param user Address of the user
+     * @return liquidity User's liquidity amount
+     * @return vestingStart User's vesting start timestamp
+     * @return lastRemoval Last time user removed liquidity
+     */
+    function getUserLiquidityInfo(address user) external view returns (
+        uint256 liquidity,
+        uint256 vestingStart,
+        uint256 lastRemoval
+    ) {
+        return (
+            userLiquidity[user],
+            userVestingStart[user],
+            lastLiquidityRemoval[user]
+        );
+    }
+    
+    /**
+     * @notice Get user's daily and weekly withdrawal information
+     * @param user Address of the user
+     * @return dailyAmount Amount withdrawn today
+     * @return dailyLimit Maximum daily withdrawal limit
+     * @return weeklyAmount Amount withdrawn this week
+     * @return weeklyLimit Maximum weekly withdrawal limit
+     */
+    function getUserWithdrawalInfo(address user) external view returns (
+        uint256 dailyAmount,
+        uint256 dailyLimit,
+        uint256 weeklyAmount,
+        uint256 weeklyLimit
+    ) {
+        uint256 userTotal = userLiquidity[user];
+        
+        return (
+            dailyWithdrawalAmount[user],
+            (userTotal * dailyWithdrawalLimit) / PERCENTAGE_DENOMINATOR,
+            weeklyWithdrawalAmount[user],
+            (userTotal * weeklyWithdrawalLimit) / PERCENTAGE_DENOMINATOR
+        );
+    }
+    
+    /**
+     * @notice Calculate the maximum amount a user can withdraw right now
+     * @param user Address of the user to check
+     * @return amount Maximum amount that can be withdrawn
+     */
+    function getAvailableWithdrawalAmount(address user) external view returns (uint256) {
+        if (emergencyMode) return 0;
+        
+        // Check total liquidity
+        uint256 totalLiquidity = userLiquidity[user];
+        if (totalLiquidity == 0) return 0;
+        
+        // Check vesting unlock
+        uint256 timeSinceVestingStart = block.timestamp - userVestingStart[user];
+        uint256 weeksVested = timeSinceVestingStart / ONE_WEEK;
+        uint256 unlockedPercentage = (weeksVested * vestingUnlockRate);
+        if (unlockedPercentage > 100) unlockedPercentage = 100;
+        
+        uint256 unlockedAmount = (totalLiquidity * unlockedPercentage) / PERCENTAGE_DENOMINATOR;
+        
+        // Check daily limit
+        uint256 dailyLimit = (totalLiquidity * dailyWithdrawalLimit) / PERCENTAGE_DENOMINATOR;
+        uint256 availableDailyAmount = dailyLimit;
+        
+        if (lastDailyWithdrawal[user] + ONE_DAY > block.timestamp) {
+            availableDailyAmount = dailyLimit - dailyWithdrawalAmount[user];
+        }
+        
+        // Check weekly limit
+        uint256 weeklyLimit = (totalLiquidity * weeklyWithdrawalLimit) / PERCENTAGE_DENOMINATOR;
+        uint256 availableWeeklyAmount = weeklyLimit;
+        
+        if (lastWeeklyWithdrawal[user] + ONE_WEEK > block.timestamp) {
+            availableWeeklyAmount = weeklyLimit - weeklyWithdrawalAmount[user];
+        }
+        
+        // Return the minimum of all constraints
+        return min3(unlockedAmount, availableDailyAmount, availableWeeklyAmount);
+    }
+    
+    /**
+     * @notice Get the minimum of three values
+     * @param a First value
+     * @param b Second value
+     * @param c Third value
+     * @return minimum The minimum of the three values
+     */
+    function min3(uint256 a, uint256 b, uint256 c) internal pure returns (uint256) {
+        return a < b ? (a < c ? a : c) : (b < c ? b : c);
+    }
+    
+    /**
+     * @notice Get all active position IDs
+     * @return positions Array of active position IDs
      */
     function getActivePositions() external view returns (uint256[] memory) {
         return activePositionIds;
     }
     
     /**
-     * @notice Get user liquidity and vesting information
-     * @param user User address
-     * @return totalLiquidity Total user liquidity
-     * @return vestingStart User vesting start timestamp
-     * @return availableToWithdraw Amount available to withdraw based on vesting
+     * @notice Get current TWAP price and current spot price
+     * @return twapPrice The current TWAP price
+     * @return spotPrice The current spot price
      */
-    function getUserInfo(address user) external view returns (
-        uint256 totalLiquidity,
-        uint256 vestingStart,
-        uint256 availableToWithdraw
-    ) {
-        totalLiquidity = userLiquidity[user];
-        vestingStart = userVestingStart[user];
-        
-        uint256 timeSinceVestingStart = block.timestamp - vestingStart;
-        uint256 weeksVested = timeSinceVestingStart / ONE_WEEK;
-        uint256 unlockedPercentage = (weeksVested * vestingUnlockRate);
-        if (unlockedPercentage > 100) unlockedPercentage = 100;
-        
-        availableToWithdraw = (totalLiquidity * unlockedPercentage) / PERCENTAGE_DENOMINATOR;
+    function getCurrentPrices() external view returns (uint256 twapPrice, uint256 spotPrice) {
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        spotPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        twapPrice = calculateTWAP();
     }
     
     /**
-     * @notice Get user withdrawal limits
-     * @param user User address
-     * @return dailyLimit Daily withdrawal limit
-     * @return dailyUsed Amount used from daily limit
-     * @return weeklyLimit Weekly withdrawal limit
-     * @return weeklyUsed Amount used from weekly limit
-     * @return nextAllowedWithdrawalTime Timestamp when next withdrawal is allowed
+     * @notice Check if withdrawals would be allowed based on current price conditions
+     * @return allowed Whether withdrawals are currently allowed
      */
-    function getUserWithdrawalLimits(address user) external view returns (
-        uint256 dailyLimit,
-        uint256 dailyUsed,
-        uint256 weeklyLimit,
-        uint256 weeklyUsed,
-        uint256 nextAllowedWithdrawalTime
-    ) {
-        uint256 userTotalLiquidity = userLiquidity[user];
-        dailyLimit = (userTotalLiquidity * dailyWithdrawalLimit) / PERCENTAGE_DENOMINATOR;
-        weeklyLimit = (userTotalLiquidity * weeklyWithdrawalLimit) / PERCENTAGE_DENOMINATOR;
-        
-        // Check if daily limit has reset
-        if (lastDailyWithdrawal[user] + ONE_DAY < block.timestamp) {
-            dailyUsed = 0;
-        } else {
-            dailyUsed = dailyWithdrawalAmount[user];
-        }
-        
-        // Check if weekly limit has reset
-        if (lastWeeklyWithdrawal[user] + ONE_WEEK < block.timestamp) {
-            weeklyUsed = 0;
-        } else {
-            weeklyUsed = weeklyWithdrawalAmount[user];
-        }
-        
-        // Calculate next allowed withdrawal time
-        nextAllowedWithdrawalTime = lastLiquidityRemoval[user] + liquidityRemovalCooldown;
-        if (nextAllowedWithdrawalTime < block.timestamp) {
-            nextAllowedWithdrawalTime = block.timestamp;
-        }
+    function areWithdrawalsAllowed() external view returns (bool) {
+        if (emergencyMode) return false;
+        return validateTWAPPrice();
     }
     
     /**
-     * @notice Get statistics about the liquidity guard
-     * @return totalStaked Total staked tokens
-     * @return totalUsers Number of users
-     * @return totalWithdrawals Number of withdrawals
-     * @return largeWithdrawals Number of large withdrawals
+     * @notice Get analytics data about the liquidity guard
+     * @return totalLiquidity Total current liquidity across all users
+     * @return totalInjected Total liquidity injected to Uniswap
      * @return totalFees Total fees collected
+     * @return withdrawalStats Statistics about withdrawals (total, large)
      */
-    function getStats() external view returns (
-        uint256 totalStaked,
-        uint256 totalUsers,
-        uint256 totalWithdrawals,
-        uint256 largeWithdrawals,
-        uint256 totalFees
+    function getAnalytics() external view returns (
+        uint256 totalLiquidity,
+        uint256 totalInjected,
+        uint256 totalFees,
+        uint256[2] memory withdrawalStats
     ) {
-        totalStaked = totalLiquidity;
-        totalUsers = userCount;
-        totalWithdrawals = totalWithdrawalCount;
-        largeWithdrawals = largeWithdrawalCount;
-        totalFees = totalFeesCollected;
+        withdrawalStats[0] = totalWithdrawalCount;
+        withdrawalStats[1] = largeWithdrawalCount;
+        
+        return (
+            tStakeToken.balanceOf(address(this)),
+            totalLiquidityInjected,
+            totalFeesCollected,
+            withdrawalStats
+        );
     }
     
     /**
-     * @notice Fallback function to receive ETH
+     * @notice Get contract version
+     * @return version Contract version string
      */
-    receive() external payable {
-        emit Received(msg.sender, msg.value);
+    function version() external pure returns (string memory) {
+        return "1.0.0";
     }
 }
