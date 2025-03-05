@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-5.0/token/ERC20/IERC20.sol";
 
 /**
  * @title ITerraStakeAccessControl
@@ -51,23 +51,6 @@ interface ITerraStakeAccessControl {
     event TokenConfigurationUpdated(address indexed token, string tokenType);
     
     // ====================================================
-    // 🔹 Errors
-    // ====================================================
-    error InvalidAddress();
-    error InvalidDuration();
-    error InvalidParameters();
-    error InsufficientTStakeBalance(address account, uint256 requiredBalance);
-    error InvalidHierarchy(bytes32 role, bytes32 parentRole);
-    error RoleAlreadyAssigned(bytes32 role, address account);
-    error RoleNotAssigned(bytes32 role, address account);
-    error OracleValidationFailed();
-    error PriceOutOfBounds(uint256 price, uint256 minPrice, uint256 maxPrice);
-    error LiquidityThresholdNotMet();
-    error RoleExpired(bytes32 role, address account);
-    error StaleOracleData(uint256 lastUpdate, uint256 currentTime);
-    error InvalidOracleRound(uint80 answeredInRound, uint80 roundId);
-    
-    // ====================================================
     // 🔹 Functions
     // ====================================================
     function initialize(
@@ -78,7 +61,6 @@ interface ITerraStakeAccessControl {
         address tStakeToken,
         uint256 minimumLiquidity,
         uint256 minimumPrice,
-        uint256 maximumPrice,
         uint256 maxOracleDataAge
     ) external;
     
