@@ -7,7 +7,6 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-
 import "./interfaces/ITerraStakeSlashing.sol";
 import "./interfaces/ITerraStakeGovernance.sol";
 import "./interfaces/ITerraStakeStaking.sol";
@@ -141,10 +140,6 @@ contract TerraStakeSlashing is
         address _initialAdmin,
         address _treasuryWallet
     ) external initializer {
-        __AccessControlEnumerable_init();
-        __ReentrancyGuard_init();
-        __UUPSUpgradeable_init();
-        
         if (_stakingContract == address(0) || 
             _governanceContract == address(0) ||
             _tStakeToken == address(0) ||
@@ -152,6 +147,11 @@ contract TerraStakeSlashing is
             _treasuryWallet == address(0)) {
             revert ZeroAddressNotAllowed();
         }
+        
+        // Initialize base contracts
+        __AccessControlEnumerable_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
         
         // Grant roles
         _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
@@ -637,11 +637,4 @@ contract TerraStakeSlashing is
         
         return string(buffer);
     }
-    
-    /**
-     * @dev This empty reserved space is put in place to allow future versions to add new
-     * variables without shifting down storage in the inheritance chain.
-     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
-     */
-    uint256[40] private __gap;
 }
