@@ -67,9 +67,11 @@ interface ITerraStakeSlashing {
         uint256 cooling
     );
     
-    function getActiveSlashProposals() external view returns (uint256[] memory);
+    // FIXED: Return type changed to match implementation
+    function getActiveSlashProposals() external view returns (SlashProposal[] memory);
     
-    function canSlashValidator(address validator) external view returns (bool);
+    // FIXED: Return values updated to match implementation
+    function canSlashValidator(address validator) external view returns (bool canSlash, bool isActive);
     
     function calculateSlashAmounts(address validator, uint256 slashPercentage) external view returns (
         uint256 total,
@@ -112,4 +114,9 @@ interface ITerraStakeSlashing {
     );
     
     event EmergencyPauseToggled(bool paused);
+    
+    // Additional matching events to ensure full compatibility
+    event ValidatorStatusUpdated(address indexed validator, bool isActive);
+    event TreasuryWalletUpdated(address indexed newWallet);
+    event CoolingOffPeriodUpdated(uint256 newPeriod);
 }
