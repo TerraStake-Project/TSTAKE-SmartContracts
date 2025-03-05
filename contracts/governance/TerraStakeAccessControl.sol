@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable-5.0/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable-5.0/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable-5.0/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable-5.0/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-5.0/token/ERC20/IERC20.sol";
 import "./interfaces/ITerraStakeAccessControl.sol";
 
 /**
@@ -46,21 +46,21 @@ contract TerraStakeAccessControl is
     bytes32 public constant override MULTISIG_ADMIN_ROLE = keccak256("MULTISIG_ADMIN_ROLE");
     bytes32 public constant override REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
     bytes32 public constant override DISTRIBUTION_ROLE = keccak256("DISTRIBUTION_ROLE");
-
+    
     // Price and liquidity constraints
     uint256 private _minimumLiquidity;
     uint256 private _minimumPrice;
     uint256 private _maximumPrice;
     uint256 private _maxOracleDataAge;
-
+    
     // Role configuration mappings
     mapping(bytes32 => uint256) private _roleRequirements;
     mapping(bytes32 => mapping(address => uint256)) private _roleExpirations;
     mapping(bytes32 => bytes32) private _roleHierarchy;
-
+    
     // Role hierarchy documentation
     mapping(bytes32 => RoleInfo) private _roleInfo;
-
+    
     // ====================================================
     // 🔹 Errors
     // ====================================================
@@ -253,10 +253,8 @@ contract TerraStakeAccessControl is
         
         _revokeRole(role, account);
         _roleExpirations[role][account] = 0;
-        
-        emit RoleRevoked(role, account);
+                emit RoleRevoked(role, account);
     }
-
     /**
      * @notice Allows users to renounce their own roles
      * @dev Does not require admin permission since users are giving up privileges
@@ -270,7 +268,6 @@ contract TerraStakeAccessControl is
         
         emit RoleRenounced(role, msg.sender);
     }
-
     /**
      * @notice Checks if a role is expired and automatically revokes it if needed
      * @param role The role to check
@@ -289,7 +286,6 @@ contract TerraStakeAccessControl is
             emit RoleRevoked(role, account);
         }
     }
-
     // ====================================================
     // 🔹 Role Documentation Functions
     // ====================================================
@@ -312,7 +308,6 @@ contract TerraStakeAccessControl is
         
         emit RoleDocumented(role, description);
     }
-
     /**
      * @notice Get detailed information about a role
      * @param role The role to query
@@ -321,7 +316,6 @@ contract TerraStakeAccessControl is
     function getRoleInfo(bytes32 role) external view returns (RoleInfo memory) {
         return _roleInfo[role];
     }
-
     // ====================================================
     // 🔹 Oracle and Configuration Updates
     // ====================================================
@@ -370,7 +364,6 @@ contract TerraStakeAccessControl is
         
         emit RoleHierarchyUpdated(role, parentRole);
     }
-
     /**
      * @notice Set the maximum allowed age for oracle data
      * @param maxAgeInSeconds Maximum age in seconds for oracle data to be considered valid
@@ -381,7 +374,6 @@ contract TerraStakeAccessControl is
         
         emit OracleDataAgeUpdated(oldAge, maxAgeInSeconds);
     }
-
     /**
      * @notice Update token configuration for the system
      * @param token The token address to configure
@@ -405,7 +397,6 @@ contract TerraStakeAccessControl is
         
         emit TokenConfigurationUpdated(token, tokenType);
     }
-
     // ====================================================
     // 🔹 Pausing Functions
     // ====================================================
@@ -416,7 +407,6 @@ contract TerraStakeAccessControl is
     function unpause() external override onlyRole(GOVERNANCE_ROLE) nonReentrant {
         _unpause();
     }
-
     // ====================================================
     // 🔹 Validation Functions
     // ====================================================
@@ -449,7 +439,6 @@ contract TerraStakeAccessControl is
             revert PriceOutOfBounds(priceUint, lowerBound, upperBound);
         }
     }
-
     /**
      * @notice Enhanced oracle validation with timestamp and round checks
      * @param expectedPrice The expected price for validation
@@ -497,7 +486,6 @@ contract TerraStakeAccessControl is
             revert LiquidityThresholdNotMet();
         }
     }
-
     // ====================================================
     // 🔹 View Functions
     // ====================================================
@@ -543,7 +531,6 @@ contract TerraStakeAccessControl is
     function getRoleHierarchy(bytes32 role) external view override returns (bytes32) {
         return _roleHierarchy[role];
     }
-
     /**
      * @notice Returns the maximum allowed age for oracle data
      * @return Maximum age in seconds
