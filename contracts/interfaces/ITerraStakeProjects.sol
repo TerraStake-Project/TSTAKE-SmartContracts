@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
 /**
@@ -473,7 +474,7 @@ interface ITerraStakeProjects {
     function getImpactReports(uint256 projectId) external view returns (ImpactReport[] memory);
     
     /**
- * @notice Submit a REC report for a renewable energy project
+     * @notice Submit a REC report for a renewable energy project
      * @param projectId ID of the project
      * @param rec REC data structure containing all certificate information
      */
