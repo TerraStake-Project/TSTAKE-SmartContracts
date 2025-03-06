@@ -1,11 +1,12 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/Base64Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Base64Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/Base64Upgradeable.sol";
+import {StringsUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol";
 import "./interfaces/ITerraStakeMetadataRenderer.sol";
 
 /**
@@ -46,9 +47,18 @@ contract TerraStakeMetadataRenderer is
     // Configuration for visualization sizing
     uint256 private _minSize;
     uint256 private _maxSize;
+    uint256 private _maxScalingFactor;
+    
+    // Interactive mode flag
+    bool private _interactiveMode = false;
+    
+    // Additional interactive elements
+    mapping(uint8 => string) private _interactiveElements;
     
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() initializer {}
+    constructor() {
+        _disableInitializers();
+    }
     
     /**
      * @notice Initializes the contract with an admin and default visual elements
@@ -97,9 +107,10 @@ contract TerraStakeMetadataRenderer is
         _categoryAnimations[3] = "<animate attributeName='stroke-width' values='1;2;1' dur='2s' repeatCount='indefinite'/>";
         _categoryAnimations[4] = "<animate attributeName='d' values='M20,50 Q50,20 80,50 Q50,80 20,50;M20,50 Q50,25 80,50 Q50,75 20,50;M20,50 Q50,20 80,50 Q50,80 20,50' dur='5s' repeatCount='indefinite'/>";
         
-        // Initialize sizing limits
+        // Initialize sizing limits and max scaling
         _minSize = 10;
         _maxSize = 80;
+        _maxScalingFactor = 1000000; // Prevent division by very small numbers
         
         // Initialize SVG template with placeholders for optimization
         _svgTemplate = string(abi.encodePacked(
@@ -137,45 +148,14 @@ contract TerraStakeMetadataRenderer is
         override 
         returns (string memory) 
     {
-        // Get color values
-        string memory colorPair = _categoryColors[impactCategory];
-        (string memory primaryColor, string memory secondaryColor) = _parseColors(colorPair);
-        
-        // Calculate impact visualization size
-        uint256 scalingFactor = _categoryScalingFactors[impactCategory];
-        uint256 visualSize = _calculateVisualSize(impactValue, scalingFactor);
-        
-        // Get impact unit based on category
-        string memory impactUnit = _getImpactUnit(impactCategory);
-        
-        // Generate SVG by substituting placeholders
-        string memory svgImage = _generateSVG(
+        return _generateMetadataInternal(
             tokenId,
             impactCategory,
             impactValue,
-            visualSize,
-            primaryColor,
-            secondaryColor,
-            impactUnit
+            projectName,
+            projectDescription,
+            false
         );
-        
-        // Encode SVG as base64
-        string memory encodedSVG = Base64Upgradeable.encode(bytes(svgImage));
-        
-        // Generate and return full JSON metadata
-        return string(abi.encodePacked(
-            'data:application/json;base64,',
-            Base64Upgradeable.encode(bytes(abi.encodePacked(
-                '{"name":"', projectName, ' #', tokenId.toString(), '",',
-                '"description":"', projectDescription, '",',
-                '"image":"data:image/svg+xml;base64,', encodedSVG, '",',
-                '"attributes":[',
-                    '{"trait_type":"Category","value":"', _categoryNames[impactCategory], '"},',
-                    '{"trait_type":"', _getImpactAttributeName(impactCategory), '","value":', impactValue.toString(), '},',
-                    '{"trait_type":"Token ID","value":', tokenId.toString(), '}',
-                ']}'
-            )))
-        ));
     }
     
     /**
@@ -223,6 +203,88 @@ contract TerraStakeMetadataRenderer is
     // =====================================================
     
     /**
+     * @dev Internal version of generateMetadata to avoid external calls
+     */
+    function _generateMetadataInternal(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue,
+        string memory projectName,
+        string memory projectDescription,
+        bool isInteractive
+    ) 
+        internal 
+        view 
+        returns (string memory) 
+    {
+        // Get color values
+        string memory colorPair = _categoryColors[impactCategory];
+        (string memory primaryColor, string memory secondaryColor) = _parseColors(colorPair);
+        
+        // Calculate impact visualization size
+        uint256 scalingFactor = _categoryScalingFactors[impactCategory];
+        uint256 visualSize = _calculateVisualSize(impactValue, scalingFactor);
+        
+        // Get impact unit
+        string memory impactUnit = _getImpactUnit(impactCategory);
+        
+        // Generate SVG based on interactive mode
+        string memory svgImage;
+        if (isInteractive && _interactiveMode) {
+            svgImage = _generateInteractiveSVG(
+                tokenId,
+                impactCategory,
+                impactValue,
+                visualSize,
+                primaryColor,
+                secondaryColor,
+                impactUnit
+            );
+        } else {
+            svgImage = _generateSVG(
+                tokenId,
+                impactCategory,
+                impactValue,
+                visualSize,
+                primaryColor,
+                secondaryColor,
+                impactUnit
+            );
+        }
+        
+        // Encode SVG as base64
+        string memory encodedSVG = Base64Upgradeable.encode(bytes(svgImage));
+        
+        // Generate attributes with optional interactive trait
+        string memory attributes;
+        if (isInteractive && _interactiveMode) {
+            attributes = string(abi.encodePacked(
+                '{"trait_type":"Category","value":"', _categoryNames[impactCategory], '"},',
+                '{"trait_type":"', _getImpactAttributeName(impactCategory), '","value":', impactValue.toString(), '},',
+                '{"trait_type":"Token ID","value":', tokenId.toString(), '},',
+                '{"trait_type":"Interactive","value":"Yes"}'
+            ));
+        } else {
+            attributes = string(abi.encodePacked(
+                '{"trait_type":"Category","value":"', _categoryNames[impactCategory], '"},',
+                '{"trait_type":"', _getImpactAttributeName(impactCategory), '","value":', impactValue.toString(), '},',
+                '{"trait_type":"Token ID","value":', tokenId.toString(), '}'
+            ));
+        }
+        
+        // Generate and return full JSON metadata
+        return string(abi.encodePacked(
+            'data:application/json;base64,',
+            Base64Upgradeable.encode(bytes(abi.encodePacked(
+                '{"name":"', projectName, ' #', tokenId.toString(), '",',
+                '"description":"', projectDescription, '",',
+                '"image":"data:image/svg+xml;base64,', encodedSVG, '",',
+                '"attributes":[', attributes, ']}'
+            )))
+        ));
+    }
+    
+    /**
      * @dev Generate SVG by substituting template placeholders
      */
     function _generateSVG(
@@ -241,16 +303,40 @@ contract TerraStakeMetadataRenderer is
         // Start with template
         string memory svg = _svgTemplate;
         
-        // Replace all placeholders efficiently
-        svg = _replace(svg, "{{PRIMARY_COLOR}}", primaryColor);
-        svg = _replace(svg, "{{SECONDARY_COLOR}}", secondaryColor);
-        svg = _replace(svg, "{{ICON}}", _categoryIcons[category]);
-        svg = _replace(svg, "{{CATEGORY_NAME}}", _categoryNames[category]);
-        svg = _replace(svg, "{{PROJECT_ID}}", string(abi.encodePacked("Token #", tokenId.toString())));
-        svg = _replace(svg, "{{IMPACT_SIZE}}", visualSize.toString());
-        svg = _replace(svg, "{{ANIMATION}}", _categoryAnimations[category]);
-        svg = _replace(svg, "{{IMPACT_VALUE}}", impactValue.toString());
-        svg = _replace(svg, "{{IMPACT_UNIT}}", impactUnit);
+        // Create an array of replacements to process in a single pass
+        string[9] memory placeholders = [
+            "{{PRIMARY_COLOR}}",
+            "{{SECONDARY_COLOR}}",
+            "{{ICON}}",
+            "{{CATEGORY_NAME}}",
+            "{{PROJECT_ID}}",
+            "{{IMPACT_SIZE}}",
+            "{{ANIMATION}}",
+            "{{IMPACT_VALUE}}",
+            "{{IMPACT_UNIT}}"
+        ];
+        
+        string[9] memory replacements = [
+            primaryColor,
+            secondaryColor,
+            _categoryIcons[category],
+            _categoryNames[category],
+            string(abi.encodePacked("Token #", tokenId.toString()
+            primaryColor,
+            secondaryColor,
+            _categoryIcons[category],
+            _categoryNames[category],
+            string(abi.encodePacked("Token #", tokenId.toString())),
+            visualSize.toString(),
+            _categoryAnimations[category],
+            impactValue.toString(),
+            impactUnit
+        ];
+        
+        // Apply all replacements efficiently
+        for (uint256 i = 0; i < placeholders.length; i++) {
+            svg = _replace(svg, placeholders[i], replacements[i]);
+        }
         
         return svg;
     }
@@ -263,7 +349,10 @@ contract TerraStakeMetadataRenderer is
         view 
         returns (uint256) 
     {
-        if (scalingFactor == 0) return _minSize;
+        // Ensure we don't divide by zero or very small numbers
+        if (scalingFactor == 0 || scalingFactor > _maxScalingFactor) {
+            return _minSize;
+        }
         
         uint256 size = (impactValue * 10) / scalingFactor;
         
@@ -285,12 +374,17 @@ contract TerraStakeMetadataRenderer is
         bytes memory colorBytes = bytes(colorPair);
         
         // Find the comma separator
-        uint256 commaPos = 0;
+        uint256 commaPos = type(uint256).max;
         for (uint i = 0; i < colorBytes.length; i++) {
             if (colorBytes[i] == ',') {
                 commaPos = i;
                 break;
             }
+        }
+        
+        // If no comma found, return the whole string as primary color and a default for secondary
+        if (commaPos == type(uint256).max) {
+            return (colorPair, "#FFFFFF");
         }
         
         // Split the string
@@ -308,7 +402,14 @@ contract TerraStakeMetadataRenderer is
     {
         bytes memory strBytes = bytes(str);
         
-        require(startIndex + length <= strBytes.length, "Index out of bounds");
+        if (startIndex >= strBytes.length) {
+            return "";
+        }
+        
+        uint256 maxLength = strBytes.length - startIndex;
+        if (length > maxLength) {
+            length = maxLength;
+        }
         
         bytes memory result = new bytes(length);
         for (uint i = 0; i < length; i++) {
@@ -336,19 +437,25 @@ contract TerraStakeMetadataRenderer is
         bytes memory placeholderBytes = bytes(placeholder);
         bytes memory replacementBytes = bytes(replacement);
         
-        // Check if placeholder exists in source
-        bool found;
+        // If placeholder is longer than source, it can't be found
+        if (placeholderBytes.length > sourceBytes.length) {
+            return source;
+        }
+        
+        // Search for the placeholder
+        bool found = false;
         uint256 foundIndex;
         
         for (uint256 i = 0; i <= sourceBytes.length - placeholderBytes.length; i++) {
-            found = true;
+            bool match = true;
             for (uint256 j = 0; j < placeholderBytes.length; j++) {
                 if (sourceBytes[i + j] != placeholderBytes[j]) {
-                    found = false;
+                    match = false;
                     break;
                 }
             }
-            if (found) {
+            if (match) {
+                found = true;
                 foundIndex = i;
                 break;
             }
@@ -415,209 +522,8 @@ contract TerraStakeMetadataRenderer is
     }
     
     // =====================================================
+    // Interactive SVG Elements
     // =====================================================
-    // Admin Functions
-    // =====================================================
-    
-    /**
-     * @notice Set color palette for a category
-     * @param category Impact category ID
-     * @param primaryColor Primary color in hex format
-     * @param secondaryColor Secondary color in hex format
-     */
-    function setCategoryColors(
-        uint8 category,
-        string calldata primaryColor,
-        string calldata secondaryColor
-    ) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        _categoryColors[category] = string(abi.encodePacked(primaryColor, ",", secondaryColor));
-        emit CategoryColorsUpdated(category, primaryColor, secondaryColor);
-    }
-    
-    /**
-     * @notice Set icon for a category
-     * @param category Impact category ID
-     * @param svgPath SVG path data for the icon
-     */
-    function setCategoryIcon(uint8 category, string calldata svgPath) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        _categoryIcons[category] = svgPath;
-        emit CategoryIconUpdated(category, svgPath);
-    }
-    
-    /**
-     * @notice Set name for a category
-     * @param category Impact category ID
-     * @param name Category name
-     */
-    function setCategoryName(uint8 category, string calldata name) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        _categoryNames[category] = name;
-        emit CategoryNameUpdated(category, name);
-    }
-    
-    /**
-     * @notice Set scaling factor for impact visualization
-     * @param category Impact category ID
-     * @param scalingFactor Factor to divide impact value by for visualization
-     */
-    function setCategoryScalingFactor(uint8 category, uint256 scalingFactor) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        require(scalingFactor > 0, "Scaling factor must be positive");
-        _categoryScalingFactors[category] = scalingFactor;
-        emit ScalingFactorUpdated(category, scalingFactor);
-    }
-    
-    /**
-     * @notice Set animation for a category
-     * @param category Impact category ID
-     * @param animationSvg SVG animation element
-     */
-    function setCategoryAnimation(uint8 category, string calldata animationSvg) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        _categoryAnimations[category] = animationSvg;
-        emit AnimationUpdated(category, animationSvg);
-    }
-    
-    /**
-     * @notice Set visualization size limits
-     * @param minSize Minimum size for impact visualization
-     * @param maxSize Maximum size for impact visualization
-     */
-    function setVisualizationSizeLimits(uint256 minSize, uint256 maxSize) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        require(minSize > 0 && maxSize > minSize, "Invalid size limits");
-        _minSize = minSize;
-        _maxSize = maxSize;
-        emit SizeLimitsUpdated(minSize, maxSize);
-    }
-    
-    /**
-     * @notice Update the entire SVG template
-     * @param newTemplate New SVG template with placeholders
-     */
-    function updateSVGTemplate(string calldata newTemplate) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        // Verify template has all required placeholders
-        require(
-            bytes(newTemplate).length > 0 &&
-            _containsPlaceholder(newTemplate, "{{PRIMARY_COLOR}}") &&
-            _containsPlaceholder(newTemplate, "{{SECONDARY_COLOR}}") &&
-            _containsPlaceholder(newTemplate, "{{ICON}}") &&
-            _containsPlaceholder(newTemplate, "{{IMPACT_VALUE}}"),
-            "Template missing required placeholders"
-        );
-        
-        _svgTemplate = newTemplate;
-        emit TemplateUpdated();
-    }
-    
-    /**
-     * @notice Batch configuration of multiple categories
-     * @param categories Array of category IDs
-     * @param names Array of category names
-     * @param primaryColors Array of primary colors
-     * @param secondaryColors Array of secondary colors
-     * @param icons Array of icon SVG paths
-     * @param scalingFactors Array of scaling factors
-     */
-    function batchConfigureCategories(
-        uint8[] calldata categories,
-        string[] calldata names,
-        string[] calldata primaryColors,
-        string[] calldata secondaryColors,
-        string[] calldata icons,
-        uint256[] calldata scalingFactors
-    ) 
-        external 
-        onlyRole(DESIGNER_ROLE) 
-    {
-        require(
-            categories.length == names.length &&
-            categories.length == primaryColors.length &&
-            categories.length == secondaryColors.length &&
-            categories.length == icons.length &&
-            categories.length == scalingFactors.length,
-            "Array length mismatch"
-        );
-        
-        for (uint i = 0; i < categories.length; i++) {
-            uint8 category = categories[i];
-            
-            _categoryNames[category] = names[i];
-            _categoryColors[category] = string(abi.encodePacked(primaryColors[i], ",", secondaryColors[i]));
-            _categoryIcons[category] = icons[i];
-            _categoryScalingFactors[category] = scalingFactors[i];
-            
-            emit CategoryConfigured(
-                category,
-                names[i],
-                primaryColors[i],
-                secondaryColors[i],
-                icons[i],
-                scalingFactors[i]
-            );
-        }
-    }
-    
-    /**
-     * @notice Check if a string contains a placeholder
-     * @param source Source string
-     * @param placeholder Placeholder to check for
-     * @return True if placeholder exists in source
-     */
-    function _containsPlaceholder(string memory source, string memory placeholder) 
-        internal 
-        pure 
-        returns (bool) 
-    {
-        bytes memory sourceBytes = bytes(source);
-        bytes memory placeholderBytes = bytes(placeholder);
-        
-        if (sourceBytes.length < placeholderBytes.length) {
-            return false;
-        }
-        
-        for (uint i = 0; i <= sourceBytes.length - placeholderBytes.length; i++) {
-            bool found = true;
-            for (uint j = 0; j < placeholderBytes.length; j++) {
-                if (sourceBytes[i + j] != placeholderBytes[j]) {
-                    found = false;
-                    break;
-                }
-            }
-            if (found) {
-                return true;
-            }
-        }
-        
-        return false;
-    }
-    
-    // =====================================================
-    // New Feature: Interactive SVG Elements
-    // =====================================================
-    
-    // Interactive mode flag
-    bool private _interactiveMode = false;
-    
-    // Additional interactive elements
-    mapping(uint8 => string) private _interactiveElements;
     
     /**
      * @notice Toggle interactive mode for SVGs
@@ -664,60 +570,14 @@ contract TerraStakeMetadataRenderer is
         view 
         returns (string memory) 
     {
-        // Get standard metadata first
-        string memory standardMetadata = this.generateMetadata(
+        return _generateMetadataInternal(
             tokenId,
             impactCategory,
             impactValue,
             projectName,
-            projectDescription
+            projectDescription,
+            true
         );
-        
-        // If interactive mode is disabled, return standard metadata
-        if (!_interactiveMode) {
-            return standardMetadata;
-        }
-        
-        // Get color values
-        string memory colorPair = _categoryColors[impactCategory];
-        (string memory primaryColor, string memory secondaryColor) = _parseColors(colorPair);
-        
-        // Calculate impact visualization size
-        uint256 scalingFactor = _categoryScalingFactors[impactCategory];
-        uint256 visualSize = _calculateVisualSize(impactValue, scalingFactor);
-        
-        // Get impact unit
-        string memory impactUnit = _getImpactUnit(impactCategory);
-        
-        // Generate interactive SVG 
-        string memory svgImage = _generateInteractiveSVG(
-            tokenId,
-            impactCategory,
-            impactValue,
-            visualSize,
-            primaryColor,
-            secondaryColor,
-            impactUnit
-        );
-        
-        // Encode SVG as base64
-        string memory encodedSVG = Base64Upgradeable.encode(bytes(svgImage));
-        
-        // Generate and return full JSON metadata
-        return string(abi.encodePacked(
-            'data:application/json;base64,',
-            Base64Upgradeable.encode(bytes(abi.encodePacked(
-                '{"name":"', projectName, ' #', tokenId.toString(), '",',
-                '"description":"', projectDescription, '",',
-                '"image":"data:image/svg+xml;base64,', encodedSVG, '",',
-                '"attributes":[',
-                    '{"trait_type":"Category","value":"', _categoryNames[impactCategory], '"},',
-                    '{"trait_type":"', _getImpactAttributeName(impactCategory), '","value":', impactValue.toString(), '},',
-                    '{"trait_type":"Token ID","value":', tokenId.toString(), '},',
-                    '{"trait_type":"Interactive","value":"Yes"}',
-                ']}'
-            )))
-        ));
     }
     
     /**
@@ -817,6 +677,324 @@ contract TerraStakeMetadataRenderer is
     }
     
     // =====================================================
+    // Admin Functions
+    // =====================================================
+    
+    /**
+     * @notice Set color palette for a category
+     * @param category Impact category ID
+     * @param primaryColor Primary color in hex format
+     * @param secondaryColor Secondary color in hex format
+     */
+    function setCategoryColors(
+        uint8 category,
+        string calldata primaryColor,
+        string calldata secondaryColor
+    ) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        _categoryColors[category] = string(abi.encodePacked(primaryColor, ",", secondaryColor));
+        emit CategoryColorsUpdated(category, primaryColor, secondaryColor);
+    }
+    
+    /**
+     * @notice Set icon for a category
+     * @param category Impact category ID
+     * @param svgPath SVG path data for the icon
+     */
+    function setCategoryIcon(uint8 category, string calldata svgPath) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        _categoryIcons[category] = svgPath;
+        emit CategoryIconUpdated(category, svgPath);
+    }
+    
+    /**
+     * @notice Set name for a category
+     * @param category Impact category ID
+     * @param name Category name
+     */
+    function setCategoryName(uint8 category, string calldata name) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        _categoryNames[category] = name;
+        emit CategoryNameUpdated(category, name);
+    }
+    
+    /**
+     * @notice Set scaling factor for impact visualization
+     * @param category Impact category ID
+     * @param scalingFactor Factor to divide impact value by for visualization
+     */
+    function setCategoryScalingFactor(uint8 category, uint256 scalingFactor) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        require(scalingFactor > 0, "Scaling factor must be positive");
+        require(scalingFactor <= _maxScalingFactor, "Scaling factor too large");
+        _categoryScalingFactors[category] = scalingFactor;
+        emit ScalingFactorUpdated(category, scalingFactor);
+    }
+    
+    /**
+     * @notice Set animation for a category
+     * @param category Impact category ID
+     * @param animationSvg SVG animation element
+     */
+    function setCategoryAnimation(uint8 category, string calldata animationSvg) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        _categoryAnimations[category] = animationSvg;
+        emit AnimationUpdated(category, animationSvg);
+    }
+    
+    /**
+     * @notice Set visualization size limits
+     * @param minSize Minimum size for impact visualization
+     * @param maxSize Maximum size for impact visualization
+     */
+    function setVisualizationSizeLimits(uint256 minSize, uint256 maxSize) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        require(minSize > 0 && maxSize > minSize, "Invalid size limits");
+        _minSize = minSize;
+        _maxSize = maxSize;
+        emit SizeLimitsUpdated(minSize, maxSize);
+    }
+    
+    /**
+     * @notice Set the maximum scaling factor allowed
+     * @param maxScalingFactor Maximum value for scaling factors
+     */
+    function setMaxScalingFactor(uint256 maxScalingFactor)
+        external
+        onlyRole(DESIGNER_ROLE)
+    {
+        require(maxScalingFactor > 0, "Max scaling factor must be positive");
+        _maxScalingFactor = maxScalingFactor;
+        emit MaxScalingFactorUpdated(maxScalingFactor);
+    }
+    
+    /**
+     * @notice Update the entire SVG template
+     * @param newTemplate New SVG template with placeholders
+     */
+    function updateSVGTemplate(string calldata newTemplate) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        // Verify template has all required placeholders
+        require(
+            bytes(newTemplate).length > 0 &&
+            _containsPlaceholder(newTemplate, "{{PRIMARY_COLOR}}") &&
+            _containsPlaceholder(newTemplate, "{{SECONDARY_COLOR}}") &&
+            _containsPlaceholder(newTemplate, "{{ICON}}") &&
+            _containsPlaceholder(newTemplate, "{{IMPACT_VALUE}}"),
+            "Template missing required placeholders"
+        );
+        
+        _svgTemplate = newTemplate;
+        emit TemplateUpdated();
+    }
+    
+    /**
+     * @notice Batch configuration of multiple categories
+     * @param categories Array of category IDs
+     * @param names Array of category names
+     * @param primaryColors Array of primary colors
+     * @param secondaryColors Array of secondary colors
+     * @param icons Array of icon SVG paths
+     * @param scalingFactors Array of scaling factors
+     */
+    function batchConfigureCategories(
+        uint8[] calldata categories,
+        string[] calldata names,
+        string[] calldata primaryColors,
+        string[] calldata secondaryColors,
+        string[] calldata icons,
+        uint256[] calldata scalingFactors
+    ) 
+        external 
+        onlyRole(DESIGNER_ROLE) 
+    {
+        require(
+            categories.length == names.length &&
+            categories.length == primaryColors.length &&
+            categories.length == secondaryColors.length &&
+            categories.length == icons.length &&
+            categories.length == scalingFactors.length,
+            "Array length mismatch"
+        );
+        
+        for (uint i = 0; i < categories.length; i++) {
+            uint8 category = categories[i];
+            uint256 scalingFactor = scalingFactors[i];
+            
+            require(scalingFactor > 0 && scalingFactor <= _maxScalingFactor, "Invalid scaling factor");
+            
+            _categoryNames[category] = names[i];
+            _categoryColors[category] = string(abi.encodePacked(primaryColors[i], ",", secondaryColors[i]));
+            _categoryIcons[category] = icons[i];
+            _categoryScalingFactors[category] = scalingFactor;
+            
+            emit CategoryConfigured(
+                category,
+                names[i],
+                primaryColors[i],
+                secondaryColors[i],
+                icons[i],
+                scalingFactor
+            );
+        }
+    }
+    
+    /**
+     * @notice Check if a string contains a placeholder
+     * @param source Source string
+     * @param placeholder Placeholder to check for
+     * @return True if placeholder exists in source
+     */
+    function _containsPlaceholder(string memory source, string memory placeholder) 
+        internal 
+        pure 
+        returns (bool) 
+    {
+        bytes memory sourceBytes = bytes(source);
+        bytes memory placeholderBytes = bytes(placeholder);
+        
+        if (sourceBytes.length < placeholderBytes.length) {
+            return false;
+        }
+        
+        for (uint i = 0; i <= sourceBytes.length - placeholderBytes.length; i++) {
+            bool found = true;
+            for (uint j = 0; j < placeholderBytes.length; j++) {
+                if (sourceBytes[i + j] != placeholderBytes[j]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * @notice Get the current size limits for impact visualization
+     * @return minSize Minimum size for impact visualization
+     * @return maxSize Maximum size for impact visualization
+     */
+    function getVisualizationSizeLimits() 
+        external 
+        view 
+        returns (uint256 minSize, uint256 maxSize) 
+    {
+        return (_minSize, _maxSize);
+    }
+    
+    /**
+     * @notice Get category details
+     * @param category Category ID
+     * @return name Category name
+     * @return primaryColor Primary color
+     * @return secondaryColor Secondary color
+     * @return icon SVG path data
+     * @return scalingFactor Impact scaling factor
+     */
+    function getCategoryDetails(uint8 category)
+        external
+        view
+        returns (
+            string memory name,
+            string memory primaryColor,
+            string memory secondaryColor,
+            string memory icon,
+            uint256 scalingFactor
+        )
+    {
+        name = _categoryNames[category];
+        
+        string memory colorPair = _categoryColors[category];
+        (primaryColor, secondaryColor) = _parseColors(colorPair);
+        
+        icon = _categoryIcons[category];
+        scalingFactor = _categoryScalingFactors[category];
+    }
+    
+    /**
+     * @notice Chunk-based string processing for very large SVGs
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category
+     * @param impactValue Numeric impact value
+     * @return Chunked SVG processing result to avoid gas limits
+     */
+    function generateLargeSVG(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue
+    ) 
+        external 
+        view 
+        returns (string memory) 
+    {
+        // Get color values
+        string memory colorPair = _categoryColors[impactCategory];
+        (string memory primaryColor, string memory secondaryColor) = _parseColors(colorPair);
+        
+        // Calculate impact visualization size
+        uint256 scalingFactor = _categoryScalingFactors[impactCategory];
+        uint256 visualSize = _calculateVisualSize(impactValue, scalingFactor);
+        
+        // Get impact unit
+        string memory impactUnit = _getImpactUnit(impactCategory);
+        
+        // For very large SVGs, process in chunks to avoid gas limits
+        string memory svgHeader = string(abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 100 100">',
+            '<defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">',
+            '<stop offset="0%" stop-color="', primaryColor, '"/>',
+            '<stop offset="100%" stop-color="', secondaryColor, '"/>',
+            '</linearGradient></defs>',
+            '<rect width="100" height="100" fill="url(#bg)" rx="5" ry="5"/>'
+        ));
+        
+        string memory svgBody = string(abi.encodePacked(
+            '<g id="icon" fill="none" stroke="white" stroke-width="1.5">',
+            _categoryIcons[impactCategory],
+            '</g>',
+            '<text x="50" y="20" font-family="Arial" font-size="4" fill="white" text-anchor="middle">',
+            _categoryNames[impactCategory],
+            '</text>',
+            '<text x="50" y="90" font-family="Arial" font-size="3" fill="white" text-anchor="middle">',
+            'Token #', tokenId.toString(),
+            '</text>'
+        ));
+        
+        string memory svgFooter = string(abi.encodePacked(
+            '<circle cx="50" cy="50" r="', visualSize.toString(), '" fill="white" fill-opacity="0.3">',
+            _categoryAnimations[impactCategory],
+            '</circle>',
+            '<text x="50" y="52" font-family="Arial" font-size="5" fill="white" text-anchor="middle" font-weight="bold">',
+            impactValue.toString(),
+            '</text>',
+            '<text x="50" y="58" font-family="Arial" font-size="2" fill="white" text-anchor="middle">',
+            impactUnit,
+            '</text>',
+            '</svg>'
+        ));
+        
+        return string(abi.encodePacked(svgHeader, svgBody, svgFooter));
+    }
+    
+    // =====================================================
     // Required Overrides
     // =====================================================
     
@@ -853,6 +1031,10 @@ contract TerraStakeMetadataRenderer is
     event ScalingFactorUpdated(
         uint8 indexed category,
         uint256 factor
+    );
+    
+    event MaxScalingFactorUpdated(
+        uint256 maxFactor
     );
     
     event AnimationUpdated(
