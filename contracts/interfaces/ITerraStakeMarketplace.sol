@@ -1,10 +1,47 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 
+/**
+ * @title ITerraStakeMarketplace
+ * @notice Interface for the TerraStake NFT marketplace with fractionalization, bidding and analytics
+ */
 interface ITerraStakeMarketplace {
+    // Custom errors
+    error NotAuthorized();
+    error NotOwner();
+    error InvalidPrice();
+    error ListingNotActive();
+    error AuctionEnded();
+    error InsufficientFunds();
+    error NotBidder();
+    error RoyaltyTooHigh();
+    error AlreadyHighestBidder();
+    error OfferExpired();
+    error CannotBidOwnItem();
+    error SignatureExpired();
+    error TokenNotApproved();
+    error InvalidExpiration();
+    error InvalidOffer();
+    error InvalidCollection();
+    error UnsupportedPaymentToken();
+    error FeesTooHigh();
+    error InvalidSignature();
+    error InvalidRoyaltyReceiver();
+
     // Structs
+    struct Collection {
+        bool verified;
+        uint256 floorPrice;
+        uint256 totalVolume;
+        uint256 totalSales;
+        uint256 royaltyPercentage;
+        address royaltyReceiver;
+        bool customRoyalty;
+    }
+
     struct Listing {
         address seller;
         uint256 tokenId;
@@ -41,16 +78,6 @@ interface ITerraStakeMarketplace {
         uint256[] timestampHistory;
     }
 
-    struct Collection {
-        bool verified;
-        uint256 floorPrice;
-        uint256 totalVolume;
-        uint256 totalSales;
-        uint256 royaltyPercentage;
-        address royaltyReceiver;
-        bool customRoyalty;
-    }
-
     struct MarketMetrics {
         uint256 totalVolume;
         uint256 activeListings;
@@ -60,9 +87,18 @@ interface ITerraStakeMarketplace {
         uint256 lastUpdateBlock;
     }
 
-    // View Functions
-    function nftContract() external view returns (address);
+    // Constants
+    function BASIS_POINTS() external pure returns (uint256);
+    function MIN_BID_INCREMENT_PERCENT() external pure returns (uint256);
+    function MAX_ROYALTY_PERCENTAGE() external pure returns (uint256);
+    function CANCELLATION_FEE() external pure returns (uint256);
+    function GOVERNANCE_ROLE() external pure returns (bytes32);
+    function OPERATOR_ROLE() external pure returns (bytes32);
+    function RELAYER_ROLE() external pure returns (bytes32);
+
+    // State variables
     function tStakeToken() external view returns (address);
+    function nftContract() external view returns (address);
     function fractionContract() external view returns (address);
     function metadataContract() external view returns (address);
     function treasury() external view returns (address);
@@ -76,16 +112,16 @@ interface ITerraStakeMarketplace {
     function auctionExtensionTime() external view returns (uint256);
     function auctionExtensionThreshold() external view returns (uint256);
     function nonces(address user) external view returns (uint256);
+    function collections(address collection) external view returns (Collection memory);
     function listings(uint256 tokenId) external view returns (Listing memory);
     function bids(uint256 tokenId) external view returns (Bid memory);
+    function pendingReturns(address user) external view returns (uint256);
     function offers(uint256 tokenId, address offerer) external view returns (Offer memory);
     function tokenHistory(uint256 tokenId) external view returns (TokenHistory memory);
     function fractionalTokens(uint256 tokenId) external view returns (address);
-    function collections(address collection) external view returns (Collection memory);
-    function pendingReturns(address user) external view returns (uint256);
     function metrics() external view returns (MarketMetrics memory);
 
-    // Governance/Admin Functions
+    // Core functions
     function initialize(
         address _nftContract,
         address _tStakeToken,
@@ -94,53 +130,44 @@ interface ITerraStakeMarketplace {
         address _stakingPool,
         address _liquidityPool
     ) external;
-    
+
     function setPaymentTokenSupport(address token, bool isSupported) external;
-    
+
     function updateFeeStructure(
         uint256 _stakingFeePercent,
         uint256 _liquidityFeePercent,
         uint256 _treasuryFeePercent,
         uint256 _burnFeePercent
     ) external;
-    
+
     function updateAuctionParameters(
         uint256 _extensionTime,
         uint256 _extensionThreshold
     ) external;
-    
+
     function addCollection(
         address collection,
         bool verified,
         uint256 royaltyPercentage,
         address royaltyReceiver
     ) external;
-    
+
+    function setCollectionVerification(address collection, bool isVerified) external;
+
+    function updateCollectionRoyalty(
+        address collection,
+        uint256 royaltyPercentage,
+        address royaltyReceiver
+    ) external;
+
     function updateCoreAddresses(
         address _treasury,
         address _stakingPool,
         address _liquidityPool,
         address _metadataContract
     ) external;
-    
-    function updateContracts(
-        address _nftContract,
-        address _fractionContract
-    ) external;
-    
-    function calculateFloorPrice(address collection) external;
-    
-    function pause() external;
-    
-    function unpause() external;
-    
-    function rescueTokens(
-        address token,
-        uint256 amount,
-        address destination
-    ) external;
 
-    // User Functions
+    // Listing and sales functions
     function listNFT(
         uint256 tokenId,
         uint256 price,
@@ -148,87 +175,80 @@ interface ITerraStakeMarketplace {
         uint256 expiry,
         address paymentToken
     ) external;
-    
-    function batchListNFTs(
-        uint256[] calldata tokenIds,
-        uint256[] calldata prices,
-        bool[] calldata isAuctions,
-        uint256[] calldata expiries,
-        address paymentToken
+
+    function listNFTWithSignature(
+        uint256 tokenId,
+        uint256 price,
+        bool isAuction,
+        uint256 expiry,
+        address paymentToken,
+        bytes calldata signature
     ) external;
-    
+
+    function buyNFT(uint256 tokenId) external;
+
+    function placeBid(uint256 tokenId, uint256 bidAmount) external;
+
+    function finalizeAuction(uint256 tokenId) external;
+
     function updateListing(
         uint256 tokenId,
         uint256 newPrice,
         uint256 newExpiry
     ) external;
-    
+
     function cancelListing(uint256 tokenId) external;
-    
-    function buyNFT(uint256 tokenId) external;
-    
-    function placeBid(uint256 tokenId, uint256 bidAmount) external;
-    
-    function finalizeAuction(uint256 tokenId) external;
-    
+
+    // Fractionalization function
+    function fractionalizeNFT(
+        uint256 tokenId,
+        uint256 fractionSupply,
+        uint256 lockTime
+    ) external;
+
+    // Offer functions
     function createOffer(
         uint256 tokenId,
         uint256 offerAmount,
         uint256 expiry,
         address paymentToken
     ) external;
-    
+
     function cancelOffer(uint256 tokenId) external;
-    
+
     function acceptOffer(uint256 tokenId, address offerer) external;
-    
-    function withdrawPendingReturns() external;
-    
-    function fractionalizeNFT(
-        uint256 tokenId,
-        uint256 fractionSupply,
-        uint256 lockTime
-    ) external;
-    
-    function listWithSignature(
-        address seller,
-        uint256 tokenId,
-        uint256 price,
-        bool isAuction,
-        uint256 expiry,
-        address paymentToken,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
+
+    // Financial functions
+    function withdrawFunds() external;
+
+    // Admin functions
+    function processBatchOperation(
+        uint256[] calldata tokenIds,
+        string calldata operationType
     ) external;
 
-    // Utility Functions
-    function getTokenMetadata(uint256 tokenId) external view returns (
-        string memory name,
-        string memory description,
-        string memory image,
-        bytes memory attributes
+    function updateContracts(
+        address _nftContract,
+        address _fractionContract
+    ) external;
+
+    function pause() external;
+
+    function unpause() external;
+
+    // View functions
+    function isPaymentTokenSupported(address token) external view returns (bool);
+
+    function getSupportedPaymentTokens() external view returns (address[] memory);
+
+    function getActiveCollections() external view returns (address[] memory);
+
+    function getCollectionTokenIds(address collection) external view returns (uint256[] memory);
+
+    function getTokenPriceHistory(uint256 tokenId) external view returns (
+        uint256[] memory prices,
+        uint256[] memory timestamps
     );
-    
-    function getTokenRarity(uint256 tokenId) external view returns (
-        uint256 rank,
-        uint256 totalSupply
-    );
-    
-    function getRecommendedPrice(uint256 tokenId) external view returns (uint256);
-    
-    function verifyListingSignature(
-        address seller,
-        uint256 tokenId,
-        uint256 price,
-        bool isAuction,
-        uint256 expiry,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external view returns (bool);
 
     // Events
     event NFTListed(uint256 indexed tokenId, address indexed seller, uint256 price, bool isAuction, uint256 expiry, address paymentToken);
