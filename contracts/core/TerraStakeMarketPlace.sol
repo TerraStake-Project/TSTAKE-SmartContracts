@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -9,6 +10,7 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC721/utils/ERC721HolderUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/structs/EnumerableSetUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/cryptography/ECDSAUpgradeable.sol";
+import "./interfaces/IFractionToken.sol";
 
 // Custom errors
 error NotAuthorized();
@@ -43,12 +45,6 @@ interface ITerraStakeNFT {
     function getApproved(uint256 tokenId) external view returns (address);
     function isApprovedForAll(address owner, address operator) external view returns (bool);
     function approve(address to, uint256 tokenId) external;
-}
-
-interface ITerraStakeFractions {
-    function fractionalize(address owner, uint256 tokenId, uint256 fractionSupply, uint256 lockTime) external returns (address);
-    function buyFractions(address fractionToken, uint256 amount) external;
-    function sellFractions(address fractionToken, uint256 amount) external;
 }
 
 interface ITerraStakeMetadata {
@@ -93,7 +89,7 @@ contract TerraStakeMarketplace is
     // Contract references
     ITerraStakeToken public tStakeToken;
     ITerraStakeNFT public nftContract;
-    ITerraStakeFractions public fractionContract;
+    IFractionToken public fractionContract;
     ITerraStakeMetadata public metadataContract;
     address public treasury;
     address public stakingPool;
@@ -238,32 +234,26 @@ contract TerraStakeMarketplace is
         __ReentrancyGuard_init();
         __Pausable_init();
         __ERC721Holder_init();
-
         nftContract = ITerraStakeNFT(_nftContract);
         tStakeToken = ITerraStakeToken(_tStakeToken);
-        fractionContract = ITerraStakeFractions(_fractionContract);
+        fractionContract = IFractionToken(_fractionContract);
         treasury = _treasury;
         stakingPool = _stakingPool;
         liquidityPool = _liquidityPool;
-
         // Add platform token as supported payment
         supportedPaymentTokens.add(_tStakeToken);
-
         // Set initial fee structure (5% total fee by default)
         stakingFeePercent = 200; // 2%
         liquidityFeePercent = 100; // 1%
         treasuryFeePercent = 100; // 1%
         burnFeePercent = 100; // 1%
         totalFeePercent = 500; // 5%
-
         // Set auction parameters
         auctionExtensionTime = 15 minutes;
         auctionExtensionThreshold = 15 minutes;
-
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(GOVERNANCE_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
-
         metrics.lastUpdateBlock = block.number;
     }
 
@@ -274,7 +264,6 @@ contract TerraStakeMarketplace is
      */
     function setPaymentTokenSupport(address token, bool isSupported) external onlyGovernance {
         if (token == address(0)) revert InvalidCollection();
-
         if (isSupported && !supportedPaymentTokens.contains(token)) {
             supportedPaymentTokens.add(token);
             emit PaymentTokenAdded(token);
@@ -305,7 +294,8 @@ contract TerraStakeMarketplace is
         
         emit FeeStructureUpdated(_stakingFeePercent, _liquidityFeePercent, _treasuryFeePercent, _burnFeePercent);
     }
-/**
+
+    /**
      * @notice Update auction parameters
      * @dev Only callable by governance
      */
@@ -329,13 +319,13 @@ contract TerraStakeMarketplace is
     function addCollection(
         address collection,
         bool verified,
-        uint256 royaltyPercentage,
+        uint256
+        royaltyPercentage,
         address royaltyReceiver
     ) external onlyOperator {
         if (collection == address(0)) revert InvalidCollection();
         if (royaltyPercentage > MAX_ROYALTY_PERCENTAGE) revert RoyaltyTooHigh();
         if (royaltyReceiver == address(0) && royaltyPercentage > 0) revert InvalidRoyaltyReceiver();
-
         activeCollections.add(collection);
         
         collections[collection] = Collection({
@@ -364,711 +354,38 @@ contract TerraStakeMarketplace is
     }
 
     /**
-     * @notice List an NFT for sale
-     * @param tokenId The ID of the NFT to list
-     * @param price The listing price
-     * @param isAuction Whether to list as auction
-     * @param expiry Listing expiry timestamp
-     * @param paymentToken The token to accept as payment
+     * @notice Set verification status for a collection
+     * @param collection The collection address to verify
+     * @param isVerified Whether the collection is verified
      */
-    function listNFT(
-        uint256 tokenId,
-        uint256 price,
-        bool isAuction,
-        uint256 expiry,
-        address paymentToken
-    ) external whenNotPaused nonReentrant {
-        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
-        if (price == 0) revert InvalidPrice();
-        if (expiry <= block.timestamp) revert InvalidExpiration();
-        if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
-        
-        // Transfer NFT to marketplace
-        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
-        
-        // Create listing
-        listings[tokenId] = Listing({
-            seller: msg.sender,
-            tokenId: tokenId,
-            price: price,
-            isAuction: isAuction,
-            isFractional: false,
-            fractions: 0,
-            expiry: expiry,
-            active: true,
-            paymentToken: paymentToken
-        });
-        
-        // Set up auction if needed
-        if (isAuction) {
-            bids[tokenId] = Bid({
-                highestBidder: address(0),
-                highestBid: 0,
-                bidEndTime: expiry,
-                paymentToken: paymentToken
-            });
-        }
-        
-        // Add to collection tracking
-        address collection = address(nftContract);
-        collectionTokenIds[collection].add(tokenId);
-        
-        // Update metrics
-        unchecked {
-            metrics.activeListings += 1;
-        }
-        
-        emit NFTListed(tokenId, msg.sender, price, isAuction, expiry, paymentToken);
-    }
-
-    /**
-     * @notice Batch list multiple NFTs
-     * @param tokenIds Array of token IDs to list
-     * @param prices Array of prices
-     * @param isAuctions Array of auction flags
-     * @param expiries Array of expiry timestamps
-     * @param paymentToken The token to accept as payment for all listings
-     */
-    function batchListNFTs(
-        uint256[] calldata tokenIds,
-        uint256[] calldata prices,
-        bool[] calldata isAuctions,
-        uint256[] calldata expiries,
-        address paymentToken
-    ) external whenNotPaused nonReentrant {
-        if (tokenIds.length != prices.length || 
-            tokenIds.length != isAuctions.length || 
-            tokenIds.length != expiries.length) revert InvalidOffer();
-        
-        if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
-        
-        uint256 successCount = 0;
-        address collection = address(nftContract);
-        
-        for (uint256 i = 0; i < tokenIds.length; i++) {
-            uint256 tokenId = tokenIds[i];
-            uint256 price = prices[i];
-            bool isAuction = isAuctions[i];
-            uint256 expiry = expiries[i];
-            
-            if (nftContract.ownerOf(tokenId) == msg.sender && 
-                price > 0 && 
-                expiry > block.timestamp) {
-                
-                // Transfer NFT to marketplace
-                nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
-                
-                // Create listing
-                listings[tokenId] = Listing({
-                    seller: msg.sender,
-                    tokenId: tokenId,
-                    price: price,
-                    isAuction: isAuction,
-                    isFractional: false,
-                    fractions: 0,
-                    expiry: expiry,
-                    active: true,
-                    paymentToken: paymentToken
-                });
-                
-                // Set up auction if needed
-                if (isAuction) {
-                    bids[tokenId] = Bid({
-                        highestBidder: address(0),
-                        highestBid: 0,
-                        bidEndTime: expiry,
-                        paymentToken: paymentToken
-                    });
-                }
-                
-                // Add to collection tracking
-                collectionTokenIds[collection].add(tokenId);
-                
-                unchecked {
-                    successCount++;
-                }
-                
-                emit NFTListed(tokenId, msg.sender, price, isAuction, expiry, paymentToken);
-            }
-        }
-        
-        // Update metrics
-        unchecked {
-            metrics.activeListings += successCount;
-        }
-        
-        emit BatchOperationProcessed(msg.sender, successCount, "BatchList");
-    }
-
-    /**
-     * @notice Update a listing's price and expiry
-     * @param tokenId The ID of the NFT
-     * @param newPrice The new price
-     * @param newExpiry The new expiry timestamp
-     */
-    function updateListing(
-        uint256 tokenId,
-        uint256 newPrice,
-        uint256 newExpiry
-    ) external nonReentrant onlyListingOwner(tokenId) {
-        Listing storage listing = listings[tokenId];
-        
-        if (!listing.active) revert ListingNotActive();
-        if (listing.isAuction && bids[tokenId].highestBidder != address(0)) revert NotAuthorized();
-        if (newPrice == 0) revert InvalidPrice();
-        if (newExpiry <= block.timestamp) revert InvalidExpiration();
-        
-        listing.price = newPrice;
-        listing.expiry = newExpiry;
-        
-        // Also update auction end time if it's an auction
-        if (listing.isAuction) {
-            bids[tokenId].bidEndTime = newExpiry;
-        }
-        
-        emit ListingUpdated(tokenId, newPrice, newExpiry);
-    }
-
-    /**
-     * @notice Cancel a listing
-     * @param tokenId The ID of the NFT to cancel
-     */
-    function cancelListing(uint256 tokenId) external nonReentrant onlyListingOwner(tokenId) {
-        Listing storage listing = listings[tokenId];
-        if (!listing.active) revert ListingNotActive();
-        
-        // For auctions, check if there are bids
-        if (listing.isAuction && bids[tokenId].highestBidder != address(0)) {
-            if (block.timestamp <= listing.expiry) revert NotAuthorized();
-            
-            // Return the NFT to seller but don't reset the auction - it needs to be finalized
-            nftContract.safeTransferFrom(address(this), listing.seller, tokenId);
-            listing.active = false;
-        } else {
-            address paymentToken = listing.paymentToken;
-            
-            // Charge cancellation fee if the listing is recent
-            if (block.timestamp < listing.expiry - 1 days) {
-                uint256 cancellationFee = (listing.price * CANCELLATION_FEE) / BASIS_POINTS;
-                
-                // Only charge if the seller has the tokens
-                if (cancellationFee > 0 && 
-                    IERC20Upgradeable(paymentToken).balanceOf(msg.sender) >= cancellationFee && 
-                    IERC20Upgradeable(paymentToken).allowance(msg.sender, address(this)) >= cancellationFee) {
-                    
-                    // Take cancellation fee
-                    IERC20Upgradeable(paymentToken).transferFrom(msg.sender, treasury, cancellationFee);
-                }
-            }
-            
-            // For regular listings or auctions without bids, return the NFT and deactivate
-            nftContract.safeTransferFrom(address(this), listing.seller, tokenId);
-            listing.active = false;
-            
-            // Update metrics
-            unchecked {
-                metrics.activeListings -= 1;
-            }
-        }
-
-        emit ListingCancelled(tokenId, msg.sender);
-    }
-
-    /**
-     * @notice Buy an NFT at the listed price
-     * @param tokenId The ID of the NFT to buy
-     */
-    function buyNFT(uint256 tokenId) external whenNotPaused nonReentrant {
-        Listing storage listing = listings[tokenId];
-        if (!listing.active) revert ListingNotActive();
-        if (listing.isAuction) revert NotAuthorized();
-        if (block.timestamp > listing.expiry) revert AuctionEnded();
-
-        uint256 price = listing.price;
-        address seller = listing.seller;
-        address paymentToken = listing.paymentToken;
-        
-        // Get collection from which token came (needed for royalties)
-        address collection = address(nftContract);
-        
-        // Calculate royalties
-        (address royaltyReceiver, uint256 royaltyAmount) = _calculateRoyalties(collection, tokenId, price);
-        
-        // Mark listing as inactive (checks-effects-interactions pattern)
-        listing.active = false;
-        
-        // Update metrics
-        unchecked {
-            metrics.activeListings -= 1;
-            metrics.totalVolume += price;
-            collections[collection].totalVolume += price;
-            collections[collection].totalSales += 1;
-        }
-        
-        // Update token history
-        _updateTokenHistory(tokenId, price, msg.sender);
-        
-        // Process fees and royalties
-        uint256 sellerAmount = _processFeesAndRoyalties(price, tokenId, royaltyReceiver, royaltyAmount, paymentToken);
-        
-        // Transfer payment tokens from buyer to contract
-        bool success = IERC20Upgradeable(paymentToken).transferFrom(msg.sender, address(this), price);
-        if (!success) revert InsufficientFunds();
-        
-        // Transfer remaining amount to seller
-        IERC20Upgradeable(paymentToken).transfer(seller, sellerAmount);
-        
-        // Transfer NFT to buyer
-        nftContract.safeTransferFrom(address(this), msg.sender, tokenId);
-        
-        emit NFTPurchased(tokenId, msg.sender, price, paymentToken);
-    }
-
-    /**
-     * @notice Place a bid on an NFT auction
-     * @param tokenId The ID of the NFT to bid on
-     * @param bidAmount The bid amount
-     */
-    function placeBid(uint256 tokenId, uint256 bidAmount) external whenNotPaused nonReentrant {
-        Listing storage listing = listings[tokenId];
-        if (!listing.active) revert ListingNotActive();
-        if (!listing.isAuction) revert NotAuthorized();
-        
-        Bid storage auction = bids[tokenId];
-        if (block.timestamp > auction.bidEndTime) revert AuctionEnded();
-        if (listing.seller == msg.sender) revert CannotBidOwnItem();
-        if (auction.highestBidder == msg.sender) revert AlreadyHighestBidder();
-
-        // Check if bid is higher than current highest bid plus minimum increment
-        uint256 minBidRequired;
-        if (auction.highestBidder == address(0)) {
-            // First bid must be at least the reserve price
-            minBidRequired = listing.price;
-        } else {
-            // Subsequent bids must increase by at least MIN_BID_INCREMENT_PERCENT
-            minBidRequired = auction.highestBid + (auction.highestBid * MIN_BID_INCREMENT_PERCENT / 100);
-        }
-        
-        if (bidAmount < minBidRequired) revert InvalidPrice();
-
-        address paymentToken = auction.paymentToken;
-
-        // Store previous bidder info for refund
-        address previousBidder = auction.highestBidder;
-        uint256 previousBid = auction.highestBid;
-        
-        // Update auction data (checks-effects-interactions pattern)
-        auction.highestBidder = msg.sender;
-        auction.highestBid = bidAmount;
-        
-        // Extend auction if bid is placed close to end time
-        if (auction.bidEndTime - block.timestamp < auctionExtensionThreshold) {
-            auction.bidEndTime += auctionExtensionTime;
-            emit AuctionExtended(tokenId, auction.bidEndTime);
-        }
-
-        // Transfer bid amount from bidder to contract
-        bool success = IERC20Upgradeable(paymentToken).transferFrom(msg.sender, address(this), bidAmount);
-        if (!success) revert InsufficientFunds();
-        
-        // Refund previous bidder if there was one
-if (previousBidder != address(0)) {
-            IERC20Upgradeable(paymentToken).transfer(previousBidder, previousBid);
-        }
-        
-        emit NFTBidPlaced(tokenId, msg.sender, bidAmount, paymentToken);
-    }
-
-    /**
-     * @notice Finalize an auction after it has ended
-     * @param tokenId The ID of the NFT auction to finalize
-     */
-    function finalizeAuction(uint256 tokenId) external nonReentrant {
-        Listing storage listing = listings[tokenId];
-        Bid storage auction = bids[tokenId];
-        
-        if (!listing.active) revert ListingNotActive();
-        if (!listing.isAuction) revert NotAuthorized();
-        if (block.timestamp <= auction.bidEndTime) revert NotAuthorized();
-        
-        address highestBidder = auction.highestBidder;
-        uint256 highestBid = auction.highestBid;
-        address paymentToken = auction.paymentToken;
-        
-        if (highestBidder == address(0)) {
-            // No bids were placed, return NFT to seller
-            nftContract.safeTransferFrom(address(this), listing.seller, tokenId);
-        } else {
-            // Get collection for royalties
-            address collection = address(nftContract);
-            
-            // Calculate royalties
-            (address royaltyReceiver, uint256 royaltyAmount) = _calculateRoyalties(collection, tokenId, highestBid);
-            
-            // Process fees and royalties
-            uint256 sellerAmount = _processFeesAndRoyalties(highestBid, tokenId, royaltyReceiver, royaltyAmount, paymentToken);
-            
-            // Update metrics
-            unchecked {
-                metrics.totalVolume += highestBid;
-                collections[collection].totalVolume += highestBid;
-                collections[collection].totalSales += 1;
-            }
-            
-            // Update token history
-            _updateTokenHistory(tokenId, highestBid, highestBidder);
-            
-            // Transfer NFT to highest bidder
-            nftContract.safeTransferFrom(address(this), highestBidder, tokenId);
-            
-            // Transfer remaining amount to seller - highestBid already in contract from placeBid
-            IERC20Upgradeable(paymentToken).transfer(listing.seller, sellerAmount);
-            
-            emit NFTAuctionFinalized(tokenId, highestBidder, highestBid, paymentToken);
-        }
-        
-        // Mark listing as inactive
-        listing.active = false;
-        
-        // Update metrics
-        unchecked {
-            metrics.activeListings -= 1;
+    function setCollectionVerification(address collection, bool isVerified) external onlyOperator {
+        if (!activeCollections.contains(collection)) revert InvalidCollection();
+        collections[collection].verified = isVerified;
+        if (isVerified) {
+            emit CollectionVerified(collection);
         }
     }
 
     /**
-     * @notice Make an offer for an NFT
-     * @param tokenId The ID of the NFT
-     * @param offerAmount The offer amount
-     * @param expiry Offer expiry timestamp
-     * @param paymentToken The token used for payment
+     * @notice Update collection royalty information
+     * @param collection The collection address
+     * @param royaltyPercentage The royalty percentage (in basis points)
+     * @param royaltyReceiver The address that receives royalties
      */
-    function createOffer(
-        uint256 tokenId,
-        uint256 offerAmount,
-        uint256 expiry,
-        address paymentToken
-    ) external whenNotPaused nonReentrant {
-        if (expiry <= block.timestamp) revert InvalidExpiration();
-        if (offerAmount == 0) revert InvalidPrice();
-        if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
-        
-        address owner = nftContract.ownerOf(tokenId);
-        if (owner == address(0)) revert InvalidOffer();
-        if (owner == msg.sender) revert CannotBidOwnItem();
-        
-        // Refund old offer if exists
-        if (offers[tokenId][msg.sender].active) {
-            address oldPaymentToken = offers[tokenId][msg.sender].paymentToken;
-            uint256 oldOfferAmount = offers[tokenId][msg.sender].offerAmount;
-            
-            IERC20Upgradeable(oldPaymentToken).transfer(msg.sender, oldOfferAmount);
-        }
-        
-        // Transfer offer amount to contract
-        bool success = IERC20Upgradeable(paymentToken).transferFrom(msg.sender, address(this), offerAmount);
-        if (!success) revert InsufficientFunds();
-        
-        // Create the offer
-        offers[tokenId][msg.sender] = Offer({
-            offerer: msg.sender,
-            offerAmount: offerAmount,
-            expiry: expiry,
-            active: true,
-            paymentToken: paymentToken
-        });
-        
-        // Update metrics
-        unchecked {
-            metrics.totalOffers += 1;
-        }
-        
-        emit OfferCreated(tokenId, msg.sender, offerAmount, expiry, paymentToken);
-    }
-
-    /**
-     * @notice Cancel an offer for an NFT
-     * @param tokenId The ID of the NFT
-     */
-    function cancelOffer(uint256 tokenId) external nonReentrant {
-        Offer storage offer = offers[tokenId][msg.sender];
-        
-        if (!offer.active) revert InvalidOffer();
-        
-        offer.active = false;
-        
-        // Update metrics
-        unchecked {
-            metrics.totalOffers -= 1;
-        }
-        
-        // Refund the offer amount
-        IERC20Upgradeable(offer.paymentToken).transfer(msg.sender, offer.offerAmount);
-        
-        emit OfferCancelled(tokenId, msg.sender);
-    }
-
-    /**
-     * @notice Accept an offer for an NFT
-     * @param tokenId The ID of the NFT
-     * @param offerer The address of the user who made the offer
-     */
-    function acceptOffer(uint256 tokenId, address offerer) external whenNotPaused nonReentrant {
-        Offer storage offer = offers[tokenId][offerer];
-        
-        if (!offer.active) revert InvalidOffer();
-        if (block.timestamp > offer.expiry) revert OfferExpired();
-        
-        // Verify NFT ownership
-        address nftOwner = nftContract.ownerOf(tokenId);
-        if (nftOwner != msg.sender) revert NotOwner();
-        
-        uint256 offerAmount = offer.offerAmount;
-        address paymentToken = offer.paymentToken;
-        
-        // Calculate royalties
-        address collection = address(nftContract);
-        (address royaltyReceiver, uint256 royaltyAmount) = _calculateRoyalties(collection, tokenId, offerAmount);
-        
-        // Mark the offer as inactive
-        offer.active = false;
-        
-        // Update metrics
-        unchecked {
-            metrics.totalOffers -= 1;
-            metrics.totalVolume += offerAmount;
-            collections[collection].totalVolume += offerAmount;
-            collections[collection].totalSales += 1;
-        }
-        
-        // Update token history
-        _updateTokenHistory(tokenId, offerAmount, offerer);
-        
-        // Process fees and royalties (funds already in contract from createOffer)
-        uint256 sellerAmount = _processFeesAndRoyalties(offerAmount, tokenId, royaltyReceiver, royaltyAmount, paymentToken);
-        
-        // Transfer NFT from seller to offerer
-        nftContract.safeTransferFrom(msg.sender, offerer, tokenId);
-        
-        // Transfer payment to seller
-        IERC20Upgradeable(paymentToken).transfer(msg.sender, sellerAmount);
-        
-        // If there was an active listing for this NFT, deactivate it
-        if (listings[tokenId].active && listings[tokenId].seller == msg.sender) {
-            listings[tokenId].active = false;
-            
-            unchecked {
-                metrics.activeListings -= 1;
-            }
-        }
-        
-        emit OfferAccepted(tokenId, offerer, msg.sender, offerAmount);
-    }
-
-    /**
-     * @notice Process marketplace fees and creator royalties
-     * @param amount The total transaction amount
-     * @param tokenId The NFT token ID for royalty calculation
-     * @param royaltyReceiver The address to receive royalties
-     * @param royaltyAmount The amount of royalties to pay
-     * @param paymentToken The token used for payment
-     * @return sellerAmount The remaining amount for the seller after fees and royalties
-     */
-    function _processFeesAndRoyalties(
-        uint256 amount,
-        uint256 tokenId,
-        address royaltyReceiver,
-        uint256 royaltyAmount,
-        address paymentToken
-    ) internal returns (uint256) {
-        // Calculate fee amounts
-        uint256 stakingAmount = amount * stakingFeePercent / BASIS_POINTS;
-        uint256 liquidityAmount = amount * liquidityFeePercent / BASIS_POINTS;
-        uint256 treasuryAmount = amount * treasuryFeePercent / BASIS_POINTS;
-        uint256 burnAmount = amount * burnFeePercent / BASIS_POINTS;
-        uint256 totalFees = stakingAmount + liquidityAmount + treasuryAmount + burnAmount + royaltyAmount;
-        
-        // Distribute marketplace fees
-        if (stakingAmount > 0) {
-            IERC20Upgradeable(paymentToken).transfer(stakingPool, stakingAmount);
-        }
-        
-        if (liquidityAmount > 0) {
-            IERC20Upgradeable(paymentToken).transfer(liquidityPool, liquidityAmount);
-        }
-        
-        if (treasuryAmount > 0) {
-            IERC20Upgradeable(paymentToken).transfer(treasury, treasuryAmount);
-        }
-        
-        if (burnAmount > 0 && paymentToken == address(tStakeToken)) {
-            tStakeToken.burn(address(this), burnAmount);
-        } else if (burnAmount > 0) {
-            // If not the platform token, send to burn address
-            IERC20Upgradeable(paymentToken).transfer(address(0xdead), burnAmount);
-        }
-        
-        // Pay royalties to creator if applicable
-        if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
-            IERC20Upgradeable(paymentToken).transfer(royaltyReceiver, royaltyAmount);
-            emit RoyaltyPaid(tokenId, royaltyReceiver, royaltyAmount);
-        }
-        
-        emit FeesDistributed(stakingAmount, liquidityAmount, treasuryAmount, burnAmount);
-        
-        // Return remaining amount for seller
-        return amount - totalFees;
-    }
-
-    /**
-     * @notice Calculate royalties for a token sale
-     * @param collection The NFT collection address
-     * @param tokenId The token ID
-     * @param amount The sale amount
-     * @return receiver Royalty receiver address
-     * @return royaltyAmount Royalty amount to pay
-     */
-    function _calculateRoyalties(
+    function updateCollectionRoyalty(
         address collection,
-        uint256 tokenId,
-        uint256 amount
-    ) internal view returns (address receiver, uint256 royaltyAmount) {
-        try ITerraStakeNFT(collection).royaltyInfo(tokenId, amount) returns (address _receiver, uint256 _royaltyAmount) {
-            // Use ERC2981 royalty if available and not exceeding maximum
-            if (_royaltyAmount <= amount * MAX_ROYALTY_PERCENTAGE / BASIS_POINTS) {
-                return (_receiver, _royaltyAmount);
-            }
-        } catch {
-            // Fall back to collection-level royalty settings if ERC2981 not supported
-        }
+        uint256 royaltyPercentage,
+        address royaltyReceiver
+    ) external onlyOperator {
+        if (!activeCollections.contains(collection)) revert InvalidCollection();
+        if (royaltyPercentage > MAX_ROYALTY_PERCENTAGE) revert RoyaltyTooHigh();
+        if (royaltyReceiver == address(0) && royaltyPercentage > 0) revert InvalidRoyaltyReceiver();
         
-        // Use collection-level royalty settings
-        if (collections[collection].customRoyalty) {
-            receiver = collections[collection].royaltyReceiver;
-            royaltyAmount = amount * collections[collection].royaltyPercentage / BASIS_POINTS;
-        } else {
-            // No royalty info available
-            receiver = address(0);
-            royaltyAmount = 0;
-        }
-    }
-
-    /**
-     * @notice Update token price history
-     * @param tokenId The token ID
-     * @param price The sale price
-     * @param buyer The buyer address
-     */
-    function _updateTokenHistory(uint256 tokenId, uint256 price, address buyer) internal {
-        TokenHistory storage history = tokenHistory[tokenId];
+        collections[collection].royaltyPercentage = royaltyPercentage;
+        collections[collection].royaltyReceiver = royaltyReceiver;
+        collections[collection].customRoyalty = true;
         
-        // Update last sold information
-        history.lastSoldPrice = price;
-        history.lastSoldTo = buyer;
-        history.lastSoldTime = block.timestamp;
-        
-        // Update highest ever price if applicable
-        if (price > history.highestEverPrice) {
-            history.highestEverPrice = price;
-        }
-        
-        // Add to price history (up to 10 entries)
-        if (history.priceHistory.length < 10) {
-            history.priceHistory.push(price);
-            history.timestampHistory.push(block.timestamp);
-        } else {
-            // Shift array and add new entry
-            for (uint256 i = 0; i < 9; i++) {
-                history.priceHistory[i] = history.priceHistory[i + 1];
-                history.timestampHistory[i] = history.timestampHistory[i + 1];
-            }
-            history.priceHistory[9] = price;
-            history.timestampHistory[9] = block.timestamp;
-        }
-    }
-
-    /**
-     * @notice Withdraw pending returns (e.g., from outbid auctions)
-     */
-    function withdrawPendingReturns() external nonReentrant {
-        uint256 amount = pendingReturns[msg.sender];
-        if (amount == 0) revert InsufficientFunds();
-        
-        // Reset pending returns before transfer to prevent reentrancy
-        pendingReturns[msg.sender] = 0;
-        
-        // Transfer funds back to user
-        IERC20Upgradeable(address(tStakeToken)).transfer(msg.sender, amount);
-        
-        emit FundsWithdrawn(msg.sender, amount);
-    }
-
-    /**
-     * @notice Fractionalize an NFT into ERC20 tokens
-     * @param tokenId The ID of the NFT to fractionalize
-     * @param fractionSupply Total number of fraction tokens to create
-     * @param lockTime Duration the NFT remains locked in fractionalization
-     */
-    function fractionalizeNFT(
-        uint256 tokenId,
-        uint256 fractionSupply,
-        uint256 lockTime
-    ) external whenNotPaused nonReentrant {
-        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
-        if (fractionSupply == 0) revert InvalidPrice();
-        
-        // Transfer NFT to marketplace
-        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
-        
-        // Approve the fractionalization contract to take the NFT
-        nftContract.approve(address(fractionContract), tokenId);
-        
-        // Call the fractionalization contract
-        address fractionToken = fractionContract.fractionalize(msg.sender, tokenId, fractionSupply, lockTime);
-        
-        // Store fraction token address for this NFT
-        fractionalTokens[tokenId] = fractionToken;
-        
-        // Update metrics
-        unchecked {
-            metrics.fractionalizedAssets += 1;
-        }
-        
-        emit NFTFractionalized(tokenId, fractionToken);
-    }
-
-    /**
-     * @notice Calculate the current floor price for a collection
-     * @param collection The collection address
-     */
-/**
-     * @notice Calculate the current floor price for a collection
-     * @param collection The collection address
-     */
-    function calculateFloorPrice(address collection) external onlyOperator {
-        EnumerableSetUpgradeable.UintSet storage tokenIds = collectionTokenIds[collection];
-        uint256 length = tokenIds.length();
-        
-        if (length == 0) {
-            collections[collection].floorPrice = 0;
-            return;
-        }
-        
-        uint256 lowestPrice = type(uint256).max;
-        
-        for (uint256 i = 0; i < length; i++) {
-            uint256 tokenId = tokenIds.at(i);
-            Listing storage listing = listings[tokenId];
-            
-            if (listing.active && !listing.isAuction && listing.price < lowestPrice) {
-                lowestPrice = listing.price;
-            }
-        }
-        
-        if (lowestPrice != type(uint256).max) {
-            collections[collection].floorPrice = lowestPrice;
-            emit FloorPriceUpdated(collection, lowestPrice);
-        }
+        emit CollectionRoyaltyUpdated(collection, royaltyPercentage, royaltyReceiver);
     }
 
     /**
@@ -1093,221 +410,47 @@ if (previousBidder != address(0)) {
     }
 
     /**
-     * @notice Update contract references
-     * @param _nftContract New NFT contract address
-     * @param _fractionContract New fractionalization contract address
+     * @notice List an NFT for sale or auction
+     * @param tokenId The ID of the NFT to list
+     * @param price The listing price or auction starting price
+     * @param isAuction Whether the listing is an auction
+     * @param expiry The expiration time for the listing
+     * @param paymentToken The token address to accept as payment
      */
-    function updateContracts(
-        address _nftContract,
-        address _fractionContract
-    ) external onlyGovernance {
-        if (_nftContract != address(0)) nftContract = ITerraStakeNFT(_nftContract);
-        if (_fractionContract != address(0)) fractionContract = ITerraStakeFractions(_fractionContract);
-        
-        emit ContractsUpdated(_nftContract, _fractionContract);
-    }
-
-    /**
-     * @notice Pause the marketplace
-     */
-    function pause() external onlyOperator {
-        _pause();
-    }
-
-    /**
-     * @notice Unpause the marketplace
-     */
-    function unpause() external onlyOperator {
-        _unpause();
-    }
-
-    /**
-     * @notice Emergency function to rescue accidentally sent tokens
-     * @param token Address of the token to rescue
-     * @param amount Amount to rescue
-     * @param destination Address to send the rescued tokens to
-     */
-    function rescueTokens(
-        address token,
-        uint256 amount,
-        address destination
-    ) external onlyGovernance {
-        IERC20Upgradeable(token).transfer(destination, amount);
-    }
-
-    /**
-     * @notice Get token metadata from the metadata contract
-     * @param tokenId The NFT token ID
-     */
-    function getTokenMetadata(uint256 tokenId) external view returns (
-        string memory name,
-        string memory description,
-        string memory image,
-        bytes memory attributes
-    ) {
-        return metadataContract.getTokenMetadata(address(nftContract), tokenId);
-    }
-
-    /**
-     * @notice Get token rarity information
-     * @param tokenId The NFT token ID
-     */
-    function getTokenRarity(uint256 tokenId) external view returns (
-        uint256 rank,
-        uint256 totalSupply
-    ) {
-        return metadataContract.getRarityRank(address(nftContract), tokenId);
-    }
-
-    /**
-     * @notice Get recommended listing price based on history and rarity
-     * @param tokenId The NFT token ID
-     */
-    function getRecommendedPrice(uint256 tokenId) external view returns (uint256) {
-        TokenHistory storage history = tokenHistory[tokenId];
-        
-        if (history.lastSoldPrice > 0) {
-            // If we have price history, use it as a base
-            uint256 basePrice = history.lastSoldPrice;
-            
-            // Attempt to get rarity data
-            (uint256 rank, uint256 totalSupply) = metadataContract.getRarityRank(address(nftContract), tokenId);
-            
-            if (totalSupply > 0) {
-                // Adjust price based on rarity percentile
-                uint256 rarityPercentile = (totalSupply - rank) * 100 / totalSupply;
-                
-                if (rarityPercentile > 90) {
-                    // Top 10% rarity: 50% premium
-                    return basePrice * 150 / 100;
-                } else if (rarityPercentile > 70) {
-                    // Top 30% rarity: 20% premium
-                    return basePrice * 120 / 100;
-                } else if (rarityPercentile < 20) {
-                    // Bottom 20% rarity: 10% discount
-                    return basePrice * 90 / 100;
-                }
-            }
-            
-            return basePrice;
-        } else {
-            // If no price history for this specific token, use collection floor price
-            return collections[address(nftContract)].floorPrice;
-        }
-    }
-
-    /**
-     * @notice Check if a signature is valid for listing
-     * @param tokenId The NFT token ID
-     * @param price The listing price
-     * @param isAuction Whether this is an auction
-     * @param expiry Listing expiry timestamp
-     * @param deadline Signature deadline
-     * @param v Signature component v
-     * @param r Signature component r
-     * @param s Signature component s
-     */
-    function verifyListingSignature(
-        address seller,
+    function listNFT(
         uint256 tokenId,
         uint256 price,
         bool isAuction,
         uint256 expiry,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) public view returns (bool) {
-        if (block.timestamp > deadline) revert SignatureExpired();
-        
-        bytes32 domainSeparator = keccak256(abi.encode(
-            DOMAIN_TYPEHASH,
-            keccak256(bytes("TerraStakeMarketplace")),
-            keccak256(bytes("1")),
-            block.chainid,
-            address(this)
-        ));
-        
-        bytes32 structHash = keccak256(abi.encode(
-            LISTING_TYPEHASH,
-            seller,
-            tokenId,
-            price,
-            isAuction,
-            expiry,
-            nonces[seller]
-        ));
-        
-        bytes32 digest = keccak256(abi.encodePacked(
-            "\x19\x01",
-            domainSeparator,
-            structHash
-        ));
-        
-        address recoveredAddress = ECDSAUpgradeable.recover(digest, v, r, s);
-        return recoveredAddress == seller;
-    }
-
-    /**
-     * @notice List with a signature (gasless listing)
-     * @param seller The NFT seller
-     * @param tokenId The NFT token ID
-     * @param price The listing price
-     * @param isAuction Whether this is an auction
-     * @param expiry Listing expiry timestamp
-     * @param paymentToken The token to accept as payment
-     * @param deadline Signature deadline
-     * @param v Signature component v
-     * @param r Signature component r
-     * @param s Signature component s
-     */
-    function listWithSignature(
-        address seller,
-        uint256 tokenId,
-        uint256 price,
-        bool isAuction,
-        uint256 expiry,
-        address paymentToken,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
+        address paymentToken
     ) external whenNotPaused nonReentrant {
-        if (!hasRole(RELAYER_ROLE, msg.sender)) revert NotAuthorized();
-        if (!verifyListingSignature(seller, tokenId, price, isAuction, expiry, deadline, v, r, s)) 
-            revert InvalidSignature();
-        if (expiry <= block.timestamp) revert InvalidExpiration();
+        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
         if (price == 0) revert InvalidPrice();
+        if (expiry > 0 && expiry <= block.timestamp) revert InvalidExpiration();
         if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
         
-        // Verify NFT ownership
-        if (nftContract.ownerOf(tokenId) != seller) revert NotOwner();
-        
-        // Verify NFT approval
-        if (nftContract.getApproved(tokenId) != address(this) && 
-            !nftContract.isApprovedForAll(seller, address(this))) 
-            revert TokenNotApproved();
-        
-        // Transfer NFT to marketplace
-        nftContract.safeTransferFrom(seller, address(this), tokenId);
-        
-        // Increment nonce to prevent signature reuse
-        nonces[seller]++;
+        // Check token approval
+        address approvedAddress = nftContract.getApproved(tokenId);
+        bool isApprovedForAll = nftContract.isApprovedForAll(msg.sender, address(this));
+        if (approvedAddress != address(this) && !isApprovedForAll) revert TokenNotApproved();
         
         // Create listing
         listings[tokenId] = Listing({
-            seller: seller,
+            seller: msg.sender,
             tokenId: tokenId,
             price: price,
             isAuction: isAuction,
             isFractional: false,
             fractions: 0,
-            expiry: expiry,
+            expiry: expiry > 0 ? expiry : type(uint256).max,
             active: true,
             paymentToken: paymentToken
         });
         
-        // Set up auction if needed
+        // Transfer NFT to marketplace
+        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
+        
+        // Setup auction if applicable
         if (isAuction) {
             bids[tokenId] = Bid({
                 highestBidder: address(0),
@@ -1317,8 +460,14 @@ if (previousBidder != address(0)) {
             });
         }
         
-        // Add to collection tracking
+        // Track the token in its collection
         address collection = address(nftContract);
+        if (!activeCollections.contains(collection)) {
+            activeCollections.add(collection);
+            unchecked {
+                metrics.totalCollections += 1;
+            }
+        }
         collectionTokenIds[collection].add(tokenId);
         
         // Update metrics
@@ -1326,7 +475,812 @@ if (previousBidder != address(0)) {
             metrics.activeListings += 1;
         }
         
-        emit NFTListed(tokenId, seller, price, isAuction, expiry, paymentToken);
+        emit NFTListed(tokenId, msg.sender, price, isAuction, expiry, paymentToken);
+    }
+
+    /**
+     * @notice List an NFT for sale with a trusted signature
+     * @dev Uses EIP-712 signatures to validate the listing
+     * @param tokenId The ID of the NFT to list
+     * @param price The listing price
+     * @param isAuction Whether the listing is an auction
+     * @param expiry The expiration time for the listing
+     * @param paymentToken The token address to accept as payment
+     * @param signature ECDSA signature authorizing the listing
+     */
+    function listNFTWithSignature(
+        uint256 tokenId,
+        uint256 price,
+        bool isAuction,
+        uint256 expiry,
+        address paymentToken,
+        bytes calldata signature
+    ) external whenNotPaused nonReentrant {
+        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
+        if (price == 0) revert InvalidPrice();
+        if (expiry > 0 && expiry <= block.timestamp) revert InvalidExpiration();
+        if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
+        
+        // Verify signature
+        bytes32 digest = _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    LISTING_TYPEHASH,
+                    msg.sender,
+                    tokenId,
+                    price,
+                    isAuction,
+                    expiry,
+                    nonces[msg.sender]++
+                )
+            )
+        );
+        
+        address signer = ECDSAUpgradeable.recover(digest, signature);
+        if (!hasRole(RELAYER_ROLE, signer)) revert InvalidSignature();
+        
+        // Create listing
+        listings[tokenId] = Listing({
+            seller: msg.sender,
+            tokenId: tokenId,
+            price: price,
+            isAuction: isAuction,
+            isFractional: false,
+            fractions: 0,
+            expiry: expiry > 0 ? expiry : type(uint256).max,
+            active: true,
+            paymentToken: paymentToken
+        });
+        
+        // Transfer NFT to marketplace
+        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
+        
+        // Setup auction if applicable
+        if (isAuction) {
+            bids[tokenId] = Bid({
+                highestBidder: address(0),
+                highestBid: 0,
+                bidEndTime: expiry,
+                paymentToken: paymentToken
+            });
+        }
+        
+        // Track the token in its collection
+        address collection = address(nftContract);
+        if (!activeCollections.contains(collection)) {
+            activeCollections.add(collection);
+            unchecked {
+                metrics.totalCollections += 1;
+            }
+        }
+        collectionTokenIds[collection].add(tokenId);
+        
+        // Update metrics
+        unchecked {
+            metrics.activeListings += 1;
+        }
+        
+        emit NFTListed(tokenId, msg.sender, price, isAuction, expiry, paymentToken);
+    }
+
+    /**
+     * @notice Buy a listed NFT
+     * @param tokenId The ID of the NFT to buy
+     */
+    function buyNFT(uint256 tokenId) external whenNotPaused nonReentrant {
+        Listing memory listing = listings[tokenId];
+        if (!listing.active) revert ListingNotActive();
+        if (listing.isAuction) revert InvalidOffer();
+        if (listing.expiry < block.timestamp) revert ListingNotActive();
+        
+        uint256 price = listing.price;
+        address paymentToken = listing.paymentToken;
+        address seller = listing.seller;
+        
+        // Handle payment
+        if (paymentToken == address(tStakeToken)) {
+            if (tStakeToken.balanceOf(msg.sender) < price) revert InsufficientFunds();
+            
+            // Transfer tokens from buyer to marketplace
+            tStakeToken.transferFrom(msg.sender, address(this), price);
+            
+            // Process fees and royalties
+            _processFees(price, tokenId, paymentToken);
+        } else {
+            IERC20Upgradeable token = IERC20Upgradeable(paymentToken);
+            if (token.balanceOf(msg.sender) < price) revert InsufficientFunds();
+            
+            // Transfer tokens from buyer to marketplace
+            token.transferFrom(msg.sender, address(this), price);
+            
+            // Process fees and royalties
+            _processFees(price, tokenId, paymentToken);
+        }
+        
+        // Update listing state
+        listings[tokenId].active = false;
+        
+        // Transfer NFT to buyer
+        nftContract.safeTransferFrom(address(this), msg.sender, tokenId);
+        
+        // Update token history
+        _updateTokenHistory(tokenId, price, msg.sender);
+        
+        // Update collection stats
+        address collection = address(nftContract);
+        Collection storage collectionData = collections[collection];
+        collectionData.totalVolume += price;
+        collectionData.totalSales += 1;
+        
+        // Update floor price if necessary
+        if (collectionData.floorPrice == 0 || price < collectionData.floorPrice) {
+            collectionData.floorPrice = price;
+            emit FloorPriceUpdated(collection, price);
+        }
+        
+        // Track volume metrics
+        unchecked {
+            metrics.totalVolume += price;
+            metrics.activeListings -= 1;
+        }
+        
+        emit NFTPurchased(tokenId, msg.sender, price, paymentToken);
+    }
+
+    /**
+     * @notice Place a bid on an auction
+     * @param tokenId The ID of the NFT to bid on
+     * @param bidAmount The bid amount
+     */
+    function placeBid(uint256 tokenId, uint256 bidAmount) external whenNotPaused nonReentrant {
+        Listing memory listing = listings[tokenId];
+        if (!listing.active) revert ListingNotActive();
+        if (!listing.isAuction) revert InvalidOffer();
+        if (listing.expiry < block.timestamp) revert AuctionEnded();
+        if (listing.seller == msg.sender) revert CannotBidOwnItem();
+        
+        Bid storage existingBid = bids[tokenId];
+        uint256 minBidAmount = listing.price;
+        
+        // Calculate minimum bid
+        if (existingBid.highestBid > 0) {
+            minBidAmount = existingBid.highestBid + ((existingBid.highestBid * MIN_BID_INCREMENT_PERCENT) / 100);
+        }
+        
+        if (bidAmount < minBidAmount) revert InvalidOffer();
+        if (msg.sender == existingBid.highestBidder) revert AlreadyHighestBidder();
+        
+        IERC20Upgradeable paymentToken = IERC20Upgradeable(listing.paymentToken);
+        if (paymentToken.balanceOf(msg.sender) < bidAmount) revert InsufficientFunds();
+        
+        // Return previous bid if there was one
+        if (existingBid.highestBidder != address(0)) {
+            pendingReturns[existingBid.highestBidder] += existingBid.highestBid;
+        }
+        
+        // Transfer new bid amount
+        paymentToken.transferFrom(msg.sender, address(this), bidAmount);
+        
+        // Update bid information
+        existingBid.highestBidder = msg.sender;
+        existingBid.highestBid = bidAmount;
+        
+        // Check if auction should be extended
+        if (listing.expiry - block.timestamp < auctionExtensionThreshold) {
+            bids[tokenId].bidEndTime = listing.expiry + auctionExtensionTime;
+            listings[tokenId].expiry = listing.expiry + auctionExtensionTime;
+            
+            emit AuctionExtended(tokenId, listing.expiry + auctionExtensionTime);
+        }
+        
+        emit NFTBidPlaced(tokenId, msg.sender, bidAmount, listing.paymentToken);
+    }
+
+    /**
+     * @notice Finalize an auction after it has ended
+     * @param tokenId The ID of the NFT auction to finalize
+     */
+    function finalizeAuction(uint256 tokenId) external nonReentrant {
+        Listing memory listing = listings[tokenId];
+        if (!listing.active) revert ListingNotActive();
+        if (!listing.isAuction) revert InvalidOffer();
+        if (listing.expiry > block.timestamp) revert InvalidOffer();
+        
+        Bid memory highestBid = bids[tokenId];
+        if (highestBid.highestBidder == address(0)) {
+            // No bids, return to seller
+            listings[tokenId].active = false;
+            nftContract.safeTransferFrom(address(this), listing.
+            seller, tokenId);
+            
+            emit ListingCancelled(tokenId, listing.seller);
+            return;
+        }
+        
+        // Process payment
+        _processFees(highestBid.highestBid, tokenId, listing.paymentToken);
+        
+        // Mark listing as inactive
+        listings[tokenId].active = false;
+        
+        // Transfer NFT to highest bidder
+        nftContract.safeTransferFrom(address(this), highestBid.highestBidder, tokenId);
+        
+        // Update token history
+        _updateTokenHistory(tokenId, highestBid.highestBid, highestBid.highestBidder);
+        
+        // Update collection stats
+        address collection = address(nftContract);
+        Collection storage collectionData = collections[collection];
+        collectionData.totalVolume += highestBid.highestBid;
+        collectionData.totalSales += 1;
+        
+        // Update marketplace metrics
+        unchecked {
+            metrics.totalVolume += highestBid.highestBid;
+            metrics.activeListings -= 1;
+        }
+        
+        emit NFTAuctionFinalized(tokenId, highestBid.highestBidder, highestBid.highestBid, listing.paymentToken);
+    }
+
+    /**
+     * @notice Update a listing's price or expiry
+     * @param tokenId The ID of the NFT listing to update
+     * @param newPrice The new listing price
+     * @param newExpiry The new expiry time
+     */
+    function updateListing(
+        uint256 tokenId,
+        uint256 newPrice,
+        uint256 newExpiry
+    ) external whenNotPaused onlyListingOwner(tokenId) {
+        Listing storage listing = listings[tokenId];
+        if (!listing.active) revert ListingNotActive();
+        if (listing.isAuction && bids[tokenId].highestBid > 0) revert InvalidOffer();
+        if (newPrice == 0) revert InvalidPrice();
+        if (newExpiry > 0 && newExpiry <= block.timestamp) revert InvalidExpiration();
+        
+        if (newPrice > 0) {
+            listing.price = newPrice;
+        }
+        
+        if (newExpiry > 0) {
+            listing.expiry = newExpiry;
+            if (listing.isAuction) {
+                bids[tokenId].bidEndTime = newExpiry;
+            }
+        }
+        
+        emit ListingUpdated(tokenId, newPrice, newExpiry);
+    }
+
+    /**
+     * @notice Cancel a listing and return the NFT to the seller
+     * @param tokenId The ID of the NFT listing to cancel
+     */
+    function cancelListing(uint256 tokenId) external nonReentrant onlyListingOwner(tokenId) {
+        Listing storage listing = listings[tokenId];
+        if (!listing.active) revert ListingNotActive();
+        
+        // If auction with bids, apply cancellation fee
+        if (listing.isAuction && bids[tokenId].highestBid > 0) {
+            // Cannot cancel an auction with bids
+            revert InvalidOffer();
+        }
+        
+        listing.active = false;
+        
+        // Return NFT to seller
+        nftContract.safeTransferFrom(address(this), listing.seller, tokenId);
+        
+        // Update metrics
+        unchecked {
+            metrics.activeListings -= 1;
+        }
+        
+        emit ListingCancelled(tokenId, listing.seller);
+    }
+
+    /**
+     * @notice Fractionalize an NFT into ERC20 tokens
+     * @param tokenId The ID of the NFT to fractionalize
+     * @param fractionSupply Total number of fraction tokens to create
+     * @param lockTime Duration the NFT remains locked in fractionalization
+     */
+    function fractionalizeNFT(
+        uint256 tokenId,
+        uint256 fractionSupply,
+        uint256 lockTime
+    ) external whenNotPaused nonReentrant {
+        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
+        if (fractionSupply == 0) revert InvalidPrice();
+        
+        // Transfer NFT to marketplace
+        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
+        
+        // Approve the fractionalization contract to take the NFT
+        nftContract.approve(address(fractionContract), tokenId);
+        
+        // Create fractionalization parameters
+        IFractionToken.FractionParams memory params = IFractionToken.FractionParams({
+            tokenId: tokenId,
+            fractionSupply: fractionSupply,
+            initialPrice: 0, // Default initial price
+            name: string(abi.encodePacked("Fractional NFT #", tokenId)),
+            symbol: "FNFT",
+            lockPeriod: lockTime
+        });
+        
+        // Call the fractionalization contract with new interface
+        address fractionToken = fractionContract.fractionalize(params);
+        
+        // Store fraction token address for this NFT
+        fractionalTokens[tokenId] = fractionToken;
+        
+        // Update metrics
+        unchecked {
+            metrics.fractionalizedAssets += 1;
+        }
+        
+        emit NFTFractionalized(tokenId, fractionToken);
+    }
+
+    /**
+     * @notice Create an offer for a specific NFT
+     * @param tokenId The ID of the NFT to make an offer on
+     * @param offerAmount The amount offered
+     * @param expiry The expiry time for the offer
+     * @param paymentToken The token address to use for payment
+     */
+    function createOffer(
+        uint256 tokenId,
+        uint256 offerAmount,
+        uint256 expiry,
+        address paymentToken
+    ) external whenNotPaused nonReentrant {
+        if (offerAmount == 0) revert InvalidOffer();
+        if (expiry <= block.timestamp) revert InvalidExpiration();
+        if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
+        
+        // Ensure the NFT exists
+        try nftContract.ownerOf(tokenId) returns (address owner) {
+            if (owner == msg.sender) revert CannotBidOwnItem();
+        } catch {
+            revert InvalidOffer();
+        }
+        
+        // Check if user has enough tokens
+        IERC20Upgradeable token = IERC20Upgradeable(paymentToken);
+        if (token.balanceOf(msg.sender) < offerAmount) revert InsufficientFunds();
+        
+        // Create offer
+        offers[tokenId][msg.sender] = Offer({
+            offerer: msg.sender,
+            offerAmount: offerAmount,
+            expiry: expiry,
+            active: true,
+            paymentToken: paymentToken
+        });
+        
+        // Update metrics
+        unchecked {
+            metrics.totalOffers += 1;
+        }
+        
+        emit OfferCreated(tokenId, msg.sender, offerAmount, expiry, paymentToken);
+    }
+
+    /**
+     * @notice Cancel an offer made by the caller
+     * @param tokenId The ID of the NFT the offer was made on
+     */
+    function cancelOffer(uint256 tokenId) external nonReentrant {
+        Offer storage offer = offers[tokenId][msg.sender];
+        if (!offer.active) revert InvalidOffer();
+        
+        offer.active = false;
+        
+        // Update metrics
+        unchecked {
+            metrics.totalOffers -= 1;
+        }
+        
+        emit OfferCancelled(tokenId, msg.sender);
+    }
+
+    /**
+     * @notice Accept an offer for an NFT
+     * @param tokenId The ID of the NFT
+     * @param offerer The address of the user who made the offer
+     */
+    function acceptOffer(uint256 tokenId, address offerer) external nonReentrant {
+        Offer memory offer = offers[tokenId][offerer];
+        if (!offer.active) revert InvalidOffer();
+        if (offer.expiry < block.timestamp) revert OfferExpired();
+        
+        // Check if caller is token owner or listed seller
+        bool isListed = false;
+        address nftOwner;
+        
+        try nftContract.ownerOf(tokenId) returns (address owner) {
+            nftOwner = owner;
+        } catch {
+            revert InvalidOffer();
+        }
+        
+        // If the NFT is listed in the marketplace, check if caller is the seller
+        if (listings[tokenId].active) {
+            isListed = true;
+            if (msg.sender != listings[tokenId].seller) revert NotOwner();
+        } else {
+            // If not listed, check if caller is the NFT owner
+            if (msg.sender != nftOwner) revert NotOwner();
+        }
+        
+        // Mark offer as inactive
+        offers[tokenId][offerer].active = false;
+        
+        // Process payment
+        IERC20Upgradeable token = IERC20Upgradeable(offer.paymentToken);
+        
+        // Check if offerer still has enough balance
+        if (token.balanceOf(offerer) < offer.offerAmount) revert InsufficientFunds();
+        
+        // Transfer tokens from offerer to marketplace
+        token.transferFrom(offerer, address(this), offer.offerAmount);
+        
+        // Process fees and royalties
+        _processFees(offer.offerAmount, tokenId, offer.paymentToken);
+        
+        // If the NFT is listed, handle accordingly
+        if (isListed) {
+            Listing storage listing = listings[tokenId];
+            listing.active = false;
+            
+            // Transfer NFT to offerer
+            nftContract.safeTransferFrom(address(this), offerer, tokenId);
+            
+            // Update metrics
+            unchecked {
+                metrics.activeListings -= 1;
+            }
+        } else {
+            // If not listed, transfer directly from owner
+            address approvedAddress = nftContract.getApproved(tokenId);
+            bool isApprovedForAll = nftContract.isApprovedForAll(nftOwner, address(this));
+            
+            if (approvedAddress != address(this) && !isApprovedForAll) revert TokenNotApproved();
+            
+            // Transfer NFT from owner to offerer
+            nftContract.safeTransferFrom(nftOwner, offerer, tokenId);
+        }
+        
+        // Update token history
+        _updateTokenHistory(tokenId, offer.offerAmount, offerer);
+        
+        // Update collection stats
+        address collection = address(nftContract);
+        Collection storage collectionData = collections[collection];
+        collectionData.totalVolume += offer.offerAmount;
+        collectionData.totalSales += 1;
+        
+        // Track volume metrics
+        unchecked {
+            metrics.totalVolume += offer.offerAmount;
+            metrics.totalOffers -= 1;
+        }
+        
+        emit OfferAccepted(tokenId, offerer, msg.sender, offer.offerAmount);
+    }
+
+    /**
+     * @notice Withdraw funds due to the user
+     */
+    function withdrawFunds() external nonReentrant {
+        uint256 amount = pendingReturns[msg.sender];
+        if (amount == 0) revert InsufficientFunds();
+        
+        pendingReturns[msg.sender] = 0;
+        
+        // Transfer funds to user
+        (bool success, ) = msg.sender.call{value: amount}("");
+        require(success, "Transfer failed");
+        
+        emit FundsWithdrawn(msg.sender, amount);
+    }
+
+    /**
+     * @notice Process batch operations for efficiency
+     * @param tokenIds Array of token IDs to process
+     * @param operationType Type of batch operation to perform
+     */
+    function processBatchOperation(
+        uint256[] calldata tokenIds,
+        string calldata operationType
+    ) external onlyOperator {
+        bytes32 opType = keccak256(abi.encodePacked(operationType));
+        
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            
+            // Different batch operations
+            if (opType == keccak256(abi.encodePacked("cancelExpired"))) {
+                Listing memory listing = listings[tokenId];
+                if (listing.active && listing.expiry < block.timestamp) {
+                    listings[tokenId].active = false;
+                    
+                    // Return NFT to seller
+                    nftContract.safeTransferFrom(address(this), listing.seller, tokenId);
+                    
+                    // Update metrics
+                    unchecked {
+                        metrics.activeListings -= 1;
+                    }
+                    
+                    emit ListingCancelled(tokenId, listing.seller);
+                }
+            } else if (opType == keccak256(abi.encodePacked("finalizeAuctions"))) {
+                Listing memory listing = listings[tokenId];
+                if (listing.active && listing.isAuction && listing.expiry < block.timestamp) {
+                    Bid memory highestBid = bids[tokenId];
+                    
+                    if (highestBid.highestBidder == address(0)) {
+                        // No bids, return to seller
+                        listings[tokenId].active = false;
+                        nftContract.safeTransferFrom(address(this), listing.seller, tokenId);
+                        
+                        emit ListingCancelled(tokenId, listing.seller);
+                    } else {
+                        // Process payment
+                        _processFees(highestBid.highestBid, tokenId, listing.paymentToken);
+                        
+                        // Mark listing as inactive
+                        listings[tokenId].active = false;
+                        
+                        // Transfer NFT to highest bidder
+                        nftContract.safeTransferFrom(address(this), highestBid.highestBidder, tokenId);
+                        
+                        // Update token history
+                        _updateTokenHistory(tokenId, highestBid.highestBid, highestBid.highestBidder);
+                        
+                        // Update collection stats
+                        address collection = address(nftContract);
+                        Collection storage collectionData = collections[collection];
+                        collectionData.totalVolume += highestBid.highestBid;
+                        collectionData.totalSales += 1;
+                        
+                        // Update marketplace metrics
+                        unchecked {
+                            metrics.totalVolume += highestBid.highestBid;
+                            metrics.activeListings -= 1;
+                        }
+                        
+                        emit NFTAuctionFinalized(tokenId, highestBid.highestBidder, highestBid.highestBid, listing.paymentToken);
+                    }
+                }
+            }
+        }
+        
+        emit BatchOperationProcessed(msg.sender, tokenIds.length, operationType);
+    }
+
+    /**
+     * @notice Update contract references
+     * @param _nftContract New NFT contract address
+     * @param _fractionContract New fractionalization contract address
+     */
+    function updateContracts(
+        address _nftContract,
+        address _fractionContract
+    ) external onlyGovernance {
+        if (_nftContract != address(0)) nftContract = ITerraStakeNFT(_nftContract);
+        if (_fractionContract != address(0)) fractionContract = IFractionToken(_fractionContract);
+        
+        emit ContractsUpdated(_nftContract, _fractionContract);
+    }
+
+    /**
+     * @notice Pause the marketplace
+     */
+    function pause() external onlyGovernance {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause the marketplace
+     */
+    function unpause() external onlyGovernance {
+        _unpause();
+    }
+
+    /**
+     * @notice Process fees and distribute payments
+     * @param amount Total amount to process
+     * @param tokenId NFT token ID for royalty calculations
+     * @param paymentToken The token address used for payment
+     */
+    function _processFees(uint256 amount, uint256 tokenId, address paymentToken) internal {
+        IERC20Upgradeable token = IERC20Upgradeable(paymentToken);
+        
+        // Calculate royalty
+        uint256 royaltyAmount = 0;
+        address royaltyReceiver = address(0);
+        
+        // First check NFT's ERC2981 royalty info
+        try nftContract.royaltyInfo(tokenId, amount) returns (address receiver, uint256 royalty) {
+            if (receiver != address(0) && royalty > 0 && royalty <= (amount * MAX_ROYALTY_PERCENTAGE) / BASIS_POINTS) {
+                royaltyAmount = royalty;
+                royaltyReceiver = receiver;
+            }
+        } catch {}
+        
+        // If no ERC2981 royalty, check collection settings
+        if (royaltyAmount == 0) {
+            address collection = address(nftContract);
+            Collection memory collectionData = collections[collection];
+            
+            if (collectionData.customRoyalty && collectionData.royaltyPercentage > 0) {
+                royaltyAmount = (amount * collectionData.royaltyPercentage) / BASIS_POINTS;
+                royaltyReceiver = collectionData.royaltyReceiver;
+            }
+        }
+        
+        // Pay royalties if applicable
+        if (royaltyAmount > 0 && royaltyReceiver != address(0)) {
+            token.transfer(royaltyReceiver, royaltyAmount);
+            emit RoyaltyPaid(tokenId, royaltyReceiver, royaltyAmount);
+        }
+        
+        // Calculate remaining amount after royalties
+        uint256 remainingAmount = amount - royaltyAmount;
+        
+        // Calculate platform fees
+        uint256 stakingAmount = (remainingAmount * stakingFeePercent) / BASIS_POINTS;
+        uint256 liquidityAmount = (remainingAmount * liquidityFeePercent) / BASIS_POINTS;
+        uint256 treasuryAmount = (remainingAmount * treasuryFeePercent) / BASIS_POINTS;
+        uint256 burnAmount = (remainingAmount * burnFeePercent) / BASIS_POINTS;
+        
+        // Calculate seller amount
+        uint256 totalFees = stakingAmount + liquidityAmount + treasuryAmount + burnAmount;
+        uint256 sellerAmount = remainingAmount - totalFees;
+        
+        // Distribute fees
+        if (stakingAmount > 0) {
+            token.transfer(stakingPool, stakingAmount);
+        }
+        
+        if (liquidityAmount > 0) {
+            token.transfer(liquidityPool, liquidityAmount);
+        }
+        
+        if (treasuryAmount > 0) {
+            token.transfer(treasury, treasuryAmount);
+        }
+        
+        // Handle token burning if it's the platform token
+        if (burnAmount > 0 && paymentToken == address(tStakeToken)) {
+            tStakeToken.burn(address(this), burnAmount);
+        } else if (burnAmount > 0) {
+            // If not platform token, send to treasury instead of burning
+            token.transfer(treasury, burnAmount);
+        }
+        
+        // Pay seller
+        Listing memory listing = listings[tokenId];
+        token.transfer(listing.seller, sellerAmount);
+        
+        emit FeesDistributed(stakingAmount, liquidityAmount, treasuryAmount, burnAmount);
+    }
+
+    /**
+     * @notice Update token sales history
+     * @param tokenId Token ID to update
+     * @param price Sale price
+     * @param buyer Buyer address
+     */
+    function _updateTokenHistory(uint256 tokenId, uint256 price, address buyer) internal {
+        TokenHistory storage history = tokenHistory[tokenId];
+        
+        // Record this sale
+        history.lastSoldPrice = price;
+        history.lastSoldTo = buyer;
+        history.lastSoldTime = block.timestamp;
+        
+        // Update highest ever price if applicable
+        if (price > history.highestEverPrice) {
+            history.highestEverPrice = price;
+        }
+        
+        // Update price history arrays
+        history.priceHistory.push(price);
+        history.timestampHistory.push(block.timestamp);
+    }
+
+    /**
+     * @notice Domain separator for EIP-712
+     */
+    function _domainSeparatorV4() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes("TerraStakeMarketplace")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    /**
+     * @notice Hash a structured data payload
+     * @param structHash The hash of the struct data
+     */
+    function _hashTypedDataV4(bytes32 structHash) internal view returns (bytes32) {
+        return ECDSAUpgradeable.toTypedDataHash(_domainSeparatorV4(), structHash);
+    }
+
+    /**
+     * @notice Check if a token is supported for payment
+     * @param token The token address to check
+     */
+    function isPaymentTokenSupported(address token) external view returns (bool) {
+        return supportedPaymentTokens.contains(token);
+    }
+
+    /**
+     * @notice Get all supported payment tokens
+     */
+    function getSupportedPaymentTokens() external view returns (address[] memory) {
+        uint256 length = supportedPaymentTokens.length();
+        address[] memory tokens = new address[](length);
+        
+        for (uint256 i = 0; i < length; i++) {
+            tokens[i] = supportedPaymentTokens.at(i);
+        }
+        
+        return tokens;
+    }
+
+    /**
+     * @notice Get all active collections
+     */
+    function getActiveCollections() external view returns (address[] memory) {
+        uint256 length = activeCollections.length();
+        address[] memory collections = new address[](length);
+        
+        for (uint256 i = 0; i < length; i++) {
+            collections[i] = activeCollections.at(i);
+        }
+        
+        return collections;
+    }
+
+    /**
+     * @notice Get all token IDs in a collection
+     * @param collection The collection address
+     */
+    function getCollectionTokenIds(address collection) external view returns (uint256[] memory) {
+        uint256 length = collectionTokenIds[collection].length();
+        uint256[] memory tokens = new uint256[](length);
+        
+        for (uint256 i = 0; i < length; i++) {
+            tokens[i] = collectionTokenIds[collection].at(i);
+        }
+        
+        return tokens;
+    }
+
+    /**
+     * @notice Get token price history
+     * @param tokenId The token ID to get history for
+     */
+    function getTokenPriceHistory(uint256 tokenId) external view returns (
+        uint256[] memory prices,
+        uint256[] memory timestamps
+    ) {
+        TokenHistory storage history = tokenHistory[tokenId];
+        return (history.priceHistory, history.timestampHistory);
     }
 
     // Function to receive ETH if needed
