@@ -1,195 +1,206 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
 /**
  * @title ITerraStakeMetadataRenderer
- * @notice Interface for the TerraStakeMetadataRenderer contract that generates visual NFT metadata
- * @dev Designed for upgradeability using UUPS pattern
+ * @notice Interface for generating dynamic SVG visualizations for Impact NFTs
  */
 interface ITerraStakeMetadataRenderer {
     /**
-     * @notice Role constant for contracts allowed to interact with projects
-     * @return The keccak256 hash of "PROJECTS_CONTRACT_ROLE"
+     * @notice Generate metadata for an NFT
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category (0=Carbon, 1=Water, etc)
+     * @param impactValue Numeric value of the impact
+     * @param projectName Name of the impact project
+     * @param projectDescription Description of the impact project
+     * @return Full JSON metadata including SVG
      */
-    function PROJECTS_CONTRACT_ROLE() external view returns (bytes32);
-
-    /**
-     * @notice Role constant for addresses allowed to upgrade the contract
-     * @return The keccak256 hash of "UPGRADER_ROLE"
-     */
-    function UPGRADER_ROLE() external view returns (bytes32);
-
-    /**
-     * @notice Default admin role constant
-     * @return The bytes32 representation of the default admin role
-     */
-    function DEFAULT_ADMIN_ROLE() external view returns (bytes32);
-
-    /**
-     * @notice Update the color palette for a category
-     * @param category The category index
-     * @param colors New comma-separated color values
-     */
-    function setCategoryColors(uint8 category, string calldata colors) external;
+    function generateMetadata(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue,
+        string memory projectName,
+        string memory projectDescription
+    ) external view returns (string memory);
     
     /**
-     * @notice Update the icon for a category
-     * @param category The category index
-     * @param svgPath New SVG path data
+     * @notice Get just the SVG for a given token (gas optimized)
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category
+     * @param impactValue Numeric impact value
+     * @return SVG string
+     */
+    function generateSVG(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue
+    ) external view returns (string memory);
+    
+    /**
+     * @notice Generate metadata with interactive elements if enabled
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category
+     * @param impactValue Numeric impact value
+     * @param projectName Project name
+     * @param projectDescription Project description
+     * @return Full JSON metadata
+     */
+    function generateInteractiveMetadata(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue,
+        string memory projectName,
+        string memory projectDescription
+    ) external view returns (string memory);
+    
+    /**
+     * @notice Chunk-based string processing for very large SVGs
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category
+     * @param impactValue Numeric impact value
+     * @return Chunked SVG processing result to avoid gas limits
+     */
+    function generateLargeSVG(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue
+    ) external view returns (string memory);
+    
+    /**
+     * @notice Toggle interactive mode for SVGs
+     * @param enabled Whether interactive mode should be enabled
+     */
+    function setInteractiveMode(bool enabled) external;
+    
+    /**
+     * @notice Set interactive elements for a category
+     * @param category Impact category ID
+     * @param elements SVG elements with interactive features
+     */
+    function setInteractiveElements(uint8 category, string calldata elements) external;
+    
+    /**
+     * @notice Set color palette for a category
+     * @param category Impact category ID
+     * @param primaryColor Primary color in hex format
+     * @param secondaryColor Secondary color in hex format
+     */
+    function setCategoryColors(
+        uint8 category,
+        string calldata primaryColor,
+        string calldata secondaryColor
+    ) external;
+    
+    /**
+     * @notice Set icon for a category
+     * @param category Impact category ID
+     * @param svgPath SVG path data for the icon
      */
     function setCategoryIcon(uint8 category, string calldata svgPath) external;
     
     /**
-     * @notice Generate dynamic SVG based on impact metrics
-     * @param category The project category
-     * @param impactValue The primary impact metric value
-     * @param impactName The name of the impact metric
-     * @param impactScale The calculated impact scale
-     * @return SVG image data as a Base64-encoded string
+     * @notice Set name for a category
+     * @param category Impact category ID
+     * @param name Category name
      */
-    function generateSVG(
-        uint8 category,
-        uint256 impactValue,
-        string memory impactName,
-        string memory impactScale
-    ) external view returns (string memory);
+    function setCategoryName(uint8 category, string calldata name) external;
     
     /**
-     * @notice Get the current color palette for a category
-     * @param category The category index
-     * @return The comma-separated color values
+     * @notice Set scaling factor for impact visualization
+     * @param category Impact category ID
+     * @param scalingFactor Factor to divide impact value by for visualization
      */
-    function categoryColors(uint8 category) external view returns (string memory);
+    function setCategoryScalingFactor(uint8 category, uint256 scalingFactor) external;
     
     /**
-     * @notice Get the current icon for a category
-     * @param category The category index
-     * @return The SVG path data
+     * @notice Set animation for a category
+     * @param category Impact category ID
+     * @param animationSvg SVG animation element
      */
-    function categoryIcons(uint8 category) external view returns (string memory);
-
-    /**
-     * @notice Function to initialize the contract when used with a proxy
-     * @param admin Address that will have administrative rights
-     * @dev This replaces the constructor for upgradeable contracts
-     */
-    function initialize(address admin) external;
+    function setCategoryAnimation(uint8 category, string calldata animationSvg) external;
     
     /**
-     * @notice Authorizes an upgrade to a new implementation
-     * @param newImplementation Address of the new implementation
-     * @dev Only callable by addresses with the upgrader role
+     * @notice Set visualization size limits
+     * @param minSize Minimum size for impact visualization
+     * @param maxSize Maximum size for impact visualization
      */
-    function upgradeTo(address newImplementation) external;
+    function setVisualizationSizeLimits(uint256 minSize, uint256 maxSize) external;
     
     /**
-     * @notice Authorizes an upgrade to a new implementation and calls a function
-     * @param newImplementation Address of the new implementation
-     * @param data Function call data to be used in upgradeToAndCall
-     * @dev Only callable by addresses with the upgrader role
+     * @notice Set the maximum scaling factor allowed
+     * @param maxScalingFactor Maximum value for scaling factors
      */
-    function upgradeToAndCall(address newImplementation, bytes memory data) external payable;
+    function setMaxScalingFactor(uint256 maxScalingFactor) external;
     
     /**
-     * @notice Checks if the contract supports an interface
-     * @param interfaceId Interface identifier (ERC165)
-     * @return True if the interface is supported
+     * @notice Update the entire SVG template
+     * @param newTemplate New SVG template with placeholders
      */
-    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+    function updateSVGTemplate(string calldata newTemplate) external;
     
     /**
-     * @notice Grants the upgrader role to an account
-     * @param account Address receiving the role
-     * @dev Only callable by admin
+     * @notice Batch configuration of multiple categories
+     * @param categories Array of category IDs
+     * @param names Array of category names
+     * @param primaryColors Array of primary colors
+     * @param secondaryColors Array of secondary colors
+     * @param icons Array of icon SVG paths
+     * @param scalingFactors Array of scaling factors
      */
-    function grantUpgraderRole(address account) external;
+    function batchConfigureCategories(
+        uint8[] calldata categories,
+        string[] calldata names,
+        string[] calldata primaryColors,
+        string[] calldata secondaryColors,
+        string[] calldata icons,
+        uint256[] calldata scalingFactors
+    ) external;
     
     /**
-     * @notice Revokes the upgrader role from an account
-     * @param account Address losing the role
-     * @dev Only callable by admin
+     * @notice Get the current size limits for impact visualization
+     * @return minSize Minimum size for impact visualization
+     * @return maxSize Maximum size for impact visualization
      */
-    function revokeUpgraderRole(address account) external;
-
+    function getVisualizationSizeLimits() external view returns (uint256 minSize, uint256 maxSize);
+    
     /**
-     * @notice Grants a role to an account
-     * @param role The role being granted
-     * @param account The account receiving the role
-     * @dev Only callable by role admin
+     * @notice Get category details
+     * @param category Category ID
+     * @return name Category name
+     * @return primaryColor Primary color
+     * @return secondaryColor Secondary color
+     * @return icon SVG path data
+     * @return scalingFactor Impact scaling factor
      */
-    function grantRole(bytes32 role, address account) external;
-
-    /**
-     * @notice Revokes a role from an account
-     * @param role The role being revoked
-     * @param account The account losing the role
-     * @dev Only callable by role admin
-     */
-    function revokeRole(bytes32 role, address account) external;
-
-    /**
-     * @notice Renounces a role
-     * @param role The role being renounced
-     * @param account The account renouncing the role
-     */
-    function renounceRole(bytes32 role, address account) external;
-
-    /**
-     * @notice Checks if an account has a specific role
-     * @param role The role to check
-     * @param account The account to check
-     * @return True if the account has the role
-     */
-    function hasRole(bytes32 role, address account) external view returns (bool);
-
-    /**
-     * @notice Gets the admin role for a specific role
-     * @param role The role to get the admin for
-     * @return The admin role
-     */
-    function getRoleAdmin(bytes32 role) external view returns (bytes32);
+    function getCategoryDetails(uint8 category)
+        external
+        view
+        returns (
+            string memory name,
+            string memory primaryColor,
+            string memory secondaryColor,
+            string memory icon,
+            uint256 scalingFactor
+        );
     
     // Events
-    
-    /**
-     * @notice Emitted when a category's colors are updated
-     * @param category The category that was updated
-     * @param colors The new colors assigned
-     */
-    event CategoryColorsUpdated(uint8 indexed category, string colors);
-    
-    /**
-     * @notice Emitted when a category's icon is updated
-     * @param category The category that was updated
-     * @param svgPath The new SVG path assigned
-     */
+    event CategoryColorsUpdated(uint8 indexed category, string primaryColor, string secondaryColor);
     event CategoryIconUpdated(uint8 indexed category, string svgPath);
-    
-    /**
-     * @notice Emitted when an upgrade is performed
-     * @param implementation The address of the new implementation
-     */
-    event Upgraded(address indexed implementation);
-    
-    /**
-     * @notice Emitted when a role is granted
-     * @param role The role that was granted
-     * @param account The account that received the role
-     * @param sender The account that granted the role
-     */
-    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
-    
-    /**
-     * @notice Emitted when a role is revoked
-     * @param role The role that was revoked
-     * @param account The account that lost the role
-     * @param sender The account that revoked the role
-     */
-    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
-
-    /**
-     * @notice Emitted when the implementation is initialized
-     * @param version Version number
-     */
-    event Initialized(uint8 version);
+    event CategoryNameUpdated(uint8 indexed category, string name);
+    event ScalingFactorUpdated(uint8 indexed category, uint256 factor);
+    event MaxScalingFactorUpdated(uint256 maxFactor);
+    event AnimationUpdated(uint8 indexed category, string animation);
+    event SizeLimitsUpdated(uint256 minSize, uint256 maxSize);
+    event TemplateUpdated();
+    event CategoryConfigured(
+        uint8 indexed category,
+        string name,
+        string primaryColor,
+        string secondaryColor,
+        string icon,
+        uint256 scalingFactor
+    );
+    event InteractiveModeSet(bool enabled);
+    event InteractiveElementsSet(uint8 indexed category, string elements);
 }
