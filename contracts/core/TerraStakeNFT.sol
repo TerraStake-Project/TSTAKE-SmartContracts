@@ -1,177 +1,79 @@
-// SPDX-License-Identifier: MIT
-
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
-import "../interfaces/ITerraStakeProjects.sol";
-import "../interfaces/ITerraStakeMetadataRenderer.sol";
-import "../interfaces/ITerraStakeFractionManager.sol";
-import "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
-
-interface ITerraStakeToken {
-    function transfer(address recipient, uint256 amount) external returns (bool);
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-    function burn(uint256 amount) external;
-}
+import {ERC1155Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
+import {ERC1155SupplyUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {IERC2981Upgradeable} from "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
+import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title TerraStakeNFT
- * @notice Advanced ERC1155 NFT implementation for TerraStake impact certificates with fractionalization
- * @dev Implements UUPS upgradeable pattern with multiple advanced features and EIP-2981 support
+ * @notice Advanced environmental impact NFT system with fractionalization, verification, and impact tracking
+ * @dev Implements ERC1155, ERC2981, VRF, and UUPS upgradeable patterns
+ * @custom:security-contact security@terrastake.io
  */
 contract TerraStakeNFT is 
     Initializable, 
     ERC1155Upgradeable, 
     ERC1155SupplyUpgradeable, 
     AccessControlUpgradeable, 
-    ReentrancyGuardUpgradeable,
-    PausableUpgradeable,
-    UUPSUpgradeable,
-    VRFConsumerBaseV2,
-    IERC2981Upgradeable
+    PausableUpgradeable, 
+    ReentrancyGuardUpgradeable, 
+    UUPSUpgradeable, 
+    IERC2981Upgradeable,
+    VRFConsumerBaseV2
 {
+    using SafeERC20 for IERC20;
+    using Strings for uint256;
+
     // ====================================================
-    // ⚠️ Custom Errors
+    // 📝 Type Definitions
     // ====================================================
-    error InvalidRecipient();
-    error FeeTransferFailed();
-    error VerificationFeeFailed();
-    error NotTokenOwner();
-    error TokenDoesNotExist();
-    error AlreadyVerified();
-    error NotImpactNFT();
-    error InsufficientBalance();
-    error InvalidAmount();
-    error ArrayLengthMismatch();
-    error ReportAlreadyMinted();
-    error InvalidProof();
-    error AlreadyClaimed();
-    error TotalAmountMismatch();
-    error NotActiveToken();
-    error NotAllFractionsOwned();
-    error TokenURIFrozen(uint256 tokenId);
-    error UpgradeTimelockActive();
-    error InvalidFeeParameters();
-    error InvalidRoyaltyParameters();
-    error ApprovalFailed();
     
-    // ====================================================
-    // 🔑 Roles
-    // ====================================================
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant FRACTIONALIZER_ROLE = keccak256("FRACTIONALIZER_ROLE");
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant MARKETPLACE_ROLE = keccak256("MARKETPLACE_ROLE");
-    bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
-    bytes32 public constant FEE_EXEMPTION_ROLE = keccak256("FEE_EXEMPTION_ROLE");
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
-
-    // ====================================================
-    // 📌 Fee Management
-    // ====================================================
-    uint256 public mintFee;
-    uint256 public fractionalizationFee;
-    uint256 public verificationFee;
-    uint256 public marketplaceFee;
-    IERC20Upgradeable public tStakeToken;
-    address public treasuryWallet;
-    
-    // Dynamic fee structure
-    bool public dynamicFeesEnabled;
-    uint256 public feeAdjustmentInterval;
-    uint256 public lastFeeAdjustment;
-    uint256 public baseMintFee;
-    uint256 public baseFractionalizationFee;
-    uint256 public feeMultiplier; // basis points (10000 = 100%)
-
-    // ====================================================
-    // 📌 Token State Management
-    // ====================================================
-    uint256 public totalMinted;
-    mapping(uint256 => bool) private _isERC721; // Tracks if the token is ERC721
-    mapping(uint256 => string) private _tokenURIs; // Custom URIs for tokens
-    string private _baseURI;
-    bool private _customURIsLocked;
-
-    // ====================================================
-    // 📌 NFT Type Management
-    // ====================================================
-    enum NFTType { IMPACT, MEMBERSHIP, PROJECT, BADGE, LAND, CARBON_CREDIT }
-    mapping(uint256 => NFTType) public nftTypes;
-    
-    // Optimized lookups
-    mapping(NFTType => uint256[]) private _typeTokens;
-
-    // ====================================================
-    // 📌 Project Integration
-    // ====================================================
-    address public projectsContract;
-    mapping(uint256 => uint256) public projectIds; // tokenId => projectId
-    mapping(uint256 => bytes32) public impactReportHashes;
-    mapping(bytes32 => bool) public mintedReports;
-    
-    // Optimized lookups
-    mapping(uint256 => uint256[]) private _projectTokens; // projectId => tokenIds
-
-    // ====================================================
-    // 📌 Fractionalization
-    // ====================================================
-    struct FractionInfo {
-        uint256 originalTokenId;
-        uint256 fractionCount;
-        address fractionalizer;
-        bool isActive;
-        NFTType nftType;
-        uint256 projectId;
-        bytes32 reportHash;
+    enum NFTType {
+        STANDARD,
+        IMPACT,
+        LAND,
+        CARBON,
+        BIODIVERSITY
     }
-    mapping(uint256 => FractionInfo) private _fractionInfos;
-    ITerraStakeFractionManager public fractionManager;
-
-    // ====================================================
-    // 📌 Royalty System (EIP-2981 Compliant)
-    // ====================================================
-    uint256 public defaultRoyaltyPercentage;
-    address public royaltyReceiver;
-    mapping(uint256 => uint256) public customRoyaltyPercentages;
-    mapping(uint256 => address) public customRoyaltyReceivers;
-
-    // ====================================================
-    // 📌 Marketplace Integration
-    // ====================================================
-    bool public marketplaceEnabled;
-    address public marketplaceAddress;
-    mapping(uint256 => bool) public tokenApprovedForMarketplace;
-    mapping(address => bool) public approvedMarketplaces;
     
-    // ====================================================
-    // 📌 Metadata Storage
-    // ====================================================
+    enum ProjectCategory {
+        CarbonCredit,
+        RenewableEnergy,
+        OceanCleanup,
+        Reforestation,
+        Biodiversity,
+        SustainableAg,
+        WasteManagement,
+        WaterConservation,
+        PollutionControl,
+        HabitatRestoration,
+        GreenBuilding,
+        CircularEconomy,
+        CommunityDevelopment
+    }
+    
     struct NFTMetadata {
         string name;
         string description;
         uint256 creationTime;
         bool uriIsFrozen;
+        NFTType nftType;
+        ProjectCategory category;
     }
-    mapping(uint256 => NFTMetadata) public tokenMetadata;
-    mapping(uint256 => mapping(string => string)) public tokenAttributes;
     
-    // ====================================================
-    // 📌 Certificate of Impact
-    // ====================================================
     struct ImpactCertificate {
         uint256 projectId;
         bytes32 reportHash;
@@ -181,1359 +83,1002 @@ contract TerraStakeNFT is
         string location;
         address verifier;
         bool isVerified;
+        ProjectCategory category;
     }
+    
+    struct FractionInfo {
+        uint256 originalTokenId;
+        uint256 fractionCount;
+        address fractionalizer;
+        bool isActive;
+        NFTType nftType;
+        uint256 projectId;
+        bytes32 reportHash;
+        ProjectCategory category;
+    }
+
+    struct TokenRoyalty {
+        address receiver;
+        uint96 royaltyFraction;
+    }
+
+    // ====================================================
+    // 🔐 Access Control Roles
+    // ====================================================
+    
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    bytes32 public constant FRACTIONALIZER_ROLE = keccak256("FRACTIONALIZER_ROLE");
+    bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    bytes32 public constant FEE_EXEMPTION_ROLE = keccak256("FEE_EXEMPTION_ROLE");
+    bytes32 public constant MARKETPLACE_ROLE = keccak256("MARKETPLACE_ROLE");
+    bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    
+    // ====================================================
+    // 💰 Fee Management
+    // ====================================================
+    
+    IERC20 public tStakeToken;
+    
+    address public treasuryWallet;
+    address public constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    uint256 public mintFee;
+    uint256 public fractionalizationFee;
+    uint256 public verificationFee;
+    uint256 public transferFee;
+    
+    // Fee distribution percentages (base 1000)
+    uint16 public burnPercent = 500;       // 50%
+    uint16 public treasuryPercent = 450;   // 45%
+    uint16 public buybackPercent = 50;     // 5%
+    uint256 public accumulatedBuybackFunds;
+    
+    // Dynamic fee variables
+    bool public dynamicFeesEnabled;
+    uint256 public feeMultiplier;
+    uint256 public feeAdjustmentInterval;
+    uint256 public lastFeeAdjustment;
+    uint256 public baseMintFee;
+    uint256 public baseFractionalizationFee;
+    
+    // Token and metadata storage
+    mapping(uint256 => NFTMetadata) public tokenMetadata;
+    mapping(uint256 => string) private _tokenURIs;
+    mapping(uint256 => bool) public uriLocked;
+    mapping(uint256 => TokenRoyalty) internal _tokenRoyalties;
     mapping(uint256 => ImpactCertificate) public impactCertificates;
+    mapping(uint256 => FractionInfo) public fractionInfo;
     
-    // Optimized lookups
-    uint256[] private _verifiedImpactCertificates;
-    mapping(uint256 => uint256) private _verifiedCertificateIndex; // tokenId => index+1 in _verifiedImpactCertificates
-
-    // ====================================================
-    // 📌 Chainlink VRF
-    // ====================================================
-    VRFCoordinatorV2Interface private COORDINATOR;
-    bytes32 private keyHash;
-    uint64 private subscriptionId;
-    uint32 private callbackGasLimit;
-    uint16 private requestConfirmations;
-    mapping(uint256 => uint256) private _requestIdToTokenId;
-    mapping(uint256 => address) private _requestIdToRecipient;
-
-    // ====================================================
-    // 📌 Whitelist & Airdrop
-    // ====================================================
-    bytes32 public whitelistMerkleRoot;
-    mapping(address => bool) public hasClaimed;
-    bool public whitelistMintEnabled;
-    uint256 public whitelistMintPrice;
+    // Project category mappings
+    mapping(uint256 => ProjectCategory) public projectCategories;
+    mapping(ProjectCategory => uint256[]) private _categoryProjects;
     
-    // ====================================================
-    // 📌 Ownership Tracking for Gas Optimization
-    // ====================================================
-    mapping(address => uint256[]) private _ownerTokens;
+    // Verification registry
+    mapping(uint256 => mapping(bytes32 => bool)) public verifiedReports;
+    mapping(bytes32 => uint256) public reportToToken;
     
-    // ====================================================
-    // 📌 Upgrade Timelock
-    // ====================================================
-    uint256 public constant UPGRADE_TIMELOCK = 2 days;
-    uint256 public upgradeProposedTime;
-    address public proposedImplementation;
-    uint256 public requiredUpgradeApprovals;
-    mapping(address => bool) public upgradeApprovals;
-    address[] public upgradeApprovers;
-
-    // ====================================================
-    // 📌 Metadata Renderer
-    // ====================================================
-    ITerraStakeMetadataRenderer public metadataRenderer;
-
+    // Fractionalization mappings
+    mapping(uint256 => uint256[]) public originalToFractions;
+    mapping(uint256 => uint256) public fractionToOriginal;
+    
+    // Default royalty settings
+    address public defaultRoyaltyReceiver;
+    uint96 public defaultRoyaltyPercentage;
+    
+    // VRF related variables
+    VRFCoordinatorV2Interface public COORDINATOR;
+    bytes32 public keyHash;
+    uint64 public subscriptionId;
+    uint32 public callbackGasLimit;
+    uint16 public requestConfirmations;
+    uint32 public numWords;
+    mapping(uint256 => address) public vrfRequests;
+    
+    // Token ID tracking
+    uint256 private _currentTokenId;
+    
+    // Marketplace integration
+    address public marketplaceAddress;
+    
     // ====================================================
     // 📣 Events
     // ====================================================
-    event NFTMinted(address indexed to, uint256 indexed tokenId, bool isERC721, NFTType nftType);
-    event ImpactNFTMinted(uint256 indexed tokenId, uint256 indexed projectId, bytes32 reportHash, address recipient);
-    event TokenFractionalized(uint256 indexed tokenId, uint256 fractionId, uint256 fractionCount);
-    event FractionsReunified(uint256 indexed fractionId, uint256 newTokenId);
-    event BaseURIUpdated(string newBaseURI);
-    event TokenURIFrozen(uint256 indexed tokenId);
-    event ProjectsContractUpdated(address indexed newProjectsContract);
-    event RoyaltyUpdated(address receiver, uint256 percentage);
-    event MarketplaceStatusChanged(bool enabled);
-    event MarketplaceAddressUpdated(address indexed newMarketplace);
-    event ImpactCertificateVerified(uint256 indexed tokenId, address verifier);
-    event RandomnessRequested(uint256 indexed requestId, uint256 indexed tokenId, address recipient);
-    event RandomnessReceived(uint256 indexed requestId, uint256 indexed tokenId, uint256 randomNumber);
-    event WhitelistMintingEnabled(bool enabled, uint256 price);
-    event WhitelistRootUpdated(bytes32 newRoot);
-    event TStakeRecovered(address indexed tokenAddress, uint256 amount);
-    event TStakeBurned(uint256 amount);
-    event MetadataRendererUpdated(address indexed renderer);
-    event FractionManagerUpdated(address indexed manager);
-    event TokenApprovedForMarketplace(uint256 indexed tokenId, address indexed marketplace, bool approved);
-    event MarketplaceApprovalChanged(address indexed marketplace, bool approved);
-    event UpgradeProposed(address indexed implementation, uint256 effectiveTime);
-    event UpgradeApproved(address indexed approver, address indexed implementation);
-    event UpgradeCancelled(address indexed implementation);
-    event DynamicFeesUpdated(bool enabled, uint256 multiplier, uint256 interval);
-    event FeesAdjusted(uint256 mintFee, uint256 fractionalizationFee, uint256 verificationFee);
-    event RoyaltyInfoRequested(uint256 indexed tokenId, uint256 salePrice);
+    
+    event TokenMinted(uint256 indexed tokenId, address indexed to, NFTType nftType, ProjectCategory category);
+    event ImpactCertificateCreated(uint256 indexed tokenId, uint256 indexed projectId, bytes32 reportHash);
+    event TokenFractionalized(uint256 indexed originalTokenId, uint256[] fractionIds, uint256 fractionCount);
+    event TokensReassembled(uint256 indexed originalTokenId, address indexed owner);
+    event TokenURIUpdated(uint256 indexed tokenId, string newUri);
+    event TokenURILocked(uint256 indexed tokenId);
+    event RoyaltySet(uint256 indexed tokenId, address receiver, uint96 royaltyFraction);
+    event DefaultRoyaltySet(address receiver, uint96 royaltyFraction);
+    event FeeConfigured(uint256 mintFee, uint256 fractionalizationFee, uint256 verificationFee, uint256 transferFee);
+    event FeePercentagesUpdated(uint16 burnPercent, uint16 treasuryPercent, uint16 buybackPercent);
+    event TreasuryWalletUpdated(address newTreasuryWallet);
+    event FeesCollected(address from, uint256 amount, uint256 burnAmount, uint256 treasuryAmount, uint256 buybackAmount);
+    event DynamicFeesToggled(bool enabled);
+    event MarketplaceSet(address marketplaceAddress);
+    event ImpactVerified(uint256 indexed tokenId, bytes32 reportHash, address verifier);
+    event VRFConfigured(address coordinator, bytes32 keyHash, uint64 subId, uint32 callbackGasLimit, uint16 requestConfirmations);
+    event RandomnessRequested(uint256 requestId, address requester);
+    event RandomnessReceived(uint256 requestId, uint256[] randomWords);
+    event TokensBurned(uint256 amount);
+    event BuybackExecuted(uint256 amount);
+    event EmergencyWithdrawal(address token, address to, uint256 amount);
+    
+    // ====================================================
+    // 🚨 Errors
+    // ====================================================
+    
+    error InvalidAddress();
+    error InsufficientFunds();
+    error TransferFailed();
+    error TokenNotFractionalized();
+    error TokenAlreadyFractionalized();
+    error NotTokenOwner();
+    error URILocked();
+    error ZeroAmount();
+    error InvalidFeeConfiguration();
+    error InvalidRoyaltyPercentage();
+    error InvalidPercentages();
+    error IncompleteCollection();
+    error AlreadyVerified();
+    error FractionMismatch();
+    error InvalidTokenId();
+    error NoBuybackFunds();
+    error NotOriginalOwner();
+    error PermissionsRequired();
+    error EmergencyModeActive();
+    error Unauthorized();
+    
+    // ====================================================
+    // 🔒 Modifiers
+    // ====================================================
+    
+    modifier onlyTokenOwner(uint256 tokenId) {
+        if (balanceOf(msg.sender, tokenId) == 0) revert NotTokenOwner();
+        _;
+    }
 
+    modifier notEmergencyMode() {
+        if (paused()) revert EmergencyModeActive();
+        _;
+    }
+
+    // ====================================================
+    // 🚀 Initialization
+    // ====================================================
+    
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() VRFConsumerBaseV2(address(0)) {
+    constructor(address _vrfCoordinator) VRFConsumerBaseV2(_vrfCoordinator) {
         _disableInitializers();
     }
-
+    
     /**
-     * @dev Initializes the TerraStakeNFT contract
-     * @param _tStakeToken Address of the TStake token
-     * @param _treasuryWallet Address of the treasury wallet
-     * @param _mintFee Fee for minting NFTs
-     * @param _fractionalizationFee Fee for fractionalizing NFTs
-     * @param _vrfCoordinator Address of the VRF Coordinator
-     * @param _vrfKeyHash Key hash for VRF
-     * @param _vrfSubscriptionId Subscription ID for VRF
+     * @notice Initializes the contract with required parameters
+     * @param admin The admin address
+     * @param _tStakeToken The TerraStake token address
+     * @param _treasuryWallet The treasury wallet address
+     * @param _uri Base URI for token metadata
+     * @param _vrfCoordinator VRF coordinator address
+     * @param _keyHash VRF key hash
+     * @param _subscriptionId Chainlink VRF subscription ID
      */
     function initialize(
+        address admin,
         address _tStakeToken,
         address _treasuryWallet,
-        uint256 _mintFee,
-        uint256 _fractionalizationFee,
+        string memory _uri,
         address _vrfCoordinator,
-        bytes32 _vrfKeyHash,
-        uint64 _vrfSubscriptionId
-    ) public initializer {
-        if (_tStakeToken == address(0)) revert InvalidRecipient();
-        if (_treasuryWallet == address(0)) revert InvalidRecipient();
-        if (_vrfCoordinator == address(0)) revert InvalidRecipient();
+        bytes32 _keyHash,
+        uint64 _subscriptionId
+    ) external initializer {
+        if (admin == address(0) || _tStakeToken == address(0) || _treasuryWallet == address(0) || 
+            _vrfCoordinator == address(0)) revert InvalidAddress();
         
-        // Initialize all inherited contracts using OZ 5.2.x pattern
-        __ERC1155_init("ipfs://");
+        __ERC1155_init(_uri);
         __ERC1155Supply_init();
         __AccessControl_init();
-        __ReentrancyGuard_init();
         __Pausable_init();
+        __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
         
-        tStakeToken = IERC20Upgradeable(_tStakeToken);
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(MINTER_ROLE, admin);
+        _grantRole(GOVERNANCE_ROLE, admin);
+        _grantRole(FRACTIONALIZER_ROLE, admin);
+        _grantRole(VERIFIER_ROLE, admin);
+        _grantRole(UPGRADER_ROLE, admin);
+        _grantRole(FEE_MANAGER_ROLE, admin);
+        _grantRole(URI_SETTER_ROLE, admin);
+        _grantRole(VALIDATOR_ROLE, admin);
+        
+        tStakeToken = IERC20(_tStakeToken);
         treasuryWallet = _treasuryWallet;
-        mintFee = _mintFee;
-        fractionalizationFee = _fractionalizationFee;
-        verificationFee = _mintFee * 2; // Default verification fee is double the mint fee
         
-        // Initialize Chainlink VRF
-        COORDINATOR = VRFCoordinatorV2Interface(_vrfCoordinator);
-        keyHash = _vrfKeyHash;
-        subscriptionId = _vrfSubscriptionId;
-        callbackGasLimit = 200000;
-        requestConfirmations = 3;
+        // Set initial fees
+        // Set initial fees
+        mintFee = 100 * 10**18;  // 100 TSTAKE
+        fractionalizationFee = 50 * 10**18;  // 50 TSTAKE
+        verificationFee = 75 * 10**18;  // 75 TSTAKE
+        transferFee = 10 * 10**18;  // 10 TSTAKE
         
-        // Setup royalty defaults
-        defaultRoyaltyPercentage = 500; // 5% default royalty
-        royaltyReceiver = _treasuryWallet;
-        
-        // Setup dynamic fees (initially disabled)
-        dynamicFeesEnabled = false;
-        feeAdjustmentInterval = 1 days;
+        // Set base fees for dynamic fee system
+        baseMintFee = mintFee;
+        baseFractionalizationFee = fractionalizationFee;
+        feeMultiplier = 1000; // Base 1000 (1.0)
+        feeAdjustmentInterval = 7 days;
         lastFeeAdjustment = block.timestamp;
-        baseMintFee = _mintFee;
-        baseFractionalizationFee = _fractionalizationFee;
-        feeMultiplier = 10000; // 100% - no adjustment
         
-        // Setup upgrade security
-        requiredUpgradeApprovals = 3; // Multisig requirement
+        // Set default royalty
+        defaultRoyaltyReceiver = _treasuryWallet;
+        defaultRoyaltyPercentage = 250; // 2.5% (basis points)
         
-        // Grant roles
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(GOVERNANCE_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, msg.sender);
-        _grantRole(FRACTIONALIZER_ROLE, msg.sender);
-        _grantRole(UPGRADER_ROLE, msg.sender);
-        _grantRole(VERIFIER_ROLE, msg.sender);
-        _grantRole(FEE_MANAGER_ROLE, msg.sender);
+        // Configure VRF
+        COORDINATOR = VRFCoordinatorV2Interface(_vrfCoordinator);
+        keyHash = _keyHash;
+        subscriptionId = _subscriptionId;
+        callbackGasLimit = 2500000;
+        requestConfirmations = 3;
+        numWords = 1;
         
-        _baseURI = "ipfs://";
+        emit FeeConfigured(mintFee, fractionalizationFee, verificationFee, transferFee);
+        emit FeePercentagesUpdated(burnPercent, treasuryPercent, buybackPercent);
+        emit TreasuryWalletUpdated(_treasuryWallet);
+        emit DefaultRoyaltySet(defaultRoyaltyReceiver, defaultRoyaltyPercentage);
+        emit VRFConfigured(_vrfCoordinator, _keyHash, _subscriptionId, callbackGasLimit, requestConfirmations);
     }
+    
+    /**
+     * @dev Function that should revert when msg.sender is not authorized to upgrade the contract.
+     * Called by {upgradeTo} and {upgradeToAndCall}.
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // ====================================================
-    // 🔒 UUPS Upgrade with Multi-Signature Security
-    // ====================================================
-    
-    /**
-     * @dev Proposes a contract upgrade with timelock
-     * @param implementation New implementation address
-     */
-    function proposeUpgrade(address implementation) external onlyRole(UPGRADER_ROLE) {
-        proposedImplementation = implementation;
-        upgradeProposedTime = block.timestamp;
-        
-        // Reset approvals
-        for (uint i = 0; i < upgradeApprovers.length; i++) {
-            upgradeApprovals[upgradeApprovers[i]] = false;
-        }
-        delete upgradeApprovers;
-        
-        // Auto-approve from proposer
-        upgradeApprovals[msg.sender] = true;
-        upgradeApprovers.push(msg.sender);
-        
-        emit UpgradeProposed(implementation, block.timestamp + UPGRADE_TIMELOCK);
-    }
-    
-    /**
-     * @dev Approves a proposed upgrade
-     */
-    function approveUpgrade() external onlyRole(UPGRADER_ROLE) {
-        if (proposedImplementation == address(0)) revert NotActiveToken();
-        if (upgradeApprovals[msg.sender]) return; // Already approved
-        
-        upgradeApprovals[msg.sender] = true;
-        upgradeApprovers.push(msg.sender);
-        
-        emit UpgradeApproved(msg.sender, proposedImplementation);
-    }
-    
-    /**
-     * @dev Cancels a proposed upgrade
-     */
-    function cancelUpgrade() external onlyRole(GOVERNANCE_ROLE) {
-        address oldImplementation = proposedImplementation;
-        proposedImplementation = address(0);
-        upgradeProposedTime = 0;
-        
-        // Reset approvals
-        for (uint i = 0; i < upgradeApprovers.length; i++) {
-            upgradeApprovals[upgradeApprovers[i]] = false;
-        }
-        delete upgradeApprovers;
-        
-        emit UpgradeCancelled(oldImplementation);
-    }
-
-    /**
-     * @dev Function that should revert when `msg.sender` is not authorized to upgrade the contract
-     * @param newImplementation Address of the new implementation
-     */
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
-        // Check if the proposed implementation matches
-        if (newImplementation != proposedImplementation) revert NotActiveToken();
-        
-        // Check timelock
-        if (block.timestamp < upgradeProposedTime + UPGRADE_TIMELOCK) revert UpgradeTimelockActive();
-        
-        // Check if enough approvals
-        if (upgradeApprovers.length < requiredUpgradeApprovals) revert NotActiveToken();
-        
-        // Reset the proposal after successful upgrade
-        proposedImplementation = address(0);
-        upgradeProposedTime = 0;
-        
-        // Reset approvals
-        for (uint i = 0; i < upgradeApprovers.length; i++) {
-            upgradeApprovals[upgradeApprovers[i]] = false;
-        }
-        delete upgradeApprovers;
-    }
-    
-    // ====================================================
-    // 🔹 Minting Functions
+    // 🏭 Token Minting Functions
     // ====================================================
     
     /**
-     * @dev Mint a new token
-     * @param to Recipient address
-     * @param isERC721 Whether token should be treated as ERC721
-     * @param nftType Type of NFT to mint
+     * @notice Mints a standard NFT
+     * @param to The recipient address
+     * @param amount The amount to mint
+     * @param category The project category
+     * @param uri The token URI
+     * @return tokenId The newly minted token ID
      */
-    function mint(
+    function mintStandardNFT(
         address to,
-        bool isERC721,
-        NFTType nftType
-    ) external nonReentrant whenNotPaused returns (uint256) {
-        if (to == address(0)) revert InvalidRecipient();
+        uint256 amount,
+        ProjectCategory category,
+        string calldata uri
+    ) external nonReentrant notEmergencyMode returns (uint256) {
+        if (to == address(0)) revert InvalidAddress();
+        if (amount == 0) revert ZeroAmount();
         
-        // Fee exemption check - uses role-based exemption
-        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender) && !hasRole(MINTER_ROLE, msg.sender)) {
-            // Apply dynamic fee adjustment if enabled
-            uint256 currentMintFee = _getCurrentMintFee();
-            
-            // Transfer fee
-            if (!tStakeToken.transferFrom(msg.sender, address(this), currentMintFee)) 
-                revert FeeTransferFailed();
-            
-            // Process fee with split allocation
-            _processFee(currentMintFee);
+        // Handle fees unless exempt
+        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender)) {
+            _collectFee(msg.sender, mintFee);
         }
         
-        // Mint token with unchecked counter increment for gas savings
-        uint256 tokenId;
-        unchecked { tokenId = ++totalMinted; }
+        // Generate new token ID
+        uint256 tokenId = _generateTokenId();
         
-        _mint(to, tokenId, 1, "");
-        _isERC721[tokenId] = isERC721;
-        nftTypes[tokenId] = nftType;
+        // Mint tokens
+        _mint(to, tokenId, amount, "");
         
-        // Add to type index for optimized lookups
-        _typeTokens[nftType].push(tokenId);
-        
-        // Add to owner tokens for optimized lookups
-        _addToOwnerTokens(to, tokenId);
-        
-        // Set creation metadata
+        // Store metadata
         tokenMetadata[tokenId] = NFTMetadata({
-            name: string(abi.encodePacked("TerraStake NFT #", _uint256ToString(tokenId))),
-            description: "TerraStake NFT",
+            name: string(abi.encodePacked("TerraStake NFT #", tokenId.toString())),
+            description: "TerraStake Standard Environmental NFT",
             creationTime: block.timestamp,
-            uriIsFrozen: false
+            uriIsFrozen: false,
+            nftType: NFTType.STANDARD,
+            category: category
         });
         
-        emit NFTMinted(to, tokenId, isERC721, nftType);
+        _tokenURIs[tokenId] = uri;
+        projectCategories[tokenId] = category;
+        _categoryProjects[category].push(tokenId);
+        
+        emit TokenMinted(tokenId, to, NFTType.STANDARD, category);
+        
         return tokenId;
     }
     
     /**
-     * @dev Mint an impact certificate NFT linked to a verified impact report
-     * @param to Recipient address
-     * @param projectId ID of the project
-     * @param reportHash Hash of the impact report
-     * @param impactValue Quantified impact value
-     * @param impactType Type of impact (e.g., "CO2 reduction")
-     * @param location Geographic location
+     * @notice Mints an impact certificate NFT
+     * @param to The recipient address
+     * @param projectId The associated project ID
+     * @param reportHash The unique hash of the impact report
+     * @param uri The token URI
+     * @param impactValue The quantified impact value
+     * @param impactType The type of impact (e.g., "Carbon Reduction", "Trees Planted")
+     * @param location Geographic location of the impact
+     * @param category The project category
+     * @return tokenId The newly minted token ID
      */
-    function mintImpactCertificate(
+    function mintImpactNFT(
         address to,
         uint256 projectId,
-        bytes32 reportHash, 
-        uint256 impactValue,
-        string calldata impactType,
-        string calldata location
+        string calldata uri,
+        bytes32 reportHash
     ) external nonReentrant whenNotPaused returns (uint256) {
-        if (to == address(0)) revert InvalidRecipient();
-        if (mintedReports[reportHash]) revert ReportAlreadyMinted();
-        
-        // Fee exemption check - uses role-based exemption
-        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender) && !hasRole(MINTER_ROLE, msg.sender)) {
-            // Apply dynamic fee adjustment if enabled
-            uint256 currentMintFee = _getCurrentMintFee();
-            
-            // Transfer fee
-            if (!tStakeToken.transferFrom(msg.sender, address(this), currentMintFee)) 
-                revert FeeTransferFailed();
-            
-            // Process fee with split allocation
-            _processFee(currentMintFee);
+        // Verify caller has MINTER_ROLE or VALIDATOR_ROLE
+        if (!hasRole(MINTER_ROLE, msg.sender) && !hasRole(VALIDATOR_ROLE, msg.sender)) {
+            revert Unauthorized();
         }
         
-        // Verify project exists if projects contract is set
-        if (projectsContract != address(0)) {
-            ITerraStakeProjects(projectsContract).getProject(projectId);
+        if (to == address(0)) revert InvalidAddress();
+        if (reportToToken[reportHash] != 0) revert AlreadyVerified();
+        
+        // Generate new token ID
+        uint256 tokenId = _generateTokenId();
+        
+        // Determine project category - for external callers we'll use a default
+        ProjectCategory category = ProjectCategory.CarbonCredit;
+        // Try to get the actual category if available
+        if (projectCategories[projectId] != ProjectCategory(0)) {
+            category = projectCategories[projectId];
         }
         
-        // Mint token with unchecked counter increment for gas savings
-        uint256 tokenId;
-        unchecked { tokenId = ++totalMinted; }
-        
+        // Mint token
         _mint(to, tokenId, 1, "");
-        _isERC721[tokenId] = true;
-        nftTypes[tokenId] = NFTType.IMPACT;
         
-        // Store project and report info
-        projectIds[tokenId] = projectId;
-        impactReportHashes[tokenId] = reportHash;
-        mintedReports[reportHash] = true;
-        
-        // Add to type index for optimized lookups
-        _typeTokens[NFTType.IMPACT].push(tokenId);
-        
-        // Add to project tokens for optimized lookups
-        _projectTokens[projectId].push(tokenId);
-        
-        // Add to owner tokens for optimized lookups
-        _addToOwnerTokens(to, tokenId);
+        // Store metadata
+        tokenMetadata[tokenId] = NFTMetadata({
+            name: string(abi.encodePacked("TerraStake Impact Certificate #", tokenId.toString())),
+            description: "TerraStake Environmental Impact Certificate",
+            creationTime: block.timestamp,
+            uriIsFrozen: false,
+            nftType: NFTType.IMPACT,
+            category: category
+        });
         
         // Create impact certificate
         impactCertificates[tokenId] = ImpactCertificate({
             projectId: projectId,
             reportHash: reportHash,
-            impactValue: impactValue,
-            impactType: impactType,
-            verificationDate: 0, // Not verified yet
-            location: location,
-            verifier: address(0), // Not verified yet
-            isVerified: false
+            impactValue: 0, // To be updated with verification
+            impactType: "",
+            verificationDate: 0,
+            location: "",
+            verifier: address(0),
+            isVerified: false,
+            category: category
         });
         
-        // Set creation metadata
-        tokenMetadata[tokenId] = NFTMetadata({
-            name: string(abi.encodePacked("Impact Certificate #", _uint256ToString(tokenId))),
-            description: string(abi.encodePacked("Impact Certificate for ", impactType)),
-            creationTime: block.timestamp,
-            uriIsFrozen: false
-        });
+        _tokenURIs[tokenId] = uri;
+        projectCategories[tokenId] = category;
+        _categoryProjects[category].push(tokenId);
+        reportToToken[reportHash] = tokenId;
         
-        emit NFTMinted(to, tokenId, true, NFTType.IMPACT);
-        emit ImpactNFTMinted(tokenId, projectId, reportHash, to);
+        emit TokenMinted(tokenId, to, NFTType.IMPACT, category);
+        emit ImpactCertificateCreated(tokenId, projectId, reportHash);
         
         return tokenId;
     }
     
     /**
-     * @dev Optimized batch mint function with gas improvements for large batches
-     * @param to Array of recipient addresses
-     * @param count Array of token counts to mint per recipient
-     * @param isERC721 Array of flags indicating if tokens should be treated as ERC721
-     * @param nftType Array of NFT types
+     * @notice Updates the impact certificate with verification details
+     * @param tokenId The token ID to verify
+     * @param impactValue The quantified impact value
+     * @param impactType The type of impact
+     * @param location Geographic location of the impact
      */
-    function batchMint(
-        address[] calldata to,
-        uint256[] calldata count,
-        bool[] calldata isERC721,
-        NFTType[] calldata nftType
-    ) external nonReentrant whenNotPaused returns (uint256[] memory) {
-        uint256 length = to.length;
-        if (length == 0 || 
-            length != count.length || 
-            length != isERC721.length || 
-            length != nftType.length) revert ArrayLengthMismatch();
-        
-        // Calculate total tokens to mint for gas efficiency
-        uint256 totalCount = 0;
-        for (uint256 i = 0; i < length; i++) {
-            if (to[i] == address(0)) revert InvalidRecipient();
-            unchecked { totalCount += count[i]; }
-        }
-        
-        // Fee exemption check - uses role-based exemption
-        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender) && !hasRole(MINTER_ROLE, msg.sender)) {
-            // Apply dynamic fee adjustment if enabled
-            uint256 currentMintFee = _getCurrentMintFee();
-            uint256 totalFee = currentMintFee * totalCount;
-            
-            // Transfer fee
-            if (!tStakeToken.transferFrom(msg.sender, address(this), totalFee)) 
-                revert FeeTransferFailed();
-            
-            // Process fee with split allocation
-            _processFee(totalFee);
-        }
-            
-        uint256[] memory tokenIds = new uint256[](totalCount);
-        uint256 tokenIndex = 0;
-        
-        for (uint256 i = 0; i < length; i++) {
-            for (uint256 j = 0; j < count[i]; j++) {
-                // Use unchecked for gas savings
-                uint256 tokenId;
-                unchecked { 
-                    tokenId = ++totalMinted;
-                    tokenIds[tokenIndex++] = tokenId;
-                }
-                
-                _mint(to[i], tokenId, 1, "");
-                _isERC721[tokenId] = isERC721[i];
-                nftTypes[tokenId] = nftType[i];
-                
-                // Add to type index for optimized lookups
-                _typeTokens[nftType[i]].push(tokenId);
-                
-                // Add to owner tokens for optimized lookups
-                _addToOwnerTokens(to[i], tokenId);
-                
-                // Set creation metadata
-                tokenMetadata[tokenId] = NFTMetadata({
-                    name: string(abi.encodePacked("TerraStake NFT #", _uint256ToString(tokenId))),
-                    description: "TerraStake NFT",
-                    creationTime: block.timestamp,
-                    uriIsFrozen: false
-                });
-                
-                emit NFTMinted(to[i], tokenId, isERC721[i], nftType[i]);
-            }
-        }
-        
-        return tokenIds;
-    }
-    
-    /**
-     * @dev Mint with VRF-based randomized metadata
-     * @param to Recipient address
-     * @param nftType Type of NFT to mint
-     */
-    function mintRandomized(
-        address to,
-        NFTType nftType
-    ) external nonReentrant whenNotPaused returns (uint256) {
-        if (to == address(0)) revert InvalidRecipient();
-        
-        // Fee exemption check - uses role-based exemption
-        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender) && !hasRole(MINTER_ROLE, msg.sender)) {
-            // Apply dynamic fee adjustment if enabled
-            uint256 currentMintFee = _getCurrentMintFee();
-            
-            // Transfer fee
-            if (!tStakeToken.transferFrom(msg.sender, address(this), currentMintFee)) 
-                revert FeeTransferFailed();
-            
-            // Process fee with split allocation
-            _processFee(currentMintFee);
-        }
-            
-        // Mint token with unchecked counter increment for gas savings
-        uint256 tokenId;
-        unchecked { tokenId = ++totalMinted; }
-                _mint(to, tokenId, 1, "");
-        _isERC721[tokenId] = true;
-        nftTypes[tokenId] = nftType;
-        
-        // Add to type index for optimized lookups
-        _typeTokens[nftType].push(tokenId);
-        
-        // Add to owner tokens for optimized lookups
-        _addToOwnerTokens(to, tokenId);
-        
-        // Request randomness from Chainlink VRF
-        uint256 requestId = COORDINATOR.requestRandomWords(
-            keyHash,
-            subscriptionId,
-            requestConfirmations,
-            callbackGasLimit,
-            1 // numWords
-        );
-        
-        // Store token information for callback
-        _requestIdToTokenId[requestId] = tokenId;
-        _requestIdToRecipient[requestId] = to;
-        
-        emit NFTMinted(to, tokenId, true, nftType);
-        emit RandomnessRequested(requestId, tokenId, to);
-        
-        return tokenId;
-    }
-    
-    /**
-     * @dev Whitelist mint using Merkle proof
-     * @param to Recipient address
-     * @param nftType Type of NFT to mint 
-     * @param proof Merkle proof verifying the recipient is on the whitelist
-     */
-    function whitelistMint(
-        address to,
-        NFTType nftType,
-        bytes32[] calldata proof
-    ) external nonReentrant whenNotPaused returns (uint256) {
-        if (!whitelistMintEnabled) revert NotActiveToken();
-        if (to == address(0)) revert InvalidRecipient();
-        if (hasClaimed[msg.sender]) revert AlreadyClaimed();
-        
-        // Verify merkle proof
-        bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
-        if (!MerkleProof.verify(proof, whitelistMerkleRoot, leaf)) revert InvalidProof();
-        
-        // Mark as claimed
-        hasClaimed[msg.sender] = true;
-        
-        // Fee is different for whitelist mints
-        if (whitelistMintPrice > 0) {
-            if (!tStakeToken.transferFrom(msg.sender, address(this), whitelistMintPrice))
-                revert FeeTransferFailed();
-            
-            // Process fee with split allocation
-            _processFee(whitelistMintPrice);
-        }
-        
-        // Mint token with unchecked counter increment for gas savings
-        uint256 tokenId;
-        unchecked { tokenId = ++totalMinted; }
-        
-        _mint(to, tokenId, 1, "");
-        _isERC721[tokenId] = true;
-        nftTypes[tokenId] = nftType;
-        
-        // Add to type index for optimized lookups
-        _typeTokens[nftType].push(tokenId);
-        
-        // Add to owner tokens for optimized lookups
-        _addToOwnerTokens(to, tokenId);
-        
-        // Set creation metadata
-        tokenMetadata[tokenId] = NFTMetadata({
-            name: string(abi.encodePacked("TerraStake Whitelist NFT #", _uint256ToString(tokenId))),
-            description: "TerraStake Whitelist NFT",
-            creationTime: block.timestamp,
-            uriIsFrozen: false
-        });
-        
-        emit NFTMinted(to, tokenId, true, nftType);
-        
-        return tokenId;
-    }
-    
-    // ====================================================
-    // 🔹 Fractionalization Functions
-    // ====================================================
-    
-    /**
-     * @dev Set the fraction manager contract
-     * @param _fractionManager Address of the fraction manager
-     */
-    function setFractionManager(address _fractionManager) external onlyRole(GOVERNANCE_ROLE) {
-        fractionManager = ITerraStakeFractionManager(_fractionManager);
-        emit FractionManagerUpdated(_fractionManager);
-    }
-    
-    /**
-     * @dev Fractionalize a token into multiple ERC20 tokens
-     * @param tokenId ID of the token to fractionalize
-     * @param fractionCount Number of fractions to create
-     */
-    function fractionalize(
+    function verifyImpactCertificate(
         uint256 tokenId,
-        uint256 fractionCount
-    ) external nonReentrant whenNotPaused returns (uint256) {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (balanceOf(msg.sender, tokenId) == 0) revert NotTokenOwner();
-        if (fractionCount == 0) revert InvalidAmount();
+        uint256 impactValue,
+        string calldata impactType,
+        string calldata location
+    ) external nonReentrant onlyRole(VERIFIER_ROLE) notEmergencyMode {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        if (impactCertificates[tokenId].isVerified) revert AlreadyVerified();
         
-        // Fee exemption check - uses role-based exemption
-        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender) && !hasRole(FRACTIONALIZER_ROLE, msg.sender)) {
-            // Apply dynamic fee adjustment if enabled
-            uint256 currentFractionalizationFee = _getCurrentFractionalizationFee();
-            
-            // Transfer fee
-            if (!tStakeToken.transferFrom(msg.sender, address(this), currentFractionalizationFee))
-                revert FeeTransferFailed();
-            
-            // Process fee with split allocation
-            _processFee(currentFractionalizationFee);
+        // Handle verification fee
+        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender)) {
+            _collectFee(msg.sender, verificationFee);
         }
         
-        // Create fraction ID
-        uint256 fractionId;
-        unchecked { fractionId = ++totalMinted; }
+        ImpactCertificate storage certificate = impactCertificates[tokenId];
         
-        // Store fraction info
-        _fractionInfos[fractionId] = FractionInfo({
-            originalTokenId: tokenId,
-            fractionCount: fractionCount,
-            fractionalizer: msg.sender,
-            isActive: true,
-            nftType: nftTypes[tokenId],
-            projectId: projectIds[tokenId],
-            reportHash: impactReportHashes[tokenId]
-        });
+        certificate.impactValue = impactValue;
+        certificate.impactType = impactType;
+        certificate.location = location;
+        certificate.verificationDate = block.timestamp;
+        certificate.verifier = msg.sender;
+        certificate.isVerified = true;
+        
+        verifiedReports[certificate.projectId][certificate.reportHash] = true;
+        
+        emit ImpactVerified(tokenId, certificate.reportHash, msg.sender);
+    }
+    
+    // ====================================================
+    // 🔄 Fractionalization Functions
+    // ====================================================
+    
+    /**
+     * @notice Fractionalizes an existing NFT into multiple shares
+     * @param tokenId The token ID to fractionalize
+     * @param fractionCount The number of fractions to create
+     * @return fractionIds Array of new fraction token IDs
+     */
+    function fractionalizeToken(uint256 tokenId, uint256 fractionCount) 
+        external 
+        nonReentrant 
+        onlyTokenOwner(tokenId) 
+        notEmergencyMode 
+        returns (uint256[] memory)
+    {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        if (fractionCount == 0) revert ZeroAmount();
+        if (fractionInfo[tokenId].isActive) revert TokenAlreadyFractionalized();
+        
+        // Only original NFTs can be fractionalized, not fractions themselves
+        if (fractionToOriginal[tokenId] != 0) revert TokenAlreadyFractionalized();
+        
+        // Handle fractionalization fee
+        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender)) {
+            _collectFee(msg.sender, fractionalizationFee);
+        }
         
         // Burn the original token
         _burn(msg.sender, tokenId, 1);
         
-        // Mint the fractional token to represent the fractionalized asset
-        _mint(msg.sender, fractionId, fractionCount, "");
+        // Create the fraction tokens
+        uint256[] memory fractionIds = new uint256[](fractionCount);
         
-        // If fraction manager is set, create ERC20 tokens
-        if (address(fractionManager) != address(0)) {
-            fractionManager.createFractionTokens(
-                tokenId,
-                fractionId,
-                fractionCount,
-                msg.sender
-            );
+        for (uint256 i = 0; i < fractionCount; i++) {
+            uint256 fractionId = _generateTokenId();
+            fractionIds[i] = fractionId;
+            
+            // Mint fraction token
+            _mint(msg.sender, fractionId, 1, "");
+            
+            // Create mapping from fraction to original
+            fractionToOriginal[fractionId] = tokenId;
+            
+            // Store fraction metadata
+            tokenMetadata[fractionId] = NFTMetadata({
+                name: string(abi.encodePacked("Fraction #", i.toString(), " of TerraStake NFT #", tokenId.toString())),
+                description: "TerraStake Fractionalized Environmental NFT",
+                creationTime: block.timestamp,
+                uriIsFrozen: false,
+                nftType: tokenMetadata[tokenId].nftType,
+                category: tokenMetadata[tokenId].category
+            });
+            
+            // Use same URI for fractions
+            _tokenURIs[fractionId] = _tokenURIs[tokenId];
+            
+            // Add to category projects if needed
+            projectCategories[fractionId] = tokenMetadata[tokenId].category;
+            _categoryProjects[tokenMetadata[tokenId].category].push(fractionId);
         }
         
-        emit TokenFractionalized(tokenId, fractionId, fractionCount);
-        return fractionId;
-    }
-    
-    /**
-     * @dev Reunify fractionalized token
-     * @param fractionId ID of the fraction token
-     */
-    function reunify(uint256 fractionId) external nonReentrant whenNotPaused returns (uint256) {
-        if (!exists(fractionId)) revert TokenDoesNotExist();
-        
-        FractionInfo storage info = _fractionInfos[fractionId];
-        if (!info.isActive) revert NotActiveToken();
-        
-        // Check if sender owns all fractions
-        if (balanceOf(msg.sender, fractionId) != info.fractionCount) revert NotAllFractionsOwned();
-        
-        // Burn all fractions
-        _burn(msg.sender, fractionId, info.fractionCount);
-        
-        // Create new token ID
-        uint256 newTokenId;
-        unchecked { newTokenId = ++totalMinted; }
-        
-        // Mint the reunified token
-        _mint(msg.sender, newTokenId, 1, "");
-        _isERC721[newTokenId] = _isERC721[info.originalTokenId];
-        nftTypes[newTokenId] = info.nftType;
-        
-        // If project ID exists, store it
-        if (info.projectId != 0) {
-            projectIds[newTokenId] = info.projectId;
-            _projectTokens[info.projectId].push(newTokenId);
-        }
-        
-        // If report hash exists, store it
-        if (info.reportHash != bytes32(0)) {
-            impactReportHashes[newTokenId] = info.reportHash;
-        }
-        
-        // If it was an impact certificate, copy it
-        if (info.nftType == NFTType.IMPACT) {
-            // Copy impact certificate if exists
-            if (impactCertificates[info.originalTokenId].reportHash != bytes32(0)) {
-                impactCertificates[newTokenId] = impactCertificates[info.originalTokenId];
-                
-                // If certificate was verified, add to verified certificates
-                if (impactCertificates[newTokenId].isVerified) {
-                    _verifiedImpactCertificates.push(newTokenId);
-                    _verifiedCertificateIndex[newTokenId] = _verifiedImpactCertificates.length;
-                }
-            }
-        }
-        
-        // Add to type index for optimized lookups
-        _typeTokens[info.nftType].push(newTokenId);
-        
-        // Add to owner tokens for optimized lookups
-        _addToOwnerTokens(msg.sender, newTokenId);
-        
-        // Set creation metadata
-        tokenMetadata[newTokenId] = NFTMetadata({
-            name: string(abi.encodePacked("Reunified #", _uint256ToString(newTokenId))),
-            description: "Reunified from fractions",
-            creationTime: block.timestamp,
-            uriIsFrozen: false
+        // Record fractionalization info
+        fractionInfo[tokenId] = FractionInfo({
+            originalTokenId: tokenId,
+            fractionCount: fractionCount,
+            fractionalizer: msg.sender,
+            isActive: true,
+            nftType: tokenMetadata[tokenId].nftType,
+            projectId: tokenMetadata[tokenId].nftType == NFTType.IMPACT ? impactCertificates[tokenId].projectId : 0,
+            reportHash: tokenMetadata[tokenId].nftType == NFTType.IMPACT ? impactCertificates[tokenId].reportHash : bytes32(0),
+            category: tokenMetadata[tokenId].category
         });
         
-        // Deactivate fraction info
-        info.isActive = false;
+        // Store relation between original and fractions
+        originalToFractions[tokenId] = fractionIds;
         
-        // If fraction manager is set, burn ERC20 tokens
-        if (address(fractionManager) != address(0)) {
-            fractionManager.burnFractionTokens(fractionId);
+        emit TokenFractionalized(tokenId, fractionIds, fractionCount);
+        
+        return fractionIds;
+    }
+    
+    /**
+     * @notice Reassembles fractionalized tokens back into the original
+     * @param originalTokenId The original token ID
+     */
+    function reassembleToken(uint256 originalTokenId) external nonReentrant notEmergencyMode {
+        if (!fractionInfo[originalTokenId].isActive) revert TokenNotFractionalized();
+        
+        FractionInfo storage info = fractionInfo[originalTokenId];
+        uint256[] memory fractions = originalToFractions[originalTokenId];
+        
+        // Check that sender owns all fractions
+        for (uint256 i = 0; i < fractions.length; i++) {
+            if (balanceOf(msg.sender, fractions[i]) == 0) revert IncompleteCollection();
         }
         
-        emit FractionsReunified(fractionId, newTokenId);
-        return newTokenId;
-    }
-    
-    // ====================================================
-    // 🔹 Verification Functions
-    // ====================================================
-    
-    /**
-     * @dev Verify an impact certificate
-     * @param tokenId ID of the impact certificate to verify
-     */
-    function verifyImpactCertificate(uint256 tokenId) external nonReentrant onlyRole(VERIFIER_ROLE) {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (nftTypes[tokenId] != NFTType.IMPACT) revert NotImpactNFT();
-        
-        ImpactCertificate storage certificate = impactCertificates[tokenId];
-        if (certificate.isVerified) revert AlreadyVerified();
-        
-        certificate.isVerified = true;
-        certificate.verificationDate = block.timestamp;
-        certificate.verifier = msg.sender;
-        
-        // Add to verified certificates list
-        _verifiedImpactCertificates.push(tokenId);
-        _verifiedCertificateIndex[tokenId] = _verifiedImpactCertificates.length;
-        
-        emit ImpactCertificateVerified(tokenId, msg.sender);
-    }
-    
-    /**
-     * @dev Submit verification with fee
-     * @param tokenId ID of the impact certificate to verify
-     */
-    function submitVerification(uint256 tokenId) external nonReentrant whenNotPaused {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (nftTypes[tokenId] != NFTType.IMPACT) revert NotImpactNFT();
-        if (balanceOf(msg.sender, tokenId) < 1) revert NotTokenOwner();
-        
-        ImpactCertificate storage certificate = impactCertificates[tokenId];
-        if (certificate.isVerified) revert AlreadyVerified();
-        
-        // Fee exemption check - uses role-based exemption
-        if (!hasRole(FEE_EXEMPTION_ROLE, msg.sender)) {
-            // Apply dynamic fee adjustment if enabled
-            uint256 currentVerificationFee = verificationFee;
-            if (dynamicFeesEnabled) {
-                currentVerificationFee = (verificationFee * feeMultiplier) / 10000;
-            }
-            
-            // Charge verification fee
-            if (!tStakeToken.transferFrom(msg.sender, address(this), currentVerificationFee)) 
-                revert VerificationFeeFailed();
-                
-            // Split fee: 90% to treasury, 10% to burn
-            uint256 burnAmount = currentVerificationFee / 10;
-            uint256 treasuryAmount = currentVerificationFee - burnAmount;
-            
-            tStakeToken.transfer(treasuryWallet, treasuryAmount);
-            ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
-            emit TStakeBurned(burnAmount);
+        // Burn all fraction tokens
+        for (uint256 i = 0; i < fractions.length; i++) {
+            _burn(msg.sender, fractions[i], 1);
+            fractionToOriginal[fractions[i]] = 0; // Clear mapping
         }
+        
+        // Restore original token
+        _mint(msg.sender, originalTokenId, 1, "");
+        
+        // Clear fractionalization data
+        fractionInfo[originalTokenId].isActive = false;
+        
+        emit TokensReassembled(originalTokenId, msg.sender);
     }
     
     // ====================================================
-    // 🔹 Dynamic Fee Management
+    // 🖼️ URI Management
     // ====================================================
     
     /**
-     * @dev Enable or disable dynamic fees
-     * @param enabled Whether to enable dynamic fees
-     * @param multiplier Fee multiplier in basis points (10000 = 100%)
-     * @param interval Adjustment interval in seconds
+     * @notice Sets the URI for a specific token
+     * @param tokenId The token ID
+     * @param newUri The new URI
      */
-    function setDynamicFees(
-        bool enabled, 
-        uint256 multiplier, 
-        uint256 interval
-    ) external onlyRole(FEE_MANAGER_ROLE) {
-        if (multiplier == 0) revert InvalidFeeParameters();
+    function setTokenURI(uint256 tokenId, string calldata newUri) 
+        external 
+        nonReentrant 
+        notEmergencyMode 
+    {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        if (uriLocked[tokenId]) revert URILocked();
         
-        dynamicFeesEnabled = enabled;
-        feeMultiplier = multiplier;
-        feeAdjustmentInterval = interval;
+        // Check permission - must be token owner, URI setter, or admin
+        bool isOwner = balanceOf(msg.sender, tokenId) > 0;
+        if (!isOwner && !hasRole(URI_SETTER_ROLE, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert NotTokenOwner();
+        }
         
-        emit DynamicFeesUpdated(enabled, multiplier, interval);
+        _tokenURIs[tokenId] = newUri;
+        
+        emit TokenURIUpdated(tokenId, newUri);
     }
     
     /**
-     * @dev Update fees based on external conditions
-     * @param newMultiplier New fee multiplier in basis points
+     * @notice Permanently locks a token's URI so it can't be changed
+     * @param tokenId The token ID to lock
      */
-    function updateFeeMultiplier(uint256 newMultiplier) external onlyRole(FEE_MANAGER_ROLE) {
-        if (newMultiplier == 0) revert InvalidFeeParameters();
-        if (block.timestamp < lastFeeAdjustment + feeAdjustmentInterval) revert UpgradeTimelockActive();
+    function lockTokenURI(uint256 tokenId) external onlyRole(GOVERNANCE_ROLE) {
+        if (!exists(tokenId)) revert InvalidTokenId();
         
-        feeMultiplier = newMultiplier;
+        uriLocked[tokenId] = true;
+        
+        emit TokenURILocked(tokenId);
+    }
+    
+    /**
+     * @notice Returns the URI for a given token ID
+     * @param tokenId The token ID to query
+     * @return The token's URI
+     */
+    function uri(uint256 tokenId) public view override returns (string memory) {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        
+        string memory tokenSpecificURI = _tokenURIs[tokenId];
+        
+        // If token has specific URI, return it, otherwise use base URI
+        if (bytes(tokenSpecificURI).length > 0) {
+            return tokenSpecificURI;
+        }
+                return string(abi.encodePacked(super.uri(tokenId), tokenId.toString()));
+    }
+    
+    // ====================================================
+    // 📊 Metadata & Query Functions
+    // ====================================================
+    
+    /**
+     * @notice Gets all tokens for a specific project category
+     * @param category The project category to query
+     * @return List of token IDs in the category
+     */
+    function getTokensByCategory(ProjectCategory category) external view returns (uint256[] memory) {
+        return _categoryProjects[category];
+    }
+    
+    /**
+     * @notice Gets metadata for a token
+     * @param tokenId The token ID to query
+     * @return Metadata for the token
+     */
+    function getTokenMetadata(uint256 tokenId) external view returns (NFTMetadata memory) {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        return tokenMetadata[tokenId];
+    }
+    
+    /**
+     * @notice Gets impact certificate details
+     * @param tokenId The token ID to query
+     * @return Certificate details
+     */
+    function getImpactCertificate(uint256 tokenId) external view returns (ImpactCertificate memory) {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        if (tokenMetadata[tokenId].nftType != NFTType.IMPACT) revert NotImpactCertificate();
+        return impactCertificates[tokenId];
+    }
+    
+    /**
+     * @notice Gets fractionalization info for a token
+     * @param tokenId The token ID to query
+     * @return Fractionalization info
+     */
+    function getFractionInfo(uint256 tokenId) external view returns (FractionInfo memory) {
+        return fractionInfo[tokenId];
+    }
+    
+    /**
+     * @notice Gets all fraction tokens for an original token
+     * @param originalTokenId The original token ID
+     * @return List of fraction token IDs
+     */
+    function getFractionTokens(uint256 originalTokenId) external view returns (uint256[] memory) {
+        return originalToFractions[originalTokenId];
+    }
+    
+    /**
+     * @notice Gets the original token ID for a fraction
+     * @param fractionTokenId The fraction token ID
+     * @return The original token ID
+     */
+    function getOriginalTokenId(uint256 fractionTokenId) external view returns (uint256) {
+        return fractionToOriginal[fractionTokenId];
+    }
+    
+    /**
+     * @notice Check if token exists
+     * @param tokenId The token ID to check
+     * @return True if token exists
+     */
+    function exists(uint256 tokenId) public view returns (bool) {
+        return totalSupply(tokenId) > 0;
+    }
+    
+    // ====================================================
+    // 💰 Fee Management
+    // ====================================================
+    
+    /**
+     * @notice Updates the fee distribution percentages
+     * @param _burnPercent Percentage of fees to burn
+     * @param _treasuryPercent Percentage of fees to send to treasury
+     * @param _buybackPercent Percentage of fees to use for buybacks
+     */
+    function updateFeePercentages(
+        uint8 _burnPercent,
+        uint8 _treasuryPercent,
+        uint8 _buybackPercent
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        if (_burnPercent + _treasuryPercent + _buybackPercent != 100) revert InvalidPercentages();
+        
+        burnPercent = _burnPercent;
+        treasuryPercent = _treasuryPercent;
+        buybackPercent = _buybackPercent;
+        
+        emit FeePercentagesUpdated(_burnPercent, _treasuryPercent, _buybackPercent);
+    }
+    
+    /**
+     * @notice Updates the treasury wallet address
+     * @param _treasuryWallet New treasury wallet address
+     */
+    function updateTreasuryWallet(address _treasuryWallet) external onlyRole(GOVERNANCE_ROLE) {
+        if (_treasuryWallet == address(0)) revert InvalidAddress();
+        
+        treasuryWallet = _treasuryWallet;
+        
+        emit TreasuryWalletUpdated(_treasuryWallet);
+    }
+    
+    /**
+     * @notice Updates the fees
+     * @param _mintFee New mint fee
+     * @param _fractionalizationFee New fractionalization fee
+     * @param _verificationFee New verification fee
+     * @param _transferFee New transfer fee
+     */
+    function updateFees(
+        uint256 _mintFee,
+        uint256 _fractionalizationFee,
+        uint256 _verificationFee,
+        uint256 _transferFee
+    ) external onlyRole(FEE_SETTER_ROLE) {
+        mintFee = _mintFee;
+        fractionalizationFee = _fractionalizationFee;
+        verificationFee = _verificationFee;
+        transferFee = _transferFee;
+        
+        emit FeeConfigured(_mintFee, _fractionalizationFee, _verificationFee, _transferFee);
+    }
+    
+    /**
+     * @notice Updates the dynamic fee parameters
+     * @param _baseMintFee Base fee for minting
+     * @param _baseFractionalizationFee Base fee for fractionalization
+     * @param _feeMultiplier Initial fee multiplier (base 1000)
+     * @param _feeAdjustmentInterval Interval for fee adjustments
+     */
+    function updateDynamicFeeParams(
+        uint256 _baseMintFee,
+        uint256 _baseFractionalizationFee,
+        uint256 _feeMultiplier,
+        uint256 _feeAdjustmentInterval
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        baseMintFee = _baseMintFee;
+        baseFractionalizationFee = _baseFractionalizationFee;
+        feeMultiplier = _feeMultiplier;
+        feeAdjustmentInterval = _feeAdjustmentInterval;
+        
+        emit DynamicFeeParamsUpdated(_baseMintFee, _baseFractionalizationFee, _feeMultiplier, _feeAdjustmentInterval);
+    }
+    
+    /**
+     * @notice Adjusts fees dynamically based on platform usage
+     */
+    function adjustFeesBasedOnUsage() external {
+        if (block.timestamp < lastFeeAdjustment + feeAdjustmentInterval) revert TooEarly();
+        
+        // Calculate activity in the last period
+        uint256 timeSinceLastAdjustment = block.timestamp - lastFeeAdjustment;
+        uint256 periodMints = tokensMintedCounter - lastPeriodMintCount;
+        uint256 periodFractionalizations = fractionalizationsCount - lastPeriodFractionalizationCount;
+        
+        // Simple algorithm to adjust fees based on activity
+        // High activity → increase fees, low activity → decrease fees
+        uint256 activityScore = (periodMints * 2) + periodFractionalizations;
+        uint256 newMultiplier = feeMultiplier;
+        
+        if (activityScore > 100) {
+            // High activity - increase fees (max 50%)
+            newMultiplier = Math.min(feeMultiplier * 15 / 10, 1500);
+        } else if (activityScore < 10) {
+            // Low activity - decrease fees (min 50%)
+            newMultiplier = Math.max(feeMultiplier * 85 / 100, 500);
+        }
+        
+        // Update multiplier and recalculate fees
+        if (newMultiplier != feeMultiplier) {
+            feeMultiplier = newMultiplier;
+            
+            // Adjust fees based on new multiplier
+            mintFee = baseMintFee * newMultiplier / 1000;
+            fractionalizationFee = baseFractionalizationFee * newMultiplier / 1000;
+            
+            emit FeeMultiplierUpdated(newMultiplier);
+            emit FeeConfigured(mintFee, fractionalizationFee, verificationFee, transferFee);
+        }
+        
+        // Update tracking variables
         lastFeeAdjustment = block.timestamp;
-        
-        // Calculate new fees
-        uint256 newMintFee = (baseMintFee * feeMultiplier) / 10000;
-        uint256 newFractionalizationFee = (baseFractionalizationFee * feeMultiplier) / 10000;
-        uint256 newVerificationFee = (newMintFee * 2); // Verification fee is 2x mint fee
-        
-        mintFee = newMintFee;
-        fractionalizationFee = newFractionalizationFee;
-        verificationFee = newVerificationFee;
-        
-        emit FeesAdjusted(newMintFee, newFractionalizationFee, newVerificationFee);
+        lastPeriodMintCount = tokensMintedCounter;
+        lastPeriodFractionalizationCount = fractionalizationsCount;
     }
     
     /**
-     * @dev Get current mint fee with dynamic adjustment if enabled
-     * @return Current mint fee
+     * @notice Handles fee collection and distribution
+     * @param from Address paying the fee
+     * @param feeAmount Amount of the fee
      */
-    function _getCurrentMintFee() internal view returns (uint256) {
-        if (!dynamicFeesEnabled) return mintFee;
-        return (baseMintFee * feeMultiplier) / 10000;
-    }
-    
-    /**
-     * @dev Get current fractionalization fee with dynamic adjustment if enabled
-     * @return Current fractionalization fee
-     */
-    function _getCurrentFractionalizationFee() internal view returns (uint256) {
-        if (!dynamicFeesEnabled) return fractionalizationFee;
-        return (baseFractionalizationFee * feeMultiplier) / 10000;
-    }
-    
-    /**
-     * @dev Process fee with allocation to different purposes
-     * @param feeAmount Total fee amount to process
-     */
-    function _processFee(uint256 feeAmount) internal {
-        // Split fee: 70% to treasury, 20% to staking rewards, 10% to burn
-        uint256 burnAmount = feeAmount / 10;
-        uint256 stakingAmount = feeAmount * 2 / 10;
-        uint256 treasuryAmount = feeAmount - burnAmount - stakingAmount;
+    function _collectFee(address from, uint256 feeAmount) internal {
+        if (feeAmount == 0) return;
         
-        // Transfer to treasury
-        tStakeToken.transfer(treasuryWallet, treasuryAmount);
+        // Get tokens from user
+        bool success = IERC20(tstakeToken).transferFrom(from, address(this), feeAmount);
+        if (!success) revert FeeTransferFailed();
         
-        // Burn tokens
-        ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
-        emit TStakeBurned(burnAmount);
+        // Distribute fee
+        uint256 burnAmount = feeAmount * burnPercent / 100;
+        uint256 treasuryAmount = feeAmount * treasuryPercent / 100;
+        uint256 buybackAmount = feeAmount * buybackPercent / 100;
+        
+        // Burn portion
+        if (burnAmount > 0) {
+            IERC20Burnable(tstakeToken).burn(burnAmount);
+        }
+        
+        // Treasury portion
+        if (treasuryAmount > 0) {
+            success = IERC20(tstakeToken).transfer(treasuryWallet, treasuryAmount);
+            if (!success) revert FeeTransferFailed();
+        }
+        
+        // Buyback portion (remains in contract for later use)
+        if (buybackAmount > 0) {
+            buybackBalance += buybackAmount;
+        }
+        
+        emit FeeCollected(from, feeAmount, burnAmount, treasuryAmount, buybackAmount);
     }
     
     // ====================================================
-    // 🔹 EIP-2981 Royalty Implementation
+    // 🏆 Royalties Implementation
     // ====================================================
     
     /**
-     * @dev Set default royalty information
-     * @param receiver Address to receive royalties
-     * @param percentage Royalty percentage (in basis points, 10000 = 100%)
+     * @notice Sets the default royalty information
+     * @param receiver Royalty recipient address
+     * @param feeNumerator Fee percentage in basis points (e.g., 250 = 2.5%)
      */
-    function setDefaultRoyalty(address receiver, uint256 percentage) external onlyRole(GOVERNANCE_ROLE) {
-        if (percentage > 5000) revert InvalidRoyaltyParameters(); // Max 50%
-        if (receiver == address(0)) revert InvalidRecipient();
+    function setDefaultRoyalty(address receiver, uint96 feeNumerator) 
+        external
+        onlyRole(GOVERNANCE_ROLE)
+    {
+        if (receiver == address(0)) revert InvalidAddress();
+        if (feeNumerator > 1000) revert ExcessiveRoyalty(); // Max 10%
         
-        defaultRoyaltyPercentage = percentage;
-        royaltyReceiver = receiver;
+        defaultRoyaltyReceiver = receiver;
+        defaultRoyaltyPercentage = feeNumerator;
         
-        emit RoyaltyUpdated(receiver, percentage);
+        emit DefaultRoyaltySet(receiver, feeNumerator);
     }
     
     /**
-     * @dev Set custom royalty for a specific token
-     * @param tokenId Token ID to set royalty for
-     * @param receiver Address to receive royalties
-     * @param percentage Royalty percentage (in basis points, 10000 = 100%)
+     * @notice Sets royalty information for a specific token
+     * @param tokenId Token ID
+     * @param receiver Royalty recipient address
+     * @param feeNumerator Fee percentage in basis points
      */
     function setTokenRoyalty(
         uint256 tokenId,
         address receiver,
-        uint256 percentage
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (percentage > 5000) revert InvalidRoyaltyParameters(); // Max 50%
-        if (receiver == address(0)) revert InvalidRecipient();
+        uint96 feeNumerator
+    ) external {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        if (receiver == address(0)) revert InvalidAddress();
+        if (feeNumerator > 1000) revert ExcessiveRoyalty(); // Max 10%
         
-        customRoyaltyPercentages[tokenId] = percentage;
-        customRoyaltyReceivers[tokenId] = receiver;
-    }
-    
-    /**
-     * @dev EIP-2981 royalty info implementation
-     * @param tokenId Token ID to query
-     * @param salePrice Sale price to calculate royalty from
-     * @return receiver Address to receive royalties
-     * @return royaltyAmount Amount of royalty to pay
-     */
-    function royaltyInfo(
-        uint256 tokenId,
-        uint256 salePrice
-    ) external view override returns (address receiver, uint256 royaltyAmount) {
-        emit RoyaltyInfoRequested(tokenId, salePrice);
-        
-        // Check for custom royalty first
-        if (customRoyaltyReceivers[tokenId] != address(0)) {
-            uint256 percentage = customRoyaltyPercentages[tokenId];
-            return (customRoyaltyReceivers[tokenId], (salePrice * percentage) / 10000);
-        }
-        
-        // Fall back to default royalty
-        return (royaltyReceiver, (salePrice * defaultRoyaltyPercentage) / 10000);
-    }
-    
-    // ====================================================
-    // 🔹 Marketplace Integration
-    // ====================================================
-    
-    /**
-     * @dev Set marketplace status
-     * @param enabled Whether to enable marketplace integration
-     * @param marketplace Address of the marketplace
-     */
-    function setMarketplaceStatus(bool enabled, address marketplace) external onlyRole(GOVERNANCE_ROLE) {
-        if (enabled && marketplace == address(0)) revert InvalidRecipient();
-        
-        marketplaceEnabled = enabled;
-        if (enabled) {
-            marketplaceAddress = marketplace;
-            _grantRole(MARKETPLACE_ROLE, marketplace);
-        }
-        
-        emit MarketplaceStatusChanged(enabled);
-        emit MarketplaceAddressUpdated(marketplace);
-    }
-    
-    /**
-     * @dev Approve marketplace for all tokens (ERC1155 doesn't have single token approval)
-     * @param marketplace Address of the marketplace to approve
-     * @param approved Whether to approve or revoke
-     */
-    function setApprovedMarketplace(address marketplace, bool approved) external onlyRole(GOVERNANCE_ROLE) {
-        approvedMarketplaces[marketplace] = approved;
-        emit MarketplaceApprovalChanged(marketplace, approved);
-    }
-    
-    /**
-     * @dev Approve token for marketplace listing
-     * @param tokenId Token ID to approve
-     * @param marketplace Address of the marketplace
-     * @param approved Whether to approve or revoke
-     */
-    function approveMarketplaceListing(uint256 tokenId, address marketplace, bool approved) external {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (balanceOf(msg.sender, tokenId) == 0) revert NotTokenOwner();
-        if (!approvedMarketplaces[marketplace]) revert ApprovalFailed();
-        
-        tokenApprovedForMarketplace[tokenId] = approved;
-        emit TokenApprovedForMarketplace(tokenId, marketplace, approved);
-    }
-    
-    // ====================================================
-    // 🔹 Metadata Functions
-    // ====================================================
-    
-    /**
-     * @dev Set base URI for tokens
-     * @param newBaseURI New base URI
-     */
-    function setBaseURI(string calldata newBaseURI) external onlyRole(GOVERNANCE_ROLE) {
-        _baseURI = newBaseURI;
-        emit BaseURIUpdated(newBaseURI);
-    }
-    
-    /**
-     * @dev Set custom URI for a specific token
-     * @param tokenId Token ID to set URI for
-     * @param tokenURI New token URI
-     */
-    function setTokenURI(uint256 tokenId, string calldata tokenURI) external {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
+        // Only the token owner or governance can set royalties
+        bool isOwner = balanceOf(msg.sender, tokenId) > 0;
+        if (!isOwner && !hasRole(GOVERNANCE_ROLE, msg.sender)) {
             revert NotTokenOwner();
-        if (tokenMetadata[tokenId].uriIsFrozen) revert TokenURIFrozen(tokenId);
-        
-        _tokenURIs[tokenId] = tokenURI;
-    }
-    
-    /**
-     * @dev Freeze token URI to prevent further changes
-     * @param tokenId Token ID to freeze URI for
-     */
-    function freezeTokenURI(uint256 tokenId) external {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
-            revert NotTokenOwner();
-            
-        tokenMetadata[tokenId].uriIsFrozen = true;
-        emit TokenURIFrozen(tokenId);
-    }
-    
-    /**
-     * @dev Set attribute for a token
-     * @param tokenId Token ID to set attribute for
-     * @param key Attribute key
-     * @param value Attribute value
-     */
-    function setTokenAttribute(uint256 tokenId, string calldata key, string calldata value) external {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
-            revert NotTokenOwner();
-            
-        tokenAttributes[tokenId][key] = value;
-    }
-    
-    /**
-     * @dev Set the metadata renderer contract
-     * @param _metadataRenderer Address of the metadata renderer
-     */
-    function setMetadataRenderer(address _metadataRenderer) external onlyRole(GOVERNANCE_ROLE) {
-        metadataRenderer = ITerraStakeMetadataRenderer(_metadataRenderer);
-        emit MetadataRendererUpdated(_metadataRenderer);
-    }
-    
-    /**
-     * @dev Get token URI
-     * @param tokenId Token ID to get URI for
-     * @return Token URI
-     */
-    function uri(uint256 tokenId) public view override returns (string memory) {
-        if (!exists(tokenId)) revert TokenDoesNotExist();
-        
-        // Check for custom URI first
-        string memory customURI = _tokenURIs[tokenId];
-        if (bytes(customURI).length > 0) {
-            return customURI;
         }
         
-        // If we have a metadata renderer and this is an impact certificate
-        if (address(metadataRenderer) != address(0) && nftTypes[tokenId] == NFTType.IMPACT) {
-            ImpactCertificate storage certificate = impactCertificates[tokenId];
-            if (certificate.reportHash != bytes32(0)) {
-                // Generate dynamic SVG based on impact data
-                return metadataRenderer.generateSVG(
-                    uint8(certificate.projectId % 5), // Use project ID modulo 5 as category
-                    certificate.impactValue,
-                    certificate.impactType,
-                    certificate.location
-                );
-            }
+        tokenRoyalties[tokenId] = RoyaltyInfo({
+            receiver: receiver,
+            royaltyFraction: feeNumerator
+        });
+        
+        emit TokenRoyaltySet(tokenId, receiver, feeNumerator);
+    }
+    
+    /**
+     * @notice ERC2981 royalty info implementation
+     * @param tokenId Token ID
+     * @param salePrice Sale price
+     * @return receiver Royalty recipient address
+     * @return royaltyAmount Amount of royalty
+     */
+    function royaltyInfo(uint256 tokenId, uint256 salePrice)
+        external
+        view
+        returns (address receiver, uint256 royaltyAmount)
+    {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        
+        // Check if token has specific royalty setting
+        RoyaltyInfo memory info = tokenRoyalties[tokenId];
+        
+        if (info.receiver != address(0)) {
+            // Use token-specific royalty
+            receiver = info.receiver;
+            royaltyAmount = (salePrice * info.royaltyFraction) / 10000;
+        } else {
+            // Use default royalty
+            receiver = defaultRoyaltyReceiver;
+            royaltyAmount = (salePrice * defaultRoyaltyPercentage) / 10000;
         }
         
-        // Fall back to default URI
-        return string(abi.encodePacked(_baseURI, _uint256ToString(tokenId)));
+        return (receiver, royaltyAmount);
     }
     
     // ====================================================
-    // 🔹 Chainlink VRF Functions
+    // 🛠️ Utility Functions
     // ====================================================
     
     /**
-     * @dev Callback function used by VRF Coordinator
-     * @param requestId ID of the randomness request
-     * @param randomWords Random results from VRF
+     * @notice Generates a new unique token ID
+     * @return A new token ID
      */
-    function fulfillRandomWords(
-        uint256 requestId,
-        uint256[] memory randomWords
-    ) internal override {
-        uint256 tokenId = _requestIdToTokenId[requestId];
-        address recipient = _requestIdToRecipient[requestId];
-        
-        if (tokenId == 0 || recipient == address(0)) return;
-        
-        uint256 randomNumber = randomWords[0];
-        
-        // Apply randomness to token attributes
-        string memory rarity = _determineRarity(randomNumber);
-        tokenAttributes[tokenId]["rarity"] = rarity;
-        
-        emit RandomnessReceived(requestId, tokenId, randomNumber);
-    }
-    
-    // ====================================================
-    // 🔹 Whitelist Functions
-    // ====================================================
-    
-    /**
-     * @dev Set whitelist status and price
-     * @param enabled Whether to enable whitelist minting
-     * @param price Price for whitelist minting
-     */
-    function setWhitelistMinting(bool enabled, uint256 price) external onlyRole(GOVERNANCE_ROLE) {
-        whitelistMintEnabled = enabled;
-        whitelistMintPrice = price;
-        
-        emit WhitelistMintingEnabled(enabled, price);
+    function _generateTokenId() internal returns (uint256) {
+        tokenCounter++;
+        tokensMintedCounter++;
+        return tokenCounter;
     }
     
     /**
-     * @dev Set whitelist Merkle root
-     * @param newRoot New Merkle root
+     * @notice Use VRF to generate a random seed for token minting
+     * @return requestId The VRF request ID
      */
-    function setWhitelistMerkleRoot(bytes32 newRoot) external onlyRole(GOVERNANCE_ROLE) {
-        whitelistMerkleRoot = newRoot;
+    function requestRandomSeed() external onlyRole(MINTER_ROLE) returns (uint256 requestId) {
+        requestId = COORDINATOR.requestRandomWords(
+            keyHash,
+            subscriptionId,
+            requestConfirmations,
+            callbackGasLimit,
+            numWords
+        );
         
-        emit WhitelistRootUpdated(newRoot);
-    }
-    
-    // ====================================================
-    // 🔹 Project Management Functions
-    // ====================================================
-    
-    /**
-     * @dev Set the projects contract address
-     * @param _projectsContract Address of the projects contract
-     */
-    function setProjectsContract(address _projectsContract) external onlyRole(GOVERNANCE_ROLE) {
-        projectsContract = _projectsContract;
-        emit ProjectsContractUpdated(_projectsContract);
-    }
-    
-    // ====================================================
-    // 🔹 Admin Functions
-    // ====================================================
-    
-    /**
-     * @dev Set fees
-     * @param _mintFee Fee for minting NFTs
-     * @param _fractionalizationFee Fee for fractionalizing NFTs
-     * @param _verificationFee Fee for verification
-     */
-    function setFees(
-        uint256 _mintFee,
-        uint256 _fractionalizationFee,
-        uint256 _verificationFee
-    ) external onlyRole(FEE_MANAGER_ROLE) {
-        mintFee = _mintFee;
-        baseMintFee = _mintFee;
-        fractionalizationFee = _fractionalizationFee;
-        baseFractionalizationFee = _fractionalizationFee;
-        verificationFee = _verificationFee;
+        vrfRequests[requestId] = true;
+        emit RandomSeedRequested(requestId, msg.sender);
         
-        emit FeesAdjusted(_mintFee, _fractionalizationFee, _verificationFee);
+        return requestId;
     }
     
     /**
-     * @dev Pause contract
+     * @notice Callback for VRF
+     * @param requestId The request ID
+     * @param randomWords The random values from VRF
      */
-    function pause() external onlyRole(GOVERNANCE_ROLE) {
-        _pause();
-    }
-    
-    /**
-     * @dev Unpause contract
-     */
-    function unpause() external onlyRole(GOVERNANCE_ROLE) {
-        _unpause();
-    }
-    
-    /**
-     * @dev Recover TStake tokens accidentally sent to contract
-     * @param amount Amount to recover
-     */
-    function recoverTStake(uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
-        uint256 balance = tStakeToken.balanceOf(address(this));
-        if (amount > balance) revert InsufficientBalance();
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        if (!vrfRequests[requestId]) revert InvalidRequest();
         
-        tStakeToken.transfer(treasuryWallet, amount);
-        emit TStakeRecovered(address(tStakeToken), amount);
+        uint256 randomValue = randomWords[0];
+        randomSeeds[requestId] = randomValue;
+        
+        emit RandomSeedReceived(requestId, randomValue);
+        
+        vrfRequests[requestId] = false;
     }
     
     /**
-     * @dev Set VRF parameters
-     * @param _keyHash New key hash for VRF
-     * @param _subscriptionId New subscription ID for VRF
-     * @param _callbackGasLimit New callback gas limit
-     * @param _requestConfirmations New request confirmations
+     * @notice Get a random seed for a VRF request
+     * @param requestId The VRF request ID
+     * @return The random seed
      */
-    function setVRFParams(
+    function getRandomSeed(uint256 requestId) external view returns (uint256) {
+        if (randomSeeds[requestId] == 0) revert NotFulfilled();
+        return randomSeeds[requestId];
+    }
+    
+    /**
+     * @notice Emergency pause for critical situations
+     */
+    function emergencyPause() external onlyRole(EMERGENCY_ROLE) {
+        emergencyMode = true;
+        emit EmergencyModeActivated(msg.sender);
+    }
+    
+    /**
+     * @notice Resume after emergency
+     */
+    function emergencyResume() external onlyRole(GOVERNANCE_ROLE) {
+        emergencyMode = false;
+        emit EmergencyModeDeactivated(msg.sender);
+    }
+    
+    /**
+     * @notice Updates VRF configuration
+     * @param _coordinator VRF coordinator address
+     * @param _keyHash Key hash for VRF
+     * @param _subscriptionId Subscription ID for VRF
+     * @param _callbackGasLimit Gas limit for callback
+     * @param _requestConfirmations Number of confirmations required
+     */
+    function updateVRFConfig(
+        address _coordinator,
         bytes32 _keyHash,
         uint64 _subscriptionId,
         uint32 _callbackGasLimit,
         uint16 _requestConfirmations
     ) external onlyRole(GOVERNANCE_ROLE) {
+        COORDINATOR = VRFCoordinatorV2Interface(_coordinator);
         keyHash = _keyHash;
         subscriptionId = _subscriptionId;
         callbackGasLimit = _callbackGasLimit;
         requestConfirmations = _requestConfirmations;
-    }
-    
-    // ====================================================
-    // 🔹 View Functions
-    // ====================================================
-    
-    /**
-     * @dev Get all tokens of a specific type
-     * @param nftType Type of NFT to retrieve
-     * @return Array of token IDs
-     */
-    function getTokensByType(NFTType nftType) external view returns (uint256[] memory) {
-        return _typeTokens[nftType];
-    }
-    
-    /**
-     * @dev Get all verified impact certificates
-     * @return Array of token IDs
-     */
-    function getVerifiedImpactCertificates() external view returns (uint256[] memory) {
-        return _verifiedImpactCertificates;
-    }
-    
-    /**
-     * @dev Get fraction info
-     * @param fractionId ID of fraction
-     * @return
-    function getFractionInfo(uint256 fractionId) external view returns (
-        uint256 originalTokenId,
-        uint256 fractionCount,
-        address fractionalizer,
-        bool isActive,
-        NFTType nftType,
-        uint256 projectId,
-        bytes32 reportHash
-    ) {
-        FractionInfo storage info = _fractionInfos[fractionId];
-        return (
-            info.originalTokenId,
-            info.fractionCount,
-            info.fractionalizer,
-            info.isActive,
-            info.nftType,
-            info.projectId,
-            info.reportHash
-        );
-    }
-    
-    /**
-     * @dev Get all tokens owned by an address
-     * @param owner Owner address
-     * @return Array of token IDs
-     */
-    function tokensOfOwner(address owner) external view returns (uint256[] memory) {
-        return _ownerTokens[owner];
-    }
-    
-    /**
-     * @dev Get all tokens in a project
-     * @param projectId Project ID
-     * @return Array of token IDs
-     */
-    function tokensInProject(uint256 projectId) external view returns (uint256[] memory) {
-        return _projectTokens[projectId];
-    }
-    
-    /**
-     * @dev Check if token is treated as ERC721
-     * @param tokenId Token ID to check
-     * @return Whether token is treated as ERC721
-     */
-    function isERC721(uint256 tokenId) external view returns (bool) {
-        return _isERC721[tokenId];
-    }
-    
-    // ====================================================
-    // 🔹 Helper Functions
-    // ====================================================
-    
-    /**
-     * @dev Add token to owner's token list for optimized lookups
-     * @param owner Owner address
-     * @param tokenId Token ID to add
-     */
-    function _addToOwnerTokens(address owner, uint256 tokenId) internal {
-        _ownerTokens[owner].push(tokenId);
-    }
-    
-    /**
-     * @dev Remove token from owner's token list
-     * @param owner Owner address
-     * @param tokenId Token ID to remove
-     */
-    function _removeFromOwnerTokens(address owner, uint256 tokenId) internal {
-        uint256[] storage tokens = _ownerTokens[owner];
-        uint256 length = tokens.length;
         
-        for (uint256 i = 0; i < length; i++) {
-            if (tokens[i] == tokenId) {
-                // Swap with last element and pop
-                tokens[i] = tokens[length - 1];
-                tokens.pop();
-                break;
-            }
-        }
-    }
-    
-    /**
-     * @dev Convert uint256 to string
-     * @param value Value to convert
-     * @return String representation
-     */
-    function _uint256ToString(uint256 value) internal pure returns (string memory) {
-        // Special case for 0
-        if (value == 0) {
-            return "0";
-        }
-        
-        // Calculate string length
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        
-        // Create output string
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        
-        return string(buffer);
-    }
-    
-    /**
-     * @dev Determine rarity based on random number
-     * @param randomNumber Random number
-     * @return Rarity string
-     */
-    function _determineRarity(uint256 randomNumber) internal pure returns (string memory) {
-        uint256 rarityValue = randomNumber % 100;
-        
-        if (rarityValue < 5) return "Legendary";
-        if (rarityValue < 15) return "Epic";
-        if (rarityValue < 35) return "Rare";
-        if (rarityValue < 65) return "Uncommon";
-        return "Common";
+        emit VRFConfigured(_coordinator, _keyHash, _subscriptionId, _callbackGasLimit, _requestConfirmations);
     }
     
     // ====================================================
-    // 🔹 ERC1155SupplyUpgradeable Overrides
+    // ♻️ ERC1155 Overrides
     // ====================================================
     
     /**
-     * @dev Override _beforeTokenTransfer to handle special cases
+     * @notice Override _beforeTokenTransfer to apply transfer fees
      */
     function _beforeTokenTransfer(
         address operator,
@@ -1542,54 +1087,164 @@ contract TerraStakeNFT is
         uint256[] memory ids,
         uint256[] memory amounts,
         bytes memory data
-    ) internal override(ERC1155Upgradeable, ERC1155SupplyUpgradeable) {
+    ) internal override(ERC1155Upgradeable) {
         super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
         
-        // Handle ownership tracking for optimized lookups
-        for (uint256 i = 0; i < ids.length; i++) {
-            uint256 tokenId = ids[i];
-            
-            // This is a transfer (not mint or burn)
-            if (from != address(0) && to != address(0)) {
-                _removeFromOwnerTokens(from, tokenId);
-                _addToOwnerTokens(to, tokenId);
-            }
-            // This is a mint
-            else if (from == address(0)) {
-                _addToOwnerTokens(to, tokenId);
-            }
-            // This is a burn
-            else if (to == address(0)) {
-                _removeFromOwnerTokens(from, tokenId);
-            }
+        // Don't apply fees to minting, burning, or exempt addresses
+        if (from == address(0) || to == address(0) || hasRole(FEE_EXEMPTION_ROLE, from)) {
+            return;
         }
+        
+        // Don't apply fees if the operator is the contract itself (internal transfers)
+        if (operator == address(this)) {
+            return;
+        }
+        
+        // Apply transfer fee for non-exempt users on regular transfers
+        _collectFee(from, transferFee);
     }
     
-    // ====================================================
-    // 🔹 Blockchain Protection and Support Functions
-    // ====================================================
-    
     /**
-     * @dev Check for ERC1155 support in receiver contracts
-     * @param from Sender address
-     * @param to Recipient address
-     */
-    function _checkSafeRecipient(address from, address to) internal view {
-        if (to.code.length > 0 && from != address(0) && !ERC1155Upgradeable._checkContractOnERC1155Received(from, to, 0, 0, "")) {
-            revert InvalidRecipient();
-        }
-    }
-
-    /**
-     * @dev Support for introspection
+     * @notice Supports ERC-165 interface detection
+     * @param interfaceId The interface identifier to check
+     * @return True if the interface is supported
      */
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(ERC1155Upgradeable, AccessControlUpgradeable, IERC165Upgradeable)
+        override(ERC1155Upgradeable, AccessControlUpgradeable)
         returns (bool)
     {
-        return interfaceId == type(IERC2981Upgradeable).interfaceId ||
-               super.supportsInterface(interfaceId);
+        return
+            interfaceId == type(IERC2981Upgradeable).interfaceId ||
+            interfaceId == type(ILockable).interfaceId ||
+            super.supportsInterface(interfaceId);
+    }
+    
+    // ====================================================
+    // 🔒 Locking Mechanism Implementation (ILockable)
+    // ====================================================
+    
+    /**
+     * @notice Locks a token, preventing transfers
+     * @param tokenId The token ID to lock
+     * @param duration The lock duration in seconds (0 for permanent)
+     */
+    function lockToken(uint256 tokenId, uint256 duration) external {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        
+        // Only the token owner or governance can lock tokens
+        bool isOwner = balanceOf(msg.sender, tokenId) > 0;
+        if (!isOwner && !hasRole(GOVERNANCE_ROLE, msg.sender)) {
+            revert NotTokenOwner();
+        }
+        
+        uint256 unlockTime = duration == 0 ? type(uint256).max : block.timestamp + duration;
+        
+        tokenLocks[tokenId] = TokenLock({
+            isLocked: true,
+            lockedBy: msg.sender,
+            lockTime: block.timestamp,
+            unlockTime: unlockTime
+        });
+        
+        emit TokenLocked(tokenId, msg.sender, unlockTime);
+    }
+    
+    /**
+     * @notice Unlocks a token if the lock period has expired
+     * @param tokenId The token ID to unlock
+     */
+    function unlockToken(uint256 tokenId) external {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        if (!tokenLocks[tokenId].isLocked) revert TokenNotLocked();
+        
+        TokenLock memory lock = tokenLocks[tokenId];
+        
+        // Check if permanent lock
+        if (lock.unlockTime == type(uint256).max) {
+            revert PermanentlyLocked();
+        }
+        
+        // Check if unlock time has passed
+        if (block.timestamp < lock.unlockTime) {
+            revert LockNotExpired();
+        }
+        
+        // Clear lock
+        tokenLocks[tokenId].isLocked = false;
+        
+        emit TokenUnlocked(tokenId, msg.sender);
+    }
+    
+    /**
+     * @notice Checks if a token is locked
+     * @param tokenId The token ID to check
+     * @return True if the token is locked
+     */
+    function isLocked(uint256 tokenId) external view returns (bool) {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        
+        // Check if locked
+        if (!tokenLocks[tokenId].isLocked) {
+            return false;
+        }
+        
+        // If has an unlock time and it's in the past, it's effectively unlocked
+        if (
+            tokenLocks[tokenId].unlockTime != type(uint256).max &&
+            block.timestamp >= tokenLocks[tokenId].unlockTime
+        ) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * @notice Gets lock information for a token
+     * @param tokenId The token ID to check
+     * @return Lock information
+     */
+    function getLockInfo(uint256 tokenId) external view returns (TokenLock memory) {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        return tokenLocks[tokenId];
+    }
+    
+    // ====================================================
+    // 💵 Token Recovery
+    // ====================================================
+    
+    /**
+     * @notice Allows governance to recover any ERC20 tokens sent to the contract by mistake
+     * @param tokenAddress Address of the token to recover
+     * @param amount Amount to recover
+     */
+    function recoverERC20(address tokenAddress, uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        // Cannot withdraw TSTAKE tokens allocated for buybacks
+        if (tokenAddress == tstakeToken) {
+            uint256 contractBalance = IERC20(tstakeToken).balanceOf(address(this));
+            require(contractBalance - buybackBalance >= amount, "Cannot withdraw buyback funds");
+        }
+        
+        IERC20(tokenAddress).transfer(treasuryWallet, amount);
+        
+        emit TokensRecovered(tokenAddress, amount, treasuryWallet);
+    }
+    
+    /**
+     * @notice Execute a buyback from the allocated buyback funds
+     * @param amount Amount of TSTAKE to use for buyback
+     */
+    function executeBuyback(uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        if (amount > buybackBalance) revert InsufficientFunds();
+        
+        buybackBalance -= amount;
+        
+        // Transfer to the buyback executor
+        bool success = IERC20(tstakeToken).transfer(msg.sender, amount);
+        if (!success) revert FeeTransferFailed();
+        
+        emit BuybackExecuted(amount, msg.sender);
     }
 }
