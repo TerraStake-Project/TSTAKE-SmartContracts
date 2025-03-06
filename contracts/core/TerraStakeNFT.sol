@@ -1,1346 +1,1236 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: MIT
+
 pragma solidity 0.8.28;
 
-import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
-import {ITerraStakeProjects} from "../interfaces/ITerraStakeProjects.sol";
-import {ITerraStakeNFT} from "../interfaces/ITerraStakeNFT.sol";
-import {ITerraStakeMarketPlace} from "../interfaces/ITerraStakeMarketPlace.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "../interfaces/ITerraStakeProjects.sol";
+import "../interfaces/ITerraStakeMetadataRenderer.sol";
+
+interface ITerraStakeToken {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function burn(uint256 amount) external;
+}
 
 /**
- * @title TerraStakeProjects 
- * @notice Manages projects, staking, impact tracking, governance-driven fees, and NFT integration.
- * @dev Implements UUPS upgradeable pattern and comprehensive role-based access control
+ * @title TerraStakeNFT
+ * @notice Advanced ERC1155 NFT implementation for TerraStake impact certificates with fractionalization
+ * @dev Implements UUPS upgradeable pattern with multiple advanced features
  */
-contract TerraStakeProjects is 
+contract TerraStakeNFT is 
     Initializable, 
+    ERC1155Upgradeable, 
+    ERC1155SupplyUpgradeable, 
     AccessControlUpgradeable, 
-    ReentrancyGuardUpgradeable, 
+    ReentrancyGuardUpgradeable,
     PausableUpgradeable,
     UUPSUpgradeable,
-    ITerraStakeProjects 
+    VRFConsumerBaseV2
 {
-    using SafeERC20 for IERC20;
+    // ====================================================
+    // ⚠️ Custom Errors
+    // ====================================================
+    error InvalidRecipient();
+    error FeeTransferFailed();
+    error VerificationFeeFailed();
+    error NotTokenOwner();
+    error TokenDoesNotExist();
+    error AlreadyVerified();
+    error NotImpactNFT();
+    error InsufficientBalance();
+    error InvalidAmount();
+    error ArrayLengthMismatch();
+    error ReportAlreadyMinted();
+    error InvalidProof();
+    error AlreadyClaimed();
+    error TotalAmountMismatch();
+    error NotActiveToken();
+    error NotAllFractionsOwned();
+    error TokenURIFrozen(uint256 tokenId);
     
     // ====================================================
     // 🔑 Roles
     // ====================================================
-    bytes32 public constant PROJECT_MANAGER_ROLE = keccak256("PROJECT_MANAGER_ROLE");
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant STAKER_ROLE = keccak256("STAKER_ROLE");
-    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
+    bytes32 public constant FRACTIONALIZER_ROLE = keccak256("FRACTIONALIZER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant MARKETPLACE_ROLE = keccak256("MARKETPLACE_ROLE");
+    bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
 
     // ====================================================
-    // 📌 State Variables
+    // 📌 Fee Management
     // ====================================================
-    IERC20 public tStakeToken;
-    uint256 public projectCount;
+    uint256 public mintFee;
+    uint256 public fractionalizationFee;
+    uint256 public verificationFee;
+    uint256 public marketplaceFee;
+    IERC20Upgradeable public tStakeToken;
+    address public treasuryWallet;
+
+    // ====================================================
+    // 📌 Token State Management
+    // ====================================================
+    uint256 public totalMinted;
+    mapping(uint256 => bool) private _isERC721; // Tracks if the token is ERC721
+    mapping(uint256 => string) private _tokenURIs; // Custom URIs for tokens
+    string private _baseURI;
+    bool private _customURIsLocked;
+
+    // ====================================================
+    // 📌 NFT Type Management
+    // ====================================================
+    enum NFTType { IMPACT, MEMBERSHIP, PROJECT, BADGE, LAND, CARBON_CREDIT }
+    mapping(uint256 => NFTType) public nftTypes;
     
-    FeeStructure public fees;
-    address public treasury;
-    address public liquidityPool;
-    address public stakingContract;
-    address public rewardsContract;
-    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    // Optimized lookups
+    mapping(NFTType => uint256[]) private _typeTokens;
+
+    // ====================================================
+    // 📌 Project Integration
+    // ====================================================
+    address public projectsContract;
+    mapping(uint256 => uint256) public projectIds; // tokenId => projectId
+    mapping(uint256 => bytes32) public impactReportHashes;
+    mapping(bytes32 => bool) public mintedReports;
     
-    // NFT Integration
-    address public nftContract;
-    mapping(ProjectCategory => string) private categoryImageURI;
+    // Optimized lookups
+    mapping(uint256 => uint256[]) private _projectTokens; // projectId => tokenIds
+
+    // ====================================================
+    // 📌 Fractionalization
+    // ====================================================
+    struct FractionInfo {
+        uint256 originalTokenId;
+        uint256 fractionCount;
+        address fractionalizer;
+        bool isActive;
+        NFTType nftType;
+        uint256 projectId;
+        bytes32 reportHash;
+    }
+    mapping(uint256 => FractionInfo) private _fractionInfos;
+
+    // ====================================================
+    // 📌 Royalty System
+    // ====================================================
+    uint256 public defaultRoyaltyPercentage;
+    address public royaltyReceiver;
+    mapping(uint256 => uint256) public customRoyaltyPercentages;
+    mapping(uint256 => address) public customRoyaltyReceivers;
+
+    // ====================================================
+    // 📌 Marketplace Integration
+    // ====================================================
+    bool public marketplaceEnabled;
+    address public marketplaceAddress;
     
-    // Category metadata with real-world requirements
-    mapping(ProjectCategory => CategoryInfo) public categoryInfo;
-    
-    // Project data storage
-    mapping(uint256 => ProjectData) public projectMetadata;
-    mapping(uint256 => ProjectStateData) public projectStateData;
-    mapping(uint256 => ValidationData) public projectValidations;
-    mapping(uint256 => VerificationData) public projectVerifications;
-    mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
-    
-    // Enhanced storage pattern for comments with pagination
-    mapping(uint256 => mapping(uint256 => Comment[])) public projectCommentsPages;
-    mapping(uint256 => uint256) public projectCommentsPageCount;
-    uint256 public constant COMMENTS_PER_PAGE = 100;
-    
-    // Enhanced storage pattern for documents with pagination
-    mapping(uint256 => mapping(uint256 => string[])) public projectDocumentPages;
-    mapping(uint256 => uint256) public projectDocumentPageCount;
-    uint256 public constant DOCUMENTS_PER_PAGE = 20;
-    
-    mapping(uint256 => ProjectAnalytics) public projectAnalytics;
-    mapping(uint256 => ImpactReport[]) public projectImpactReports;
-    mapping(uint256 => ImpactRequirement) public projectImpactRequirements;
-    mapping(uint256 => RECData[]) public projectRECs;
-    
-    // Category requirements tracking
-    mapping(ProjectCategory => ImpactRequirement) public categoryRequirements;
-    
-    // Granular permission system for project owners and collaborators
-    mapping(uint256 => mapping(address => mapping(bytes32 => bool))) public projectPermissions;
-    bytes32 public constant EDIT_METADATA_PERMISSION = keccak256("EDIT_METADATA");
-    bytes32 public constant UPLOAD_DOCS_PERMISSION = keccak256("UPLOAD_DOCS");
-    bytes32 public constant SUBMIT_REPORTS_PERMISSION = keccak256("SUBMIT_REPORTS");
-    bytes32 public constant MANAGE_COLLABORATORS_PERMISSION = keccak256("MANAGE_COLLABORATORS");
-    
-    // Efficient project tracking by owner & category
-    mapping(address => uint256[]) private _projectsByOwner;
-    mapping(ProjectCategory => uint256[]) private _projectsByCategory;
-    uint256[] private _activeProjects;
-    
-    // Circuit breaker security
-    bool public emergencyMode;
-    
-    // Custom data structure to store real-world category information
-    struct CategoryInfo {
+    // ====================================================
+    // 📌 Metadata Storage
+    // ====================================================
+    struct NFTMetadata {
         string name;
         string description;
-        string[] standardBodies;
-        string[] metricUnits;
-        string verificationStandard;
-        uint256 impactWeight;
+        uint256 creationTime;
+        bool uriIsFrozen;
     }
+    mapping(uint256 => NFTMetadata) public tokenMetadata;
+    mapping(uint256 => mapping(string => string)) public tokenAttributes;
+    
+    // ====================================================
+    // 📌 Certificate of Impact
+    // ====================================================
+    struct ImpactCertificate {
+        uint256 projectId;
+        bytes32 reportHash;
+        uint256 impactValue;
+        string impactType;
+        uint256 verificationDate;
+        string location;
+        address verifier;
+        bool isVerified;
+    }
+    mapping(uint256 => ImpactCertificate) public impactCertificates;
+    
+    // Optimized lookups
+    uint256[] private _verifiedImpactCertificates;
+    mapping(uint256 => uint256) private _verifiedCertificateIndex; // tokenId => index+1 in _verifiedImpactCertificates
 
     // ====================================================
-    // 📣 Enhanced Events
+    // 📌 Chainlink VRF
     // ====================================================
-    // NFT related events
-    event ImpactNFTMinted(uint256 indexed projectId, bytes32 indexed reportHash, address recipient);
-    event NFTContractSet(address indexed nftContract);
-    
-    // Additional events for REC management
-    event RECVerified(uint256 indexed projectId, bytes32 indexed recId, address verifier);
-    event RECRetired(uint256 indexed projectId, bytes32 indexed recId, address retirer, string purpose);
-    event RECTransferred(uint256 indexed projectId, bytes32 indexed recId, address from, address to);
-    event RECRegistrySync(uint256 indexed projectId, bytes32 indexed recId, string externalRegistryId);
-    
-    // Project permission events
-    event ProjectPermissionUpdated(
-        uint256 indexed projectId, 
-        address indexed user, 
-        bytes32 permission, 
-        bool granted
-    );
-    
-    // Project metadata update event
-    event ProjectMetadataUpdated(uint256 indexed projectId, string name);
-    
-    // Fee management events
-    event TokensBurned(uint256 amount);
-    
-    // Emergency events
-    event EmergencyModeActivated(address operator);
-    event EmergencyModeDeactivated(address operator);
-    
-    // ====================================================
-    // 🚨 Errors
-    // ====================================================
-    error InvalidAddress();
-    error NameRequired();
-    error InvalidProjectId();
-    error StateUnchanged();
-    error NotAuthorized();
-    error FeeTransferFailed();
-    error PageDoesNotExist();
-    error InvalidCategory();
-    error ProjectNotActive();
-    error ProjectNotVerified();
-    error RECNotFound();
-    error RECNotActive();
-    error NotRECOwner();
-    error CannotRevokeOwnerPermissions();
-    error EmergencyModeActive();
-    error CallerNotStakingContract();
+    VRFCoordinatorV2Interface private COORDINATOR;
+    bytes32 private keyHash;
+    uint64 private subscriptionId;
+    uint32 private callbackGasLimit;
+    uint16 private requestConfirmations;
+    mapping(uint256 => uint256) private _requestIdToTokenId;
+    mapping(uint256 => address) private _requestIdToRecipient;
 
     // ====================================================
-    // 🚀 Initialization & Upgrades
+    // 📌 Whitelist & Airdrop
     // ====================================================
+    bytes32 public whitelistMerkleRoot;
+    mapping(address => bool) public hasClaimed;
+    bool public whitelistMintEnabled;
+    uint256 public whitelistMintPrice;
+    
+    // ====================================================
+    // 📌 Ownership Tracking for Gas Optimization
+    // ====================================================
+    mapping(address => uint256[]) private _ownerTokens;
+
+    // ====================================================
+    // 📌 Metadata Renderer
+    // ====================================================
+    ITerraStakeMetadataRenderer public metadataRenderer;
+
+    // ====================================================
+    // 📣 Events
+    // ====================================================
+    event NFTMinted(address indexed to, uint256 indexed tokenId, bool isERC721, NFTType nftType);
+    event ImpactNFTMinted(uint256 indexed tokenId, uint256 indexed projectId, bytes32 reportHash, address recipient);
+    event TokenFractionalized(uint256 indexed tokenId, uint256 fractionId, uint256 fractionCount);
+    event FractionsReunified(uint256 indexed fractionId, uint256 newTokenId);
+    event BaseURIUpdated(string newBaseURI);
+    event TokenURIFrozen(uint256 indexed tokenId);
+    event ProjectsContractUpdated(address indexed newProjectsContract);
+    event RoyaltyUpdated(address receiver, uint256 percentage);
+    event MarketplaceStatusChanged(bool enabled);
+    event MarketplaceAddressUpdated(address indexed newMarketplace);
+    event ImpactCertificateVerified(uint256 indexed tokenId, address verifier);
+    event RandomnessRequested(uint256 indexed requestId, uint256 indexed tokenId, address recipient);
+    event RandomnessReceived(uint256 indexed requestId, uint256 indexed tokenId, uint256 randomNumber);
+    event WhitelistMintingEnabled(bool enabled, uint256 price);
+    event WhitelistRootUpdated(bytes32 newRoot);
+    event TStakeRecovered(address indexed tokenAddress, uint256 amount);
+    event TStakeBurned(uint256 amount);
+    event MetadataRendererUpdated(address indexed renderer);
+
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor() VRFConsumerBaseV2(address(0)) {
         _disableInitializers();
     }
 
+    /**
+     * @dev Initializes the TerraStakeNFT contract
+     * @param _tStakeToken Address of the TStake token
+     * @param _treasuryWallet Address of the treasury wallet
+     * @param _mintFee Fee for minting NFTs
+     * @param _fractionalizationFee Fee for fractionalizing NFTs
+     * @param _vrfCoordinator Address of the VRF Coordinator
+     * @param _vrfKeyHash Key hash for VRF
+     * @param _vrfSubscriptionId Subscription ID for VRF
+     */
     function initialize(
-        address admin, 
-        address _tstakeToken
-    ) external override initializer {
-        if (admin == address(0) || _tstakeToken == address(0)) revert InvalidAddress();
+        address _tStakeToken,
+        address _treasuryWallet,
+        uint256 _mintFee,
+        uint256 _fractionalizationFee,
+        address _vrfCoordinator,
+        bytes32 _vrfKeyHash,
+        uint64 _vrfSubscriptionId
+    ) public initializer {
+        if (_tStakeToken == address(0)) revert InvalidRecipient();
+        if (_treasuryWallet == address(0)) revert InvalidRecipient();
+        if (_vrfCoordinator == address(0)) revert InvalidRecipient();
         
+        // Initialize all inherited contracts using OZ 5.2.x pattern
+        __ERC1155_init("ipfs://");
+        __ERC1155Supply_init();
         __AccessControl_init();
         __ReentrancyGuard_init();
         __Pausable_init();
         __UUPSUpgradeable_init();
         
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(PROJECT_MANAGER_ROLE, admin);
-        _grantRole(GOVERNANCE_ROLE, admin);
-        _grantRole(STAKER_ROLE, admin);
-        _grantRole(VALIDATOR_ROLE, admin);
-        _grantRole(VERIFIER_ROLE, admin);
-        _grantRole(UPGRADER_ROLE, admin);
+        tStakeToken = IERC20Upgradeable(_tStakeToken);
+        treasuryWallet = _treasuryWallet;
+        mintFee = _mintFee;
+        fractionalizationFee = _fractionalizationFee;
         
-        tStakeToken = IERC20(_tstakeToken);
+        // VRF initialization
+        COORDINATOR = VRFCoordinatorV2Interface(_vrfCoordinator);
+        keyHash = _vrfKeyHash;
+        subscriptionId = _vrfSubscriptionId;
+        callbackGasLimit = 100000;
+        requestConfirmations = 3;
         
-        // Initial fee structure
-        fees = FeeStructure({
-            projectSubmissionFee: 6100 * 10**18, // $6,100 in TSTAKE
-            impactReportingFee: 2200 * 10**18,   // $2,200 in TSTAKE
-            categoryChangeFee: 1500 * 10**18,    // $1,500 in TSTAKE
-            verificationFee: 3000 * 10**18       // $3,000 in TSTAKE
+        // Default royalty settings
+        defaultRoyaltyPercentage = 250; // 2.5%
+        royaltyReceiver = _treasuryWallet;
+        
+        // Set base URI
+        _baseURI = "ipfs://";
+        
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(MINTER_ROLE, msg.sender);
+        _grantRole(GOVERNANCE_ROLE, msg.sender);
+        _grantRole(FRACTIONALIZER_ROLE, msg.sender);
+        _grantRole(UPGRADER_ROLE, msg.sender);
+    }
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+
+    // ====================================================
+    // 🔹 Minting Functions
+    // ====================================================
+    
+    /**
+     * @dev Standard mint function
+     * @param to Recipient address
+     * @param isERC721 Whether to treat as an ERC721 token (only one copy)
+     * @param nftType Type of NFT being minted
+     */
+    function mint(
+        address to,
+        bool isERC721,
+        NFTType nftType
+    ) external nonReentrant onlyRole(MINTER_ROLE) returns (uint256) {
+        if (to == address(0)) revert InvalidRecipient();
+        if (!tStakeToken.transferFrom(msg.sender, address(this), mintFee)) 
+            revert FeeTransferFailed();
+            
+        uint256 tokenId = ++totalMinted;
+        _mint(to, tokenId, 1, "");
+        _isERC721[tokenId] = isERC721;
+        nftTypes[tokenId] = nftType;
+        
+        // Add to type index for optimized lookups
+        _typeTokens[nftType].push(tokenId);
+        
+        // Add to owner tokens for optimized lookups
+        _addToOwnerTokens(to, tokenId);
+        
+        // Set creation metadata
+        tokenMetadata[tokenId] = NFTMetadata({
+            name: string(abi.encodePacked("TerraStake NFT #", _uint256ToString(tokenId))),
+            description: "TerraStake NFT",
+            creationTime: block.timestamp,
+            uriIsFrozen: false
         });
+                // Split fee: 90% to treasury, 10% to burn
+        uint256 burnAmount = mintFee / 10;
+        uint256 treasuryAmount = mintFee - burnAmount;
         
-        // Initialize category information with real-world data
-        _initializeCategoryData();
+        tStakeToken.transfer(treasuryWallet, treasuryAmount);
+        ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
+        emit TStakeBurned(burnAmount);
         
-        emit Initialized(admin, _tstakeToken);
-        emit FeeStructureUpdated(
-            fees.projectSubmissionFee, 
-            fees.impactReportingFee, 
-            fees.verificationFee, 
-            fees.categoryChangeFee
-        );
+        emit NFTMinted(to, tokenId, isERC721, nftType);
+        return tokenId;
     }
     
     /**
-     * @dev Function that should revert when msg.sender is not authorized to upgrade the contract.
-     * Called by {upgradeTo} and {upgradeToAndCall}.
+     * @dev Mint an impact certificate NFT linked to a verified impact report
+     * @param to Recipient address
+     * @param projectId ID of the project
+     * @param reportHash Hash of the impact report
+     * @param impactValue Quantified impact value
+     * @param impactType Type of impact (e.g., "CO2 reduction")
+     * @param location Geographic location
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-
-    // Initialize category data with real-world standards and requirements
-    function _initializeCategoryData() internal {
-        // Carbon Credit projects
-        categoryInfo[ProjectCategory.CarbonCredit] = CategoryInfo({
-            name: "Carbon Credit",
-            description: "Projects that reduce or remove greenhouse gas emissions",
-            standardBodies: ["Verra", "Gold Standard", "American Carbon Registry", "Climate Action Reserve"],
-            metricUnits: ["tCO2e", "Carbon Offset Tons", "Carbon Removal Tons"],
-            verificationStandard: "ISO 14064-3",
-            impactWeight: 100
-        });
-        
-        // Renewable Energy projects
-        categoryInfo[ProjectCategory.RenewableEnergy] = CategoryInfo({
-            name: "Renewable Energy",
-            description: "Solar, wind, hydro, and other renewable energy generation projects",
-            standardBodies: ["I-REC Standard", "Green-e Energy", "EKOenergy"],
-            metricUnits: ["MWh", "kWh", "Installed Capacity (MW)"],
-            verificationStandard: "ISO 50001",
-            impactWeight: 90
-        });
-        
-        // Ocean Cleanup projects
-        categoryInfo[ProjectCategory.OceanCleanup] = CategoryInfo({
-            name: "Ocean Cleanup",
-            description: "Marine conservation and plastic removal initiatives",
-            standardBodies: ["Ocean Cleanup Foundation", "Plastic Bank", "Ocean Conservancy"],
-            metricUnits: ["Tons of Plastic Removed", "Area Protected (km²)", "Marine Species Protected"],
-            verificationStandard: "UNEP Clean Seas Protocol",
-            impactWeight: 85
-        });
-        
-        // Reforestation projects
-        categoryInfo[ProjectCategory.Reforestation] = CategoryInfo({
-            name: "Reforestation",
-            description: "Tree planting and forest protection initiatives",
-            standardBodies: ["Forest Stewardship Council", "Rainforest Alliance", "One Tree Planted"],
-            metricUnits: ["Trees Planted", "Area Reforested (ha)", "Biomass Added (tons)"],
-            verificationStandard: "ISO 14001",
-            impactWeight: 95
-        });
-        
-        // Biodiversity projects
-        categoryInfo[ProjectCategory.Biodiversity] = CategoryInfo({
-            name: "Biodiversity",
-            description: "Species and ecosystem protection initiatives",
-            standardBodies: ["IUCN", "WWF", "The Nature Conservancy"],
-            metricUnits: ["Species Protected", "Habitat Area (ha)", "Biodiversity Index"],
-            verificationStandard: "Convention on Biological Diversity",
-            impactWeight: 85
-        });
-        
-        // Initialize remaining categories
-        _initializeRemainingCategories();
-    }
-    
-    function _initializeRemainingCategories() internal {
-        // Sustainable Agriculture projects
-        categoryInfo[ProjectCategory.SustainableAg] = CategoryInfo({
-            name: "Sustainable Agriculture",
-            description: "Regenerative farming and sustainable agricultural practices",
-            standardBodies: ["Regenerative Organic Certified", "USDA Organic", "Rainforest Alliance"],
-            metricUnits: ["Organic Produce (tons)", "Soil Carbon Added (tons)", "Water Saved (m³)"],
-            verificationStandard: "Global G.A.P.",
-            impactWeight: 80
-        });
-        
-        // Waste Management projects
-        categoryInfo[ProjectCategory.WasteManagement] = CategoryInfo({
-            name: "Waste Management",
-            description: "Recycling and waste reduction initiatives",
-            standardBodies: ["Zero Waste International Alliance", "ISO 14001", "Cradle to Cradle"],
-            metricUnits: ["Waste Diverted (tons)", "Recycling Rate (%)", "Landfill Reduction (m³)"],
-            verificationStandard: "ISO 14001",
-            impactWeight: 75
-        });
-        
-        // Water Conservation projects
-        categoryInfo[ProjectCategory.WaterConservation] = CategoryInfo({
-            name: "Water Conservation",
-            description: "Water efficiency and protection initiatives",
-            standardBodies: ["Alliance for Water Stewardship", "Water Footprint Network", "LEED"],
-            metricUnits: ["Water Saved (m³)", "Area Protected (ha)", "People Served"],
-            verificationStandard: "ISO 14046",
-            impactWeight: 85
-        });
-        
-        // Pollution Control projects
-        categoryInfo[ProjectCategory.PollutionControl] = CategoryInfo({
-            name: "Pollution Control",
-            description: "Air and environmental quality improvement initiatives",
-            standardBodies: ["ISO 14001", "Clean Air Act", "EPA Standards"],
-            metricUnits: ["Emissions Reduced (tons)", "AQI Improvement", "Area Remediated (ha)"],
-            verificationStandard: "ISO 14001",
-            impactWeight: 80
-        });
-        
-        // Habitat Restoration projects
-        categoryInfo[ProjectCategory.HabitatRestoration] = CategoryInfo({
-            name: "Habitat Restoration",
-            description: "Ecosystem recovery projects",
-            standardBodies: ["Society for Ecological Restoration", "IUCN", "Land Life Company"],
-            metricUnits: ["Area Restored (ha)", "Species Reintroduced", "Ecological Health Index"],
-            verificationStandard: "SER International Standards",
-            impactWeight: 90
-        });
-        
-        // Green Building projects
-        categoryInfo[ProjectCategory.GreenBuilding] = CategoryInfo({
-            name: "Green Building",
-            description: "Energy-efficient infrastructure & sustainable construction",
-            standardBodies: ["LEED", "BREEAM", "Passive House", "Living Building Challenge"],
-            metricUnits: ["Energy Saved (kWh)", "CO2 Reduced (tons)", "Water Saved (m³)"],
-            verificationStandard: "LEED Certification",
-            impactWeight: 70
-        });
-        
-        // Circular Economy projects
-        categoryInfo[ProjectCategory.CircularEconomy] = CategoryInfo({
-            name: "Circular Economy",
-            description: "Waste-to-energy, recycling loops, regenerative economy",
-            standardBodies: ["Ellen MacArthur Foundation", "Cradle to Cradle", "Circle Economy"],
-            metricUnits: ["Material Reused (tons)", "Product Lifecycle Extension", "Virgin Material Avoided (tons)"],
-            verificationStandard: "BS 8001:2017",
-            impactWeight: 85
-        });
-        
-        // Community Development projects
-        categoryInfo[ProjectCategory.CommunityDevelopment] = CategoryInfo({
-            name: "Community Development",
-            description: "Local sustainability initiatives and social impact projects",
-            standardBodies: ["B Corp", "Social Value International", "Community Development Financial Institutions"],
-            metricUnits: ["People Impacted", "Jobs Created", "Community Resources Generated"],
-            verificationStandard: "Social Return on Investment Framework",
-            impactWeight: 75
-        });
-    }
-
-    // ====================================================
-    // 🔹 NFT Integration Functions
-    // ====================================================
-    
-    function setNFTContract(address _nftContract) external onlyRole(GOVERNANCE_ROLE) {
-        if (_nftContract == address(0)) revert InvalidAddress();
-        nftContract = _nftContract;
-        emit NFTContractSet(_nftContract);
-        
-        // Initialize default category images
-        _initializeCategoryImages();
-    }
-    
-    function _initializeCategoryImages() internal {
-        categoryImageURI[ProjectCategory.CarbonCredit] = "ipfs://QmXyZ1234567890carbon/";
-        categoryImageURI[ProjectCategory.RenewableEnergy] = "ipfs://QmXyZ1234567890renewable/";
-        categoryImageURI[ProjectCategory.OceanCleanup] = "ipfs://QmXyZ1234567890ocean/";
-        categoryImageURI[ProjectCategory.Reforestation] = "ipfs://QmXyZ1234567890forest/";
-        categoryImageURI[ProjectCategory.Biodiversity] = "ipfs://QmXyZ1234567890biodiversity/";
-        categoryImageURI[ProjectCategory.SustainableAg] = "ipfs://QmXyZ1234567890agriculture/";
-        categoryImageURI[ProjectCategory.WasteManagement] = "ipfs://QmXyZ1234567890waste/";
-        categoryImageURI[ProjectCategory.WaterConservation] = "ipfs://QmXyZ1234567890water/";
-        categoryImageURI[ProjectCategory.PollutionControl] = "ipfs://QmXyZ1234567890pollution/";
-        categoryImageURI[ProjectCategory.HabitatRestoration] = "ipfs://QmXyZ1234567890habitat/";
-        categoryImageURI[ProjectCategory.GreenBuilding] = "ipfs://QmXyZ1234567890building/";
-        categoryImageURI[ProjectCategory.CircularEconomy] = "ipfs://QmXyZ1234567890circular/";
-        categoryImageURI[ProjectCategory.CommunityDevelopment] = "ipfs://QmXyZ1234567890community/";
-    }
-    
-    function setCategoryImageURI(ProjectCategory category, string calldata uri) external onlyRole(GOVERNANCE_ROLE) {
-        categoryImageURI[category] = uri;
-    }
-    
-    function getCategoryImageURI(ProjectCategory category) external view returns (string memory) {
-        return categoryImageURI[category];
-    }
-    
-    function mintImpactNFT(uint256 projectId, bytes32 reportHash, address recipient) 
-        external 
-        whenNotPaused 
-        nonReentrant 
-    {
-        // Only validators, verifiers, or governance can mint NFTs
-        if (!hasRole(VALIDATOR_ROLE, msg.sender) && 
-            !hasRole(VERIFIER_ROLE, msg.sender) && 
-            !hasRole(GOVERNANCE_ROLE, msg.sender)) {
-            revert NotAuthorized();
-        }
-        
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (nftContract == address(0)) revert InvalidAddress();
-        
-        // Ensure project is active and verified
-        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
-        if (projectVerifications[projectId].verificationDate == 0) revert ProjectNotVerified();
-        
-        // Get project category and metadata for the NFT
-        ProjectCategory category = projectStateData[projectId].category;
-        string memory projectName = projectMetadata[projectId].name;
-        
-        // Create NFT metadata
-        string memory tokenURI = _generateTokenURI(projectId, category, projectName, reportHash);
-        
-        // Call the NFT contract to mint the token
-        ITerraStakeNFT nftContractInstance = ITerraStakeNFT(nftContract);
-        nftContractInstance.mintImpactNFT(recipient, projectId, tokenURI, reportHash);
-        
-        emit ImpactNFTMinted(projectId, reportHash, recipient);
-    }
-    
-    function _generateTokenURI(
-        uint256 projectId, 
-        ProjectCategory category, 
-        string memory projectName, 
-        bytes32 reportHash
-    ) internal view returns (string memory) {
-        // Simplified JSON generation for demonstration
-        // In production, this would construct complete metadata JSON
-        string memory baseURI = categoryImageURI[category];
-        string memory tokenId = Strings.toString(projectId);
-        
-        return string(abi.encodePacked(
-            baseURI,
-            tokenId,
-            "?name=", projectName,
-            "&category=", Strings.toString(uint256(category)),
-            "&reportHash=", _bytes32ToString(reportHash)
-        ));
-    }
-    
-    function _bytes32ToString(bytes32 _bytes) internal pure returns (string memory) {
-        bytes memory bytesArray = new bytes(64);
-        for (uint256 i = 0; i < 32; i++) {
-            bytesArray[i*2] = _byteToChar(_bytes[i] >> 4);
-            bytesArray[i*2+1] = _byteToChar(_bytes[i] & 0x0f);
-        }
-        return string(bytesArray);
-    }
-    
-    function _byteToChar(bytes1 b) internal pure returns (bytes1) {
-        if (b < bytes1(uint8(10))) {
-            return bytes1(uint8(b) + 0x30);
-        } else {
-            return bytes1(uint8(b) + 0x57);
-        }
-    }
-
-    // ====================================================
-    // 🔹 Project Management
-    // ====================================================
-    
-    function addProject(
-        string memory name,
-        string memory description,
-        string memory location,
-        string memory impactMetrics,
-        bytes32 ipfsHash,
-        ProjectCategory category,
-        uint32 stakingMultiplier,
-        uint48 startBlock,
-        uint48 endBlock
-    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
-        if (bytes(name).length == 0) revert NameRequired();
-        if (uint256(category) > 12) revert InvalidCategory(); // Assuming 13 categories (0-12)
-        
-        // Fee Collection (50% Burn, 45% Treasury, 5% Buyback)
-        if (!_collectFee(msg.sender, fees.projectSubmissionFee)) revert FeeTransferFailed();
-            
-        // Store Project Data
-        uint256 newProjectId = projectCount++;
-        
-        projectMetadata[newProjectId] = ProjectData(name, description, location, impactMetrics, ipfsHash, true);
-        projectStateData[newProjectId] = ProjectStateData({
-            category: category,
-            state: ProjectState.Proposed,
-            stakingMultiplier: stakingMultiplier,
-            totalStaked: 0,
-            rewardPool: 0,
-            isActive: false,
-            startBlock: startBlock,
-            endBlock: endBlock,
-            owner: msg.sender,
-            lastReportedValue: 0,
-            lastRewardUpdate: block.timestamp,
-            accumulatedRewards: 0
-        });
-        
-        // Set default impact requirements based on category
-        projectImpactRequirements[newProjectId] = categoryRequirements[category];
-        
-        // Set up initial permissions - owner has all permissions
-        projectPermissions[newProjectId][msg.sender][EDIT_METADATA_PERMISSION] = true;
-        projectPermissions[newProjectId][msg.sender][UPLOAD_DOCS_PERMISSION] = true;
-        projectPermissions[newProjectId][msg.sender][SUBMIT_REPORTS_PERMISSION] = true;
-        projectPermissions[newProjectId][msg.sender][MANAGE_COLLABORATORS_PERMISSION] = true;
-        
-        // Update index tracking
-        _projectsByOwner[msg.sender].push(newProjectId);
-        _projectsByCategory[category].push(newProjectId);
-        
-        emit ProjectAdded(newProjectId, name, category);
-    }
-    
-    function updateProjectState(uint256 projectId, ProjectState newState) 
-        external 
-        override 
-        nonReentrant 
-        onlyRole(GOVERNANCE_ROLE) 
-        whenNotPaused
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        ProjectState oldState = projectStateData[projectId].state;
-        if (oldState == newState) revert StateUnchanged();
-        
-        projectStateData[projectId].state = newState;
-        
-        // Update isActive flag based on state
-        bool wasActive = projectStateData[projectId].isActive;
-        bool willBeActive = false;
-        
-        if (newState == ProjectState.Active) {
-            willBeActive = true;
-            projectStateData[projectId].isActive = true;
-        } else if (newState == ProjectState.Suspended || 
-                 newState == ProjectState.Completed || 
-                 newState == ProjectState.Archived) {
-            willBeActive = false;
-            projectStateData[projectId].isActive = false;
-        }
-        
-        // Update active projects tracking
-        if (!wasActive && willBeActive) {
-            _activeProjects.push(projectId);
-        } else if (wasActive && !willBeActive) {
-            _removeFromActiveProjects(projectId);
-        }
-        
-        emit ProjectStateChanged(projectId, oldState, newState);
-    }
-    
-    function _removeFromActiveProjects(uint256 projectId) internal {
-        uint256 length = _activeProjects.length;
-        for (uint256 i = 0; i < length; i++) {
-            if (_activeProjects[i] == projectId) {
-                // Move the last element to the position of the removed element
-                if (i != length - 1) {
-                    _activeProjects[i] = _activeProjects[length - 1];
-                }
-                // Remove the last element
-                _activeProjects.pop();
-                break;
-            }
-        }
-    }
-    
-    // Enhanced document upload with pagination
-    function uploadProjectDocuments(uint256 projectId, string[] calldata ipfsHashes) 
-        external 
-        override 
-        nonReentrant
-        whenNotPaused
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (!hasProjectPermission(projectId, msg.sender, UPLOAD_DOCS_PERMISSION))
-            revert NotAuthorized();
-            
-        uint256 currentPage = projectDocumentPageCount[projectId];
-        
-        // If no pages yet or current page is full, create a new page
-        if (currentPage == 0 || projectDocumentPages[projectId][currentPage - 1].length + ipfsHashes.length > DOCUMENTS_PER_PAGE) {
-            projectDocumentPageCount[projectId]++;
-            currentPage = projectDocumentPageCount[projectId];
-        }
-        
-        for (uint256 i = 0; i < ipfsHashes.length; i++) {
-            if (projectDocumentPages[projectId][currentPage - 1].length >= DOCUMENTS_PER_PAGE) {
-                // If current page is full, create new page
-                projectDocumentPageCount[projectId]++;
-                currentPage = projectDocumentPageCount[projectId];
-            }
-            projectDocumentPages[projectId][currentPage - 1].push(ipfsHashes[i]);
-        }
-        
-        emit DocumentationUpdated(projectId, ipfsHashes);
-    }
-    
-    // Enhanced document retrieval with pagination
-    function getProjectDocuments(uint256 projectId, uint256 page) 
-        external 
-        view 
-        override 
-        returns (string[] memory) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (page >= projectDocumentPageCount[projectId]) revert PageDoesNotExist();
-        
-        return projectDocumentPages[projectId][page];
-    }
-    
-    // Get total number of document pages
-    function getProjectDocumentPageCount(uint256 projectId) 
-        external 
-        view 
-        returns (uint256) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        return projectDocumentPageCount[projectId];
-    }
-    
-    function submitImpactReport(
+    function mintImpactCertificate(
+        address to,
         uint256 projectId,
-        uint256 periodStart,
-        uint256 periodEnd,
-        uint256[] memory metrics,
-        bytes32 reportHash
-    ) external override nonReentrant whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (emergencyMode) revert EmergencyModeActive();
+        bytes32 reportHash, 
+        uint256 impactValue,
+        string calldata impactType,
+        string calldata location
+    ) external nonReentrant onlyRole(MINTER_ROLE) returns (uint256) {
+        if (to == address(0)) revert InvalidRecipient();
+        if (mintedReports[reportHash]) revert ReportAlreadyMinted();
+        if (!tStakeToken.transferFrom(msg.sender, address(this), mintFee)) 
+            revert FeeTransferFailed();
         
-        // Check permissions for impact reporting
-        if (!hasProjectPermission(projectId, msg.sender, SUBMIT_REPORTS_PERMISSION) && 
-            !hasRole(STAKER_ROLE, msg.sender)) {
-            revert NotAuthorized();
+        // Verify project exists if projects contract is set
+        if (projectsContract != address(0)) {
+            ITerraStakeProjects(projectsContract).getProject(projectId);
         }
         
-        // Fee Collection (50% Burn, 45% Treasury, 5% Buyback)
-        if (!_collectFee(msg.sender, fees.impactReportingFee)) revert FeeTransferFailed();
+        uint256 tokenId = ++totalMinted;
+        _mint(to, tokenId, 1, "");
+        _isERC721[tokenId] = true;
+        nftTypes[tokenId] = NFTType.IMPACT;
         
-        // Add the impact report
-        projectImpactReports[projectId].push(ImpactReport
-
-            periodStart: periodStart,
-            periodEnd: periodEnd,
-            reportedBy: msg.sender,
-            timestamp: block.timestamp,
-            metrics: metrics,
+        // Store project and report info
+        projectIds[tokenId] = projectId;
+        impactReportHashes[tokenId] = reportHash;
+        mintedReports[reportHash] = true;
+        
+        // Add to type index for optimized lookups
+        _typeTokens[NFTType.IMPACT].push(tokenId);
+        
+        // Add to project tokens for optimized lookups
+        _projectTokens[projectId].push(tokenId);
+        
+        // Add to owner tokens for optimized lookups
+        _addToOwnerTokens(to, tokenId);
+        
+        // Create impact certificate
+        impactCertificates[tokenId] = ImpactCertificate({
+            projectId: projectId,
             reportHash: reportHash,
-            verificationStatus: VerificationStatus.Pending,
-            verifiedBy: address(0),
-            verificationDate: 0
+            impactValue: impactValue,
+            impactType: impactType,
+            verificationDate: 0, // Not verified yet
+            location: location,
+            verifier: address(0), // Not verified yet
+            isVerified: false
         });
         
-        uint256 reportIndex = projectImpactReports[projectId].length - 1;
+        // Set creation metadata
+        tokenMetadata[tokenId] = NFTMetadata({
+            name: string(abi.encodePacked("Impact Certificate #", _uint256ToString(tokenId))),
+            description: string(abi.encodePacked("Impact Certificate for ", impactType)),
+            creationTime: block.timestamp,
+            uriIsFrozen: false
+        });
         
-        // Store the latest reported metrics for the project
-        if (metrics.length > 0) {
-            uint256 totalImpactValue = 0;
-            for (uint256 i = 0; i < metrics.length; i++) {
-                totalImpactValue += metrics[i];
-            }
+        // Split fee: 90% to treasury, 10% to burn
+        uint256 burnAmount = mintFee / 10;
+        uint256 treasuryAmount = mintFee - burnAmount;
+        
+        tStakeToken.transfer(treasuryWallet, treasuryAmount);
+        ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
+        emit TStakeBurned(burnAmount);
+        
+        emit NFTMinted(to, tokenId, true, NFTType.IMPACT);
+        emit ImpactNFTMinted(tokenId, projectId, reportHash, to);
+        
+        return tokenId;
+    }
+    
+    /**
+     * @dev Batch mint function
+     * @param to Array of recipient addresses
+     * @param count Array of token counts to mint per recipient
+     * @param isERC721 Array of flags indicating if tokens should be treated as ERC721
+     * @param nftType Array of NFT types
+     */
+    function batchMint(
+        address[] calldata to,
+        uint256[] calldata count,
+        bool[] calldata isERC721,
+        NFTType[] calldata nftType
+    ) external nonReentrant onlyRole(MINTER_ROLE) returns (uint256[] memory) {
+        uint256 length = to.length;
+        if (length == 0 || 
+            length != count.length || 
+            length != isERC721.length || 
+            length != nftType.length) revert ArrayLengthMismatch();
+        
+        uint256 totalCount = 0;
+        for (uint256 i = 0; i < length; i++) {
+            totalCount += count[i];
+        }
+        
+        uint256 totalFee = mintFee * totalCount;
+        if (!tStakeToken.transferFrom(msg.sender, address(this), totalFee)) 
+            revert FeeTransferFailed();
             
-            // Update project's last reported value
-            projectStateData[projectId].lastReportedValue = totalImpactValue;
+        uint256[] memory tokenIds = new uint256[](totalCount);
+        uint256 tokenIndex = 0;
+        
+        for (uint256 i = 0; i < length; i++) {
+            if (to[i] == address(0)) revert InvalidRecipient();
             
-            // Calculate & accumulate rewards based on impact
-            if (projectStateData[projectId].isActive) {
-                _calculateAndAccumulateRewards(projectId, totalImpactValue);
+            for (uint256 j = 0; j < count[i]; j++) {
+                uint256 tokenId = ++totalMinted;
+                _mint(to[i], tokenId, 1, "");
+                _isERC721[tokenId] = isERC721[i];
+                nftTypes[tokenId] = nftType[i];
+                
+                // Add to type index for optimized lookups
+                _typeTokens[nftType[i]].push(tokenId);
+                
+                // Add to owner tokens for optimized lookups
+                _addToOwnerTokens(to[i], tokenId);
+                
+                // Set creation metadata
+                tokenMetadata[tokenId] = NFTMetadata({
+                    name: string(abi.encodePacked("TerraStake NFT #", _uint256ToString(tokenId))),
+                    description: "TerraStake NFT",
+                    creationTime: block.timestamp,
+                    uriIsFrozen: false
+                });
+                
+                tokenIds[tokenIndex++] = tokenId;
+                emit NFTMinted(to[i], tokenId, isERC721[i], nftType[i]);
             }
         }
         
-        emit ImpactReported(projectId, reportIndex, reportHash, msg.sender);
+        // Split fee: 90% to treasury, 10% to burn
+        uint256 burnAmount = totalFee / 10;
+        uint256 treasuryAmount = totalFee - burnAmount;
+        
+        tStakeToken.transfer(treasuryWallet, treasuryAmount);
+        ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
+        emit TStakeBurned(burnAmount);
+        
+        return tokenIds;
     }
     
-    function _calculateAndAccumulateRewards(uint256 projectId, uint256 impactValue) internal {
-        uint256 timeSinceLastUpdate = block.timestamp - projectStateData[projectId].lastRewardUpdate;
+    /**
+     * @dev Mint with VRF-based randomized metadata
+     * @param to Recipient address
+     * @param nftType Type of NFT to mint
+     */
+    function mintRandomized(
+        address to,
+        NFTType nftType
+    ) external nonReentrant onlyRole(MINTER_ROLE) returns (uint256) {
+        if (to == address(0)) revert InvalidRecipient();
+        if (!tStakeToken.transferFrom(msg.sender, address(this), mintFee)) 
+            revert FeeTransferFailed();
+            
+        uint256 tokenId = ++totalMinted;
+        _mint(to, tokenId, 1, "");
+        _isERC721[tokenId] = true;
+        nftTypes[tokenId] = nftType;
         
-        // If there's no staking, no rewards are generated
-        if (projectStateData[projectId].totalStaked == 0) return;
+        // Add to type index for optimized lookups
+        _typeTokens[nftType].push(tokenId);
         
-        // Base reward rate adjusted by impact and time
-        uint256 baseReward = impactValue * projectStateData[projectId].stakingMultiplier * timeSinceLastUpdate / 1 days;
+        // Add to owner tokens for optimized lookups
+        _addToOwnerTokens(to, tokenId);
         
-        // Apply category impact weight (0-100 scale)
-        ProjectCategory category = projectStateData[projectId].category;
-        uint256 categoryWeight = categoryInfo[category].impactWeight;
-        uint256 weightedReward = baseReward * categoryWeight / 100;
+        // Request randomness from Chainlink VRF
+        uint256 requestId = COORDINATOR.requestRandomWords(
+            keyHash,
+            subscriptionId,
+            requestConfirmations,
+            callbackGasLimit,
+            1
+        );
         
-        // Cap rewards at the available reward pool
-        uint256 availableRewards = Math.min(weightedReward, projectStateData[projectId].rewardPool);
+        _requestIdToTokenId[requestId] = tokenId;
+        _requestIdToRecipient[requestId] = to;
         
-        // Update accumulated rewards
-        projectStateData[projectId].accumulatedRewards += availableRewards;
+        emit NFTMinted(to, tokenId, true, nftType);
+        emit RandomnessRequested(requestId, tokenId, to);
         
-        // Update the reward pool
-        projectStateData[projectId].rewardPool -= availableRewards;
-        
-        // Update the last reward update timestamp
-        projectStateData[projectId].lastRewardUpdate = block.timestamp;
-        
-        emit RewardsAccumulated(projectId, availableRewards);
+        return tokenId;
     }
     
-    function verifyImpactReport(
-        uint256 projectId,
-        uint256 reportIndex,
-        bool approved,
-        string calldata verificationComments
-    ) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (reportIndex >= projectImpactReports[projectId].length) revert InvalidReportIndex();
+    /**
+     * @dev Whitelist mint function
+     * @param proof Merkle proof verifying whitelist status
+     * @param nftType Type of NFT to mint
+     */
+    function whitelistMint(
+        bytes32[] calldata proof,
+        NFTType nftType
+    ) external nonReentrant returns (uint256) {
+        if (!whitelistMintEnabled) revert NotActiveToken();
+        if (hasClaimed[msg.sender]) revert AlreadyClaimed();
         
-        ImpactReport storage report = projectImpactReports[projectId][reportIndex];
+        bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+        if (!MerkleProof.verify(proof, whitelistMerkleRoot, leaf)) revert InvalidProof();
         
-        // Ensure report is pending verification
-        if (report.verificationStatus != VerificationStatus.Pending) revert ReportAlreadyVerified();
+        if (!tStakeToken.transferFrom(msg.sender, address(this), whitelistMintPrice)) 
+            revert FeeTransferFailed();
+            
+        hasClaimed[msg.sender] = true;
         
-        // Update verification status
-        report.verificationStatus = approved ? VerificationStatus.Verified : VerificationStatus.Rejected;
-        report.verifiedBy = msg.sender;
-        report.verificationDate = block.timestamp;
+        uint256 tokenId = ++totalMinted;
+        _mint(msg.sender, tokenId, 1, "");
+        _isERC721[tokenId] = true;
+        nftTypes[tokenId] = nftType;
         
-        // Store verification comments
-        projectVerificationComments[projectId][reportIndex] = verificationComments;
+        // Add to type index for optimized lookups
+        _typeTokens[nftType].push(tokenId);
         
-        emit ImpactVerified(projectId, reportIndex, msg.sender, approved);
+        // Add to owner tokens for optimized lookups
+        _addToOwnerTokens(msg.sender, tokenId);
+        
+        // Set creation metadata
+        tokenMetadata[tokenId] = NFTMetadata({
+            name: string(abi.encodePacked("TerraStake NFT #", _uint256ToString(tokenId))),
+            description: "TerraStake Whitelist NFT",
+            creationTime: block.timestamp,
+            uriIsFrozen: false
+        });
+        
+        // Split fee: 90% to treasury, 10% to burn
+        uint256 burnAmount = whitelistMintPrice / 10;
+        uint256 treasuryAmount = whitelistMintPrice - burnAmount;
+        
+        tStakeToken.transfer(treasuryWallet, treasuryAmount);
+        ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
+        emit TStakeBurned(burnAmount);
+        
+        emit NFTMinted(msg.sender, tokenId, true, nftType);
+        
+        return tokenId;
     }
-
+    
     // ====================================================
-    // 🔹 Project Governance and Permissions
+    // 🔹 Fractionalization Functions
     // ====================================================
     
-    function assignProjectPermission(
-        uint256 projectId,
-        address collaborator,
-        uint8 permission,
-        bool value
-    ) external override nonReentrant whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+    /**
+     * @dev Fractionalize an NFT into multiple pieces
+     * @param tokenId ID of the token to fractionalize
+     * @param fractionCount Number of fractions to create
+     */
+    function fractionalize(
+        uint256 tokenId,
+        uint256 fractionCount
+    ) external nonReentrant returns (uint256) {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (balanceOf(msg.sender, tokenId) < 1) revert NotTokenOwner();
+        if (fractionCount < 2) revert InvalidAmount();
         
-        // Only project owner or someone with manage collaborators permission can assign permissions
-        if (projectStateData[projectId].owner != msg.sender && 
-            !hasProjectPermission(projectId, msg.sender, MANAGE_COLLABORATORS_PERMISSION)) {
-            revert NotAuthorized();
+        // Check if the caller has the FRACTIONALIZER_ROLE or is the token owner
+        bool isFractionalizerRole = hasRole(FRACTIONALIZER_ROLE, msg.sender);
+        if (!isFractionalizerRole) {
+            // Charge a fee for non-role users
+            if (!tStakeToken.transferFrom(msg.sender, address(this), fractionalizationFee)) 
+                revert FeeTransferFailed();
+                
+            // Split fee: 90% to treasury, 10% to burn
+            uint256 burnAmount = fractionalizationFee / 10;
+            uint256 treasuryAmount = fractionalizationFee - burnAmount;
+            
+            tStakeToken.transfer(treasuryWallet, treasuryAmount);
+            ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
+            emit TStakeBurned(burnAmount);
         }
         
-        // Ensure valid permission type
-        if (permission > MAX_PERMISSION) revert InvalidPermission();
+        // Burn the original token
+        _burn(msg.sender, tokenId, 1);
         
-        projectPermissions[projectId][collaborator][permission] = value;
+        // Create a new fractionID
+        uint256 fractionId = ++totalMinted;
         
-        emit PermissionUpdated(projectId, collaborator, permission, value);
+        // Mint the fractional tokens to the sender
+        _mint(msg.sender, fractionId, fractionCount, "");
+        
+        // Store fraction information
+        _fractionInfos[fractionId] = FractionInfo({
+            originalTokenId: tokenId,
+            fractionCount: fractionCount,
+            fractionalizer: msg.sender,
+            isActive: true,
+            nftType: nftTypes[tokenId],
+            projectId: projectIds[tokenId],
+            reportHash: impactReportHashes[tokenId]
+        });
+        
+        // Add to owner tokens for optimized lookups
+        _addToOwnerTokens(msg.sender, fractionId);
+        
+        emit TokenFractionalized(tokenId, fractionId, fractionCount);
+        return fractionId;
     }
     
-    function hasProjectPermission(uint256 projectId, address user, uint8 permission) 
-        public 
-        view 
-        override 
-        returns (bool) 
-    {
-        // Project owners have all permissions
-        if (projectStateData[projectId].owner == user) {
-            return true;
-        }
+    /**
+     * @dev Reunify fractions back into a whole NFT
+     * @param fractionId ID of the fractionalized tokens
+     */
+    function reunify(uint256 fractionId) external nonReentrant returns (uint256) {
+        FractionInfo storage info = _fractionInfos[fractionId];
+        if (!info.isActive) revert NotActiveToken();
         
-        // Governance role has all project permissions
-        if (hasRole(GOVERNANCE_ROLE, user)) {
-            return true;
-        }
+        uint256 fractionCount = info.fractionCount;
+        if (balanceOf(msg.sender, fractionId) != fractionCount) revert NotAllFractionsOwned();
         
-        // Check specific permission
-        return projectPermissions[projectId][user][permission];
-    }
-    
-    function transferProjectOwnership(uint256 projectId, address newOwner) 
-        external 
-        override 
-        nonReentrant 
-        whenNotPaused 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (projectStateData[projectId].owner != msg.sender) revert NotAuthorized();
-        if (newOwner == address(0)) revert InvalidAddress();
+        // Burn all fractions
+        _burn(msg.sender, fractionId, fractionCount);
         
-        address oldOwner = projectStateData[projectId].owner;
-        projectStateData[projectId].owner = newOwner;
+        // Create new token
+        uint256 newTokenId = ++totalMinted;
+        _mint(msg.sender, newTokenId, 1, "");
         
-        // Update owner indices
-        _removeFromOwnerProjects(oldOwner, projectId);
-        _projectsByOwner[newOwner].push(projectId);
+        // Copy metadata and attributes from original token
+        _isERC721[newTokenId] = _isERC721[info.originalTokenId];
+        nftTypes[newTokenId] = info.nftType;
         
-        emit OwnershipTransferred(projectId, oldOwner, newOwner);
-    }
-    
-    function _removeFromOwnerProjects(address owner, uint256 projectId) internal {
-        uint256[] storage projects = _projectsByOwner[owner];
-        for (uint256 i = 0; i < projects.length; i++) {
-            if (projects[i] == projectId) {
-                // Move the last element to this position
-                if (i != projects.length - 1) {
-                    projects[i] = projects[projects.length - 1];
+        // If it was an impact NFT, copy the impact details
+        if (info.nftType == NFTType.IMPACT) {
+            projectIds[newTokenId] = info.projectId;
+            impactReportHashes[newTokenId] = info.reportHash;
+            
+            // Add to project tokens for optimized lookups
+            _projectTokens[info.projectId].push(newTokenId);
+                        // Copy impact certificate if exists
+            if (impactCertificates[info.originalTokenId].reportHash != bytes32(0)) {
+                impactCertificates[newTokenId] = impactCertificates[info.originalTokenId];
+                
+                // If certificate was verified, add to verified certificates
+                if (impactCertificates[newTokenId].isVerified) {
+                    _verifiedImpactCertificates.push(newTokenId);
+                    _verifiedCertificateIndex[newTokenId] = _verifiedImpactCertificates.length;
                 }
-                // Remove the last element
-                projects.pop();
-                break;
-            }
-        }
-    }
-
-    // ====================================================
-    // 🔹 Staking & Rewards
-    // ====================================================
-    
-    function stake(uint256 projectId, uint256 amount) 
-        external 
-        override 
-        nonReentrant 
-        whenNotPaused 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
-        if (amount == 0) revert ZeroAmount();
-        
-        // Check if Terra token is defined
-        if (terraTokenAddress == address(0)) revert TokenNotConfigured();
-        
-        // Transfer tokens from user
-        IERC20 terraToken = IERC20(terraTokenAddress);
-        bool success = terraToken.transferFrom(msg.sender, address(this), amount);
-        if (!success) revert TokenTransferFailed();
-        
-        // Update staking info
-        uint256 prevAmount = projectStakes[projectId][msg.sender];
-        projectStakes[projectId][msg.sender] += amount;
-        projectStateData[projectId].totalStaked += amount;
-        
-        // If this is a new staker, grant the staker role
-        if (prevAmount == 0 && !hasRole(STAKER_ROLE, msg.sender)) {
-            _grantRole(STAKER_ROLE, msg.sender);
-        }
-        
-        // Add to reward pool (50% of stake goes to rewards)
-        uint256 rewardAmount = amount * 50 / 100;
-        projectStateData[projectId].rewardPool += rewardAmount;
-        
-        // Add user to project stakers if not already there
-        if (!_isInProjectStakers(projectId, msg.sender)) {
-            projectStakers[projectId].push(msg.sender);
-        }
-        
-        // Track all projects user has staked in
-        if (!_isInUserStakedProjects(msg.sender, projectId)) {
-            userStakedProjects[msg.sender].push(projectId);
-        }
-        
-        emit Staked(projectId, msg.sender, amount);
-    }
-    
-    function _isInProjectStakers(uint256 projectId, address staker) internal view returns (bool) {
-        for (uint256 i = 0; i < projectStakers[projectId].length; i++) {
-            if (projectStakers[projectId][i] == staker) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    function _isInUserStakedProjects(address user, uint256 projectId) internal view returns (bool) {
-        for (uint256 i = 0; i < userStakedProjects[user].length; i++) {
-            if (userStakedProjects[user][i] == projectId) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    function unstake(uint256 projectId, uint256 amount) 
-        external 
-        override 
-        nonReentrant 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        uint256 stakedAmount = projectStakes[projectId][msg.sender];
-        if (stakedAmount < amount) revert InsufficientStake();
-        
-        // Calculate any rewards before unstaking
-        uint256 rewards = calculateRewards(projectId, msg.sender);
-        
-        // Update staking info
-        projectStakes[projectId][msg.sender] -= amount;
-        projectStateData[projectId].totalStaked -= amount;
-        
-        // If completely unstaked, remove from project stakers
-        if (projectStakes[projectId][msg.sender] == 0) {
-            _removeFromProjectStakers(projectId, msg.sender);
-            _removeFromUserStakedProjects(msg.sender, projectId);
-        }
-        
-        // Transfer staked tokens back to user
-        IERC20 terraToken = IERC20(terraTokenAddress);
-        bool success = terraToken.transfer(msg.sender, amount);
-        if (!success) revert TokenTransferFailed();
-        
-        // If there are rewards, transfer them as well
-        if (rewards > 0) {
-            success = terraToken.transfer(msg.sender, rewards);
-            if (!success) revert TokenTransferFailed();
-            
-            emit RewardsClaimed(projectId, msg.sender, rewards);
-        }
-        
-        emit Unstaked(projectId, msg.sender, amount);
-    }
-    
-    function _removeFromProjectStakers(uint256 projectId, address staker) internal {
-        address[] storage stakers = projectStakers[projectId];
-        for (uint256 i = 0; i < stakers.length; i++) {
-            if (stakers[i] == staker) {
-                // Move the last element to this position
-                if (i != stakers.length - 1) {
-                    stakers[i] = stakers[stakers.length - 1];
-                }
-                // Remove the last element
-                stakers.pop();
-                break;
-            }
-        }
-    }
-    
-    function _removeFromUserStakedProjects(address user, uint256 projectId) internal {
-        uint256[] storage projects = userStakedProjects[user];
-        for (uint256 i = 0; i < projects.length; i++) {
-            if (projects[i] == projectId) {
-                // Move the last element to this position
-                if (i != projects.length - 1) {
-                    projects[i] = projects[projects.length - 1];
-                }
-                // Remove the last element
-                projects.pop();
-                break;
             }
         }
         
-        // If user is no longer staking in any projects, revoke staker role
-        if (projects.length == 0) {
-            _revokeRole(STAKER_ROLE, user);
-        }
-    }
-    
-    function claimRewards(uint256 projectId) 
-        external 
-        override 
-        nonReentrant 
-        whenNotPaused 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        // Add to type index for optimized lookups
+        _typeTokens[info.nftType].push(newTokenId);
         
-        uint256 rewards = calculateRewards(projectId, msg.sender);
-        if (rewards == 0) revert NoRewardsAvailable();
+        // Add to owner tokens for optimized lookups
+        _addToOwnerTokens(msg.sender, newTokenId);
         
-        // Reset user's last claimed time
-        lastRewardClaim[projectId][msg.sender] = block.timestamp;
+        // Set creation metadata
+        tokenMetadata[newTokenId] = NFTMetadata({
+            name: string(abi.encodePacked("Reunified #", _uint256ToString(newTokenId))),
+            description: "Reunified from fractions",
+            creationTime: block.timestamp,
+            uriIsFrozen: false
+        });
         
-        // Transfer rewards
-        IERC20 terraToken = IERC20(terraTokenAddress);
-        bool success = terraToken.transfer(msg.sender, rewards);
-        if (!success) revert TokenTransferFailed();
+        // Deactivate fraction info
+        info.isActive = false;
         
-        emit RewardsClaimed(projectId, msg.sender, rewards);
-    }
-    
-    function calculateRewards(uint256 projectId, address staker) 
-        public 
-        view 
-        override 
-        returns (uint256) 
-    {
-        if (!projectMetadata[projectId].exists) return 0;
-        
-        uint256 userStake = projectStakes[projectId][staker];
-        if (userStake == 0) return 0;
-        
-        uint256 totalStaked = projectStateData[projectId].totalStaked;
-        if (totalStaked == 0) return 0;
-        
-        // Calculate the user's share of accumulated rewards
-        uint256 userShare = (userStake * projectStateData[projectId].accumulatedRewards) / totalStaked;
-        
-        // Calculate duration-based reward if project is still active
-        uint256 lastClaim = lastRewardClaim[projectId][staker];
-        if (lastClaim == 0) {
-            lastClaim = block.timestamp - MIN_CLAIM_PERIOD; // First time claimer gets MIN_CLAIM_PERIOD worth
-        }
-        
-        uint256 timeSinceLastClaim = block.timestamp - lastClaim;
-        if (timeSinceLastClaim < MIN_CLAIM_PERIOD) {
-            // Not enough time has passed for rewards
-            return 0;
-        }
-        
-        // Time-based rewards as a portion of user's stake (0.01% per day)
-        uint256 timeBasedReward = (userStake * timeSinceLastClaim * TIME_REWARD_RATE) / (1 days * 10000);
-        
-        return userShare + timeBasedReward;
-    }
-
-    // ====================================================
-    // 🔹 Fee Management
-    // ====================================================
-    
-    function updateFees(
-        uint256 newProjectFee,
-        uint256 newReportingFee,
-        uint256 newUpdateFee
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        fees.projectSubmissionFee = newProjectFee;
-        fees.impactReportingFee = newReportingFee;
-        fees.metadataUpdateFee = newUpdateFee;
-        
-        emit FeesUpdated(newProjectFee, newReportingFee, newUpdateFee);
-    }
-        function _collectFee(address payer, uint256 feeAmount) internal returns (bool) {
-        if (feeAmount == 0) return true;
-        
-        // Check if Terra token is defined
-        if (terraTokenAddress == address(0)) revert TokenNotConfigured();
-        
-        // Transfer tokens from payer
-        IERC20 terraToken = IERC20(terraTokenAddress);
-        bool success = terraToken.transferFrom(payer, address(this), feeAmount);
-        if (!success) return false;
-        
-        // Fee distribution:
-        // 50% Burn
-        uint256 burnAmount = feeAmount * 50 / 100;
-        
-        // 45% Treasury
-        uint256 treasuryAmount = feeAmount * 45 / 100;
-        
-        // 5% Buyback
-        uint256 buybackAmount = feeAmount * 5 / 100;
-        
-        if (burnAmount > 0) {
-            // Burn tokens by sending to dead address
-            success = terraToken.transfer(DEAD_ADDRESS, burnAmount);
-            if (!success) return false;
-        }
-        
-        if (treasuryAmount > 0 && treasuryAddress != address(0)) {
-            success = terraToken.transfer(treasuryAddress, treasuryAmount);
-            if (!success) return false;
-        }
-        
-        if (buybackAmount > 0) {
-            // Accumulate for buyback
-            accumulatedBuybackFunds += buybackAmount;
-        }
-        
-        emit FeeCollected(payer, feeAmount, burnAmount, treasuryAmount, buybackAmount);
-        return true;
-    }
-    
-    function executeBuyback() external onlyRole(TREASURY_ROLE) nonReentrant {
-        if (terraTokenAddress == address(0)) revert TokenNotConfigured();
-        if (accumulatedBuybackFunds == 0) revert NoBuybackFunds();
-        
-        uint256 amount = accumulatedBuybackFunds;
-        accumulatedBuybackFunds = 0;
-        
-        // Implementation of buyback mechanism would depend on your tokenomics
-        // This could involve interaction with DEX, sending to a vault contract, etc.
-        // For simplicity, we're just transferring to the treasury
-        IERC20 terraToken = IERC20(terraTokenAddress);
-        bool success = terraToken.transfer(treasuryAddress, amount);
-        if (!success) revert TokenTransferFailed();
-        
-        emit BuybackExecuted(amount);
-    }
-
-    // ====================================================
-    // 🔹 Query Functions
-    // ====================================================
-    
-    function getProjectData(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (
-            string memory name,
-            string memory description,
-            string memory location,
-            string memory impactMetrics,
-            bytes32 ipfsHash,
-            ProjectCategory category,
-            ProjectState state,
-            uint32 stakingMultiplier,
-            uint256 totalStaked,
-            uint256 rewardPool,
-            bool isActive,
-            uint48 startBlock,
-            uint48 endBlock,
-            address owner
-        ) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        ProjectData storage metadata = projectMetadata[projectId];
-        ProjectStateData storage stateData = projectStateData[projectId];
-        
-        return (
-            metadata.name,
-            metadata.description,
-            metadata.location,
-            metadata.impactMetrics,
-            metadata.ipfsHash,
-            stateData.category,
-            stateData.state,
-            stateData.stakingMultiplier,
-            stateData.totalStaked,
-            stateData.rewardPool,
-            stateData.isActive,
-            stateData.startBlock,
-            stateData.endBlock,
-            stateData.owner
-        );
-    }
-    
-    function getProjectCount() external view override returns (uint256) {
-        return projectCount;
-    }
-    
-    function getImpactReportCount(uint256 projectId) external view override returns (uint256) {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        return projectImpactReports[projectId].length;
-    }
-    
-    function getImpactReport(uint256 projectId, uint256 reportIndex) 
-        external 
-        view 
-        override 
-        returns (
-            uint256 periodStart,
-            uint256 periodEnd,
-            address reportedBy,
-            uint256 timestamp,
-            uint256[] memory metrics,
-            bytes32 reportHash,
-            VerificationStatus verificationStatus,
-            address verifiedBy,
-            uint256 verificationDate
-        ) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (reportIndex >= projectImpactReports[projectId].length) revert InvalidReportIndex();
-        
-        ImpactReport storage report = projectImpactReports[projectId][reportIndex];
-        
-        return (
-            report.periodStart,
-            report.periodEnd,
-            report.reportedBy,
-            report.timestamp,
-            report.metrics,
-            report.reportHash,
-            report.verificationStatus,
-            report.verifiedBy,
-            report.verificationDate
-        );
-    }
-    
-    function getUserStakedProjects(address user) external view returns (uint256[] memory) {
-        return userStakedProjects[user];
-    }
-    
-    function getProjectStakers(uint256 projectId) external view returns (address[] memory) {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        return projectStakers[projectId];
-    }
-    
-    function getStakedAmount(uint256 projectId, address staker) external view returns (uint256) {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        return projectStakes[projectId][staker];
-    }
-    
-    function getProjectsByCategory(ProjectCategory category) external view returns (uint256[] memory) {
-        return _projectsByCategory[category];
-    }
-    
-    function getProjectsByOwner(address owner) external view returns (uint256[] memory) {
-        return _projectsByOwner[owner];
-    }
-    
-    function getActiveProjects() external view returns (uint256[] memory) {
-        return _activeProjects;
-    }
-    
-    function getCategoryInfo(ProjectCategory category) 
-        external 
-        view 
-        returns (
-            string memory name,
-            string memory description,
-            string[] memory standardBodies,
-            string[] memory metricUnits,
-            string memory verificationStandard,
-            uint8 impactWeight
-        ) 
-    {
-        CategoryInfo storage info = categoryInfo[category];
-        return (
-            info.name,
-            info.description,
-            info.standardBodies,
-            info.metricUnits,
-            info.verificationStandard,
-            info.impactWeight
-        );
-    }
-    
-    function getProjectVerificationDetails(uint256 projectId) 
-        external 
-        view 
-        returns (
-            bool isVerified,
-            address verifier,
-            uint256 verificationDate,
-            string memory verificationStandard,
-            bytes32 verificationDocumentHash
-        ) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        ProjectVerification storage verification = projectVerifications[projectId];
-        
-        return (
-            verification.verificationDate > 0,
-            verification.verifier,
-            verification.verificationDate,
-            verification.verificationStandard,
-            verification.verificationDocumentHash
-        );
-    }
-
-    // ====================================================
-    // 🔹 Emergency & Admin Functions
-    // ====================================================
-    
-    function toggleEmergencyMode() external onlyRole(GOVERNANCE_ROLE) {
-        emergencyMode = !emergencyMode;
-        if (emergencyMode) {
-            _pause();
-        } else {
-            _unpause();
-        }
-        
-        emit EmergencyModeToggled(emergencyMode);
-    }
-    
-    function recoverERC20(address tokenAddress, uint256 amount) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-        nonReentrant 
-    {
-        if (tokenAddress == address(0)) revert InvalidAddress();
-        if (amount == 0) revert ZeroAmount();
-        
-        // Prevent recovery of staked tokens unless in emergency
-        if (tokenAddress == terraTokenAddress && !emergencyMode) {
-            uint256 safeTotalStaked = 0;
-            for (uint256 i = 0; i < projectCount; i++) {
-                safeTotalStaked += projectStateData[i].totalStaked;
-            }
-            
-            uint256 balance = IERC20(tokenAddress).balanceOf(address(this));
-            uint256 recoverableAmount = balance - safeTotalStaked;
-            
-            if (amount > recoverableAmount) revert ExceedsRecoverableAmount();
-        }
-        
-        IERC20 token = IERC20(tokenAddress);
-        bool success = token.transfer(treasuryAddress, amount);
-        if (!success) revert TokenTransferFailed();
-        
-        emit TokensRecovered(tokenAddress, treasuryAddress, amount);
-    }
-    
-    function setTerraToken(address _tokenAddress) external onlyRole(GOVERNANCE_ROLE) {
-        if (_tokenAddress == address(0)) revert InvalidAddress();
-        terraTokenAddress = _tokenAddress;
-        emit TerraTokenSet(_tokenAddress);
-    }
-    
-    function setTreasuryAddress(address _treasuryAddress) external onlyRole(GOVERNANCE_ROLE) {
-        if (_treasuryAddress == address(0)) revert InvalidAddress();
-        treasuryAddress = _treasuryAddress;
-        emit TreasuryAddressSet(_treasuryAddress);
+        emit FractionsReunified(fractionId, newTokenId);
+        return newTokenId;
     }
     
     // ====================================================
     // 🔹 Verification Functions
     // ====================================================
     
-    function verifyProject(
-        uint256 projectId,
-        string calldata standard,
-        bytes32 documentHash
-    ) external onlyRole(VERIFIER_ROLE) nonReentrant whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+    /**
+     * @dev Verify an impact certificate
+     * @param tokenId ID of the impact certificate to verify
+     */
+    function verifyImpactCertificate(uint256 tokenId) external nonReentrant onlyRole(VERIFIER_ROLE) {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (nftTypes[tokenId] != NFTType.IMPACT) revert NotImpactNFT();
         
-        // Create verification record
-        projectVerifications[projectId] = ProjectVerification({
-            verifier: msg.sender,
-            verificationDate: block.timestamp,
-            verificationStandard: standard,
-            verificationDocumentHash: documentHash
-        });
+        ImpactCertificate storage certificate = impactCertificates[tokenId];
+        if (certificate.isVerified) revert AlreadyVerified();
         
-        // Update project state if it's in the proposed state
-        if (projectStateData[projectId].state == ProjectState.Proposed) {
-            projectStateData[projectId].state = ProjectState.Verified;
-        }
+        certificate.isVerified = true;
+        certificate.verificationDate = block.timestamp;
+        certificate.verifier = msg.sender;
         
-        emit ProjectVerified(projectId, msg.sender, standard, documentHash);
+        // Add to verified certificates list
+        _verifiedImpactCertificates.push(tokenId);
+        _verifiedCertificateIndex[tokenId] = _verifiedImpactCertificates.length;
+        
+        emit ImpactCertificateVerified(tokenId, msg.sender);
+    }
+    
+    /**
+     * @dev Submit verification with fee
+     * @param tokenId ID of the impact certificate to verify
+     */
+    function submitVerification(uint256 tokenId) external nonReentrant {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (nftTypes[tokenId] != NFTType.IMPACT) revert NotImpactNFT();
+        if (balanceOf(msg.sender, tokenId) < 1) revert NotTokenOwner();
+        
+        ImpactCertificate storage certificate = impactCertificates[tokenId];
+        if (certificate.isVerified) revert AlreadyVerified();
+        
+        // Charge verification fee
+        if (!tStakeToken.transferFrom(msg.sender, address(this), verificationFee)) 
+            revert VerificationFeeFailed();
+            
+        // Split fee: 90% to treasury, 10% to burn
+        uint256 burnAmount = verificationFee / 10;
+        uint256 treasuryAmount = verificationFee - burnAmount;
+        
+        tStakeToken.transfer(treasuryWallet, treasuryAmount);
+        ITerraStakeToken(address(tStakeToken)).burn(burnAmount);
+        emit TStakeBurned(burnAmount);
     }
     
     // ====================================================
-    // 🔹 Interface & Standards Support
+    // 🔹 VRF Callback
     // ====================================================
     
-    function supportsInterface(bytes4 interfaceId) 
-        public 
-        view 
-        override(AccessControl, ERC165) 
-        returns (bool) 
+    /**
+     * @dev Callback function used by VRF Coordinator
+     * @param requestId ID of the randomness request
+     * @param randomWords Array of random results from VRF
+     */
+    function fulfillRandomWords(
+        uint256 requestId,
+        uint256[] memory randomWords
+    ) internal override {
+        uint256 tokenId = _requestIdToTokenId[requestId];
+        address recipient = _requestIdToRecipient[requestId];
+        
+        uint256 randomNumber = randomWords[0];
+        
+        // Set random attributes based on randomNumber
+        tokenAttributes[tokenId]["rarity"] = _determineRarity(randomNumber);
+        tokenAttributes[tokenId]["random_seed"] = _uint256ToString(randomNumber);
+        
+        // Set creation metadata
+        tokenMetadata[tokenId] = NFTMetadata({
+            name: string(abi.encodePacked("Random NFT #", _uint256ToString(tokenId))),
+            description: string(abi.encodePacked("Randomized NFT with seed: ", _uint256ToString(randomNumber))),
+            creationTime: block.timestamp,
+            uriIsFrozen: false
+        });
+        
+        emit RandomnessReceived(requestId, tokenId, randomNumber);
+    }
+    
+    // ====================================================
+    // 🔹 URI & Metadata Functions
+    // ====================================================
+    
+    /**
+     * @dev Sets the base URI for all token IDs
+     * @param newBaseURI New base URI to set
+     */
+    function setBaseURI(string memory newBaseURI) external onlyRole(GOVERNANCE_ROLE) {
+        _baseURI = newBaseURI;
+        emit BaseURIUpdated(newBaseURI);
+    }
+    
+    /**
+     * @dev Sets the URI for a specific token ID
+     * @param tokenId ID of the token to set URI for
+     * @param newTokenURI New URI to set
+     */
+    function setTokenURI(uint256 tokenId, string memory newTokenURI) external {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
+            revert NotTokenOwner();
+        if (tokenMetadata[tokenId].uriIsFrozen) revert TokenURIFrozen(tokenId);
+        
+        _tokenURIs[tokenId] = newTokenURI;
+    }
+    
+    /**
+     * @dev Freezes token URI to prevent future changes
+     * @param tokenId ID of the token to freeze URI for
+     */
+    function freezeTokenURI(uint256 tokenId) external {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
+            revert NotTokenOwner();
+            
+        tokenMetadata[tokenId].uriIsFrozen = true;
+        emit TokenURIFrozen(tokenId);
+    }
+    
+    /**
+     * @dev Set token attribute
+     * @param tokenId ID of the token
+     * @param key Attribute key
+     * @param value Attribute value
+     */
+    function setTokenAttribute(
+        uint256 tokenId,
+        string calldata key,
+        string calldata value
+    ) external {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
+            revert NotTokenOwner();
+            
+        tokenAttributes[tokenId][key] = value;
+    }
+    
+    /**
+     * @dev Set metadata renderer contract
+     * @param renderer Address of the renderer contract
+     */
+    function setMetadataRenderer(address renderer) external onlyRole(GOVERNANCE_ROLE) {
+        metadataRenderer = ITerraStakeMetadataRenderer(renderer);
+        emit MetadataRendererUpdated(renderer);
+    }
+    
+    /**
+     * @dev Get token URI
+     * @param tokenId ID of the token
+     * @return URI string
+     */
+    function uri(uint256 tokenId) public view override returns (string memory) {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        
+        // If metadata renderer is set, use it
+        if (address(metadataRenderer) != address(0)) {
+            return metadataRenderer.getTokenURI(tokenId);
+        }
+        
+        // If custom URI is set, return it
+        string memory tokenURI = _tokenURIs[tokenId];
+        if (bytes(tokenURI).length > 0) {
+            return tokenURI;
+        }
+        
+        // Otherwise return default URI
+        return string(abi.encodePacked(_baseURI, _uint256ToString(tokenId)));
+    }
+    
+    // ====================================================
+    // 🔹 Project Integration Functions
+    // ====================================================
+    
+    /**
+     * @dev Set the projects contract address
+     * @param _projectsContract Address of the projects contract
+     */
+    function setProjectsContract(address _projectsContract) external onlyRole(GOVERNANCE_ROLE) {
+        projectsContract = _projectsContract;
+        emit ProjectsContractUpdated(_projectsContract);
+    }
+    
+    /**
+     * @dev Get all tokens for a specific project
+     * @param projectId ID of the project
+     * @return Array of token IDs
+     */
+    function getProjectTokens(uint256 projectId) external view returns (uint256[] memory) {
+        return _projectTokens[projectId];
+    }
+    
+    // ====================================================
+    // 🔹 Royalty Functions
+    // ====================================================
+    
+    /**
+     * @dev Set the default royalty percentage
+     * @param percentage Royalty percentage (in basis points, 100 = 1%)
+     */
+    function setDefaultRoyalty(uint256 percentage) external onlyRole(GOVERNANCE_ROLE) {
+        defaultRoyaltyPercentage = percentage;
+        emit RoyaltyUpdated(royaltyReceiver, percentage);
+    }
+    
+    /**
+     * @dev Set the royalty receiver
+     * @param receiver Address of the royalty receiver
+     */
+    function setRoyaltyReceiver(address receiver) external onlyRole(GOVERNANCE_ROLE) {
+        if (receiver == address(0)) revert InvalidRecipient();
+        royaltyReceiver = receiver;
+        emit RoyaltyUpdated(receiver, defaultRoyaltyPercentage);
+    }
+    
+    /**
+     * @dev Set custom royalty for a specific token
+     * @param tokenId ID of the token
+     * @param percentage Royalty percentage (in basis points, 100 = 1%)
+     * @param receiver Address of the royalty receiver
+     */
+    function setTokenRoyalty(
+        uint256 tokenId,
+        uint256 percentage,
+        address receiver
+    ) external {
+        if (!exists(tokenId)) revert TokenDoesNotExist();
+        if (receiver == address(0)) revert InvalidRecipient();
+        if (balanceOf(msg.sender, tokenId) == 0 && !hasRole(GOVERNANCE_ROLE, msg.sender)) 
+            revert NotTokenOwner();
+            
+        customRoyaltyPercentages[tokenId] = percentage;
+        customRoyaltyReceivers[tokenId] = receiver;
+    }
+    
+    /**
+     * @dev Get royalty info for a token
+     * @param tokenId ID of the token
+     * @param salePrice Sale price to calculate royalty from
+     * @return receiver Address of royalty receiver
+     * @return royaltyAmount Amount of royalty to pay
+     */
+    function royaltyInfo(
+        uint256 tokenId, 
+        uint256 salePrice
+    ) external view returns (address receiver, uint256 royaltyAmount) {
+        if (customRoyaltyReceivers[tokenId] != address(0)) {
+            // Use custom royalty
+            receiver = customRoyaltyReceivers[tokenId];
+            royaltyAmount = (salePrice * customRoyaltyPercentages[tokenId]) / 10000;
+        } else {
+            // Use default royalty
+            receiver = royaltyReceiver;
+            royaltyAmount = (salePrice * defaultRoyaltyPercentage) / 10000;
+        }
+    }
+    
+    // ====================================================
+    // 🔹 Marketplace Functions
+    // ====================================================
+    
+    /**
+     * @dev Enable or disable marketplace integration
+     * @param enabled Whether to enable marketplace
+     */
+    function setMarketplaceEnabled(bool enabled) external onlyRole(GOVERNANCE_ROLE) {
+        marketplaceEnabled = enabled;
+        emit MarketplaceStatusChanged(enabled);
+    }
+    
+    /**
+     * @dev Set marketplace address
+     * @param marketplace Address of the marketplace
+     */
+    function setMarketplaceAddress(address marketplace) external onlyRole(GOVERNANCE_ROLE) {
+        marketplaceAddress = marketplace;
+        emit MarketplaceAddressUpdated(marketplace);
+    }
+    
+    // ====================================================
+    // 🔹 Whitelist Functions
+    // ====================================================
+    
+    /**
+     * @dev Set whitelist merkle root
+     * @param merkleRoot New merkle root
+     */
+    function setWhitelistMerkleRoot(bytes32 merkleRoot) external onlyRole(GOVERNANCE_ROLE) {
+        whitelistMerkleRoot = merkleRoot;
+        emit WhitelistRootUpdated(merkleRoot);
+    }
+    
+    /**
+     * @dev Enable or disable whitelist minting
+     * @param enabled Whether to enable whitelist minting
+     * @param price Price for whitelist minting
+     */
+    function setWhitelistMintingEnabled(bool enabled, uint256 price) external onlyRole(GOVERNANCE_ROLE) {
+        whitelistMintEnabled = enabled;
+        whitelistMintPrice = price;
+        emit WhitelistMintingEnabled(enabled, price);
+    }
+    
+    // ====================================================
+    // 🔹 Fee Management Functions
+    // ====================================================
+    
+    /**
+     * @dev Set mint fee
+     * @param fee New mint fee
+     */
+    function setMintFee(uint256 fee) external onlyRole(GOVERNANCE_ROLE) {
+        mintFee = fee;
+    }
+    
+    /**
+     * @dev Set fractionalization fee
+     * @param fee New fractionalization fee
+     */
+    function setFractionalizationFee(uint256 fee) external onlyRole(GOVERNANCE_ROLE) {
+        fractionalizationFee = fee;
+    }
+    
+    /**
+     * @dev Set verification fee
+     * @param fee New verification fee
+     */
+    function setVerificationFee(uint256 fee) external onlyRole(GOVERNANCE_ROLE) {
+        verificationFee = fee;
+    }
+    
+    /**
+     * @dev Set treasury wallet
+     * @param wallet New treasury wallet address
+     */
+    function setTreasuryWallet(address wallet) external onlyRole(GOVERNANCE_ROLE) {
+        if (wallet == address(0)) revert InvalidRecipient();
+        treasuryWallet = wallet;
+    }
+    
+    // ====================================================
+    // 🔹 Administrative Functions
+    // ====================================================
+    
+    /**
+     * @dev Pause contract
+     */
+    function pause() external onlyRole(GOVERNANCE_ROLE) {
+        _pause();
+    }
+    
+    /**
+     * @dev Unpause contract
+     */
+    function unpause() external onlyRole(GOVERNANCE_ROLE) {
+        _unpause();
+    }
+    
+    /**
+     * @dev Recover TStake tokens accidentally sent to contract
+     * @param amount Amount to recover
+     */
+    function recoverTStake(uint256 amount) external onlyRole(GOVERNANCE_ROLE) {
+        uint256 balance = tStakeToken.balanceOf(address(this));
+        if (amount > balance) revert InsufficientBalance();
+        
+        tStakeToken.transfer(treasuryWallet, amount);
+        emit TStakeRecovered(address(tStakeToken), amount);
+    }
+    
+    /**
+     * @dev Set VRF parameters
+     * @param _keyHash New key hash for VRF
+     * @param _subscriptionId New subscription ID for VRF
+     * @param _callbackGasLimit New callback gas limit
+     * @param _requestConfirmations New request confirmations
+     */
+    function setVRFParams(
+        bytes32 _keyHash,
+        uint64 _subscriptionId,
+        uint32 _callbackGasLimit,
+        uint16 _requestConfirmations
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        keyHash = _keyHash;
+        subscriptionId = _subscriptionId;
+        callbackGasLimit = _callbackGasLimit;
+        requestConfirmations = _requestConfirmations;
+    }
+    
+    // ====================================================
+    // 🔹 View Functions
+    // ====================================================
+    
+    /**
+     * @dev Get all tokens of a specific type
+     * @param nftType Type of NFT to retrieve
+     * @return Array of token IDs
+     */
+    function getTokensByType(NFTType nftType) external view returns (uint256[] memory) {
+        return _typeTokens[nftType];
+    }
+    
+    /**
+     * @dev Get all verified impact certificates
+     * @return Array of token IDs
+     */
+    function getVerifiedImpactCertificates() external view returns (uint256[] memory) {
+        return _verifiedImpactCertificates;
+    }
+    
+    /**
+     * @dev Get fraction info
+     * @param fractionId ID of fraction
+     * @return FractionInfo struct
+     */
+    function getFractionInfo(uint256 fractionId) external view returns (FractionInfo memory) {
+        return _fractionInfos[fractionId];
+    }
+    
+    /**
+     * @dev Get all tokens owned by an address
+     * @param owner Address to query
+     * @return Array of token IDs
+     */
+    function getOwnerTokens(address owner) external view returns (uint256[] memory) {
+        return _ownerTokens[owner];
+    }
+    
+    /**
+     * @dev Check if token is an ERC721
+     * @param tokenId ID of token to check
+     * @return Whether token is an ERC721
+     */
+    function isERC721(uint256 tokenId) external view returns (bool) {
+        return _isERC721[tokenId];
+    }
+    
+    // ====================================================
+    // 🔹 Internal Utility Functions
+    // ====================================================
+    
+    /**
+     * @dev Add token to owner's token list
+     * @param owner Address of owner
+     * @param tokenId ID of token
+     */
+    function _addToOwnerTokens(address owner, uint256 tokenId) internal {
+        _ownerTokens[owner].push(tokenId);
+    }
+    
+    /**
+     * @dev Determine rarity from random number
+     * @param randomNumber Random number input
+     * @return Rarity string
+     */
+    function _determineRarity(uint256 randomNumber) internal pure returns (string memory) {
+        uint256 rarityValue = randomNumber % 100;
+        
+        if (rarityValue < 1) return "Legendary";
+        if (rarityValue < 5) return "Epic";
+        if (rarityValue < 15) return "Rare";
+        if (rarityValue < 40) return "Uncommon";
+        return "Common";
+    }
+    
+    /**
+     * @dev Convert uint256 to string
+     * @param value Number to convert
+     * @return String representation
+     */
+    function _uint256ToString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0";
+        }
+        
+        uint256 temp = value;
+        uint256 digits;
+        
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        
+        return string(buffer);
+    }
+    
+    // ====================================================
+    // 🔹 Override Functions
+    // ====================================================
+    
+    /**
+     * @dev See {ERC1155-_beforeTokenTransfer}
+     */
+    function _beforeTokenTransfer(
+        address operator,
+        address from,
+        address to,
+        uint256[] memory ids,
+        uint256[] memory amounts,
+        bytes memory data
+    ) internal override(ERC1155Upgradeable, ERC1155SupplyUpgradeable) whenNotPaused {
+        super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
+        
+        // Add to new owner's token list if not a zero address (minting handled separately)
+        if (from != address(0) && to != address(0)) {
+            for (uint256 i = 0; i < ids.length; i++) {
+                if (amounts[i] > 0) {
+                    _addToOwnerTokens(to, ids[i]);
+                }
+            }
+        }
+    }
+    
+    /**
+     * @dev See {IERC165-supportsInterface}
+     */
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC1155Upgradeable, AccessControlUpgradeable)
+        returns (bool)
     {
-        return
-            interfaceId == type(ITerraStake).interfaceId ||
-            interfaceId == type(ITerraStakeProjects).interfaceId ||
-            super.supportsInterface(interfaceId);
+        return super.supportsInterface(interfaceId);
     }
 }
