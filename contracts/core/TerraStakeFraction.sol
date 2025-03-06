@@ -14,6 +14,49 @@ import "./interfaces/ITerraStakeToken.sol";
 import "./interfaces/ITerraStakeNFT.sol";
 
 /**
+ * @title FractionToken
+ * @dev ERC20 token representing fractions of a TerraStake NFT
+ */
+contract FractionToken is ERC20, ERC20Burnable, ERC20Permit {
+    uint256 public nftId;
+    address public fractionManager;
+    
+    // Storing impact data directly in the token for transparency
+    uint256 public impactValue;
+    ITerraStakeNFT.ProjectCategory public projectCategory;
+    bytes32 public projectDataHash;
+
+    /**
+     * @notice Initializes the FractionToken contract
+     * @param name The name of the token
+     * @param symbol The symbol of the token
+     * @param initialSupply The initial token supply
+     * @param _nftId The ID of the fractionalized NFT
+     * @param _fractionManager The address of the fraction manager contract
+     * @param _impactValue The environmental impact value
+     * @param _projectCategory The project category
+     * @param _projectDataHash The project data hash
+     */
+    constructor(
+        string memory name,
+        string memory symbol,
+        uint256 initialSupply,
+        uint256 _nftId,
+        address _fractionManager,
+        uint256 _impactValue,
+        ITerraStakeNFT.ProjectCategory _projectCategory,
+        bytes32 _projectDataHash
+    ) ERC20(name, symbol) ERC20Permit(name) {
+        nftId = _nftId;
+        fractionManager = _fractionManager;
+        impactValue = _impactValue;
+        projectCategory = _projectCategory;
+        projectDataHash = _projectDataHash;
+        _mint(_fractionManager, initialSupply);
+    }
+}
+
+/**
  * @title TerraStakeFractions
  * @dev Contract that allows fractionalization of TerraStake NFTs into tradable ERC20 tokens
  * representing verified environmental impact projects
@@ -47,7 +90,7 @@ contract TerraStakeFractions is
         address creator;          // Original NFT owner
         uint256 creationTime;     // When the fractionalization was created
         uint256 impactValue;      // The impact value of the NFT
-        string projectType;       // Type of environmental project
+        ITerraStakeNFT.ProjectCategory category; // Category of environmental project
         bytes32 verificationHash; // Hash of project verification data
     }
 
@@ -69,13 +112,33 @@ contract TerraStakeFractions is
     }
 
     // =====================================================
+    // Errors
+    // =====================================================
+    error InvalidAddress();
+    error NFTAlreadyFractionalized();
+    error FractionalizationNotActive();
+    error NFTStillLocked();
+    error NoRedemptionOffer();
+    error InsufficientBalance();
+    error PriceTooHigh();
+    error PriceTooLow();
+    error TransferFailed();
+    error InvalidFractionSupply();
+    error InvalidLockPeriod();
+    error FeeTooHigh();
+    error NFTNotVerified();
+    error InvalidAmount();
+
+    // =====================================================
     // Events
     // =====================================================
     event NFTFractionalized(
         uint256 indexed nftId, 
         address fractionToken, 
         uint256 totalSupply, 
-        address creator
+        address creator,
+        ITerraStakeNFT.ProjectCategory category,
+        uint256 impactValue
     );
 
     event NFTRedeemed(
@@ -166,11 +229,12 @@ contract TerraStakeFractions is
         uint256 _fee,
         uint256 _tradingFee
     ) {
-        require(_terraStakeNFT != address(0), "Invalid NFT address");
-        require(_tStakeToken != address(0), "Invalid token address");
-        require(_treasury != address(0), "Invalid treasury address");
-        require(_impactFund != address(0), "Invalid impact fund address");
-        require(_tradingFee <= 1000, "Trading fee too high"); // Max 10%
+        if (_terraStakeNFT == address(0) || 
+            _tStakeToken == address(0) || 
+            _treasury == address(0) || 
+            _impactFund == address(0)) revert InvalidAddress();
+            
+        if (_tradingFee > 1000) revert FeeTooHigh(); // Max 10%
         
         terraStakeNFT = ITerraStakeNFT(_terraStakeNFT);
         tStakeToken = ITerraStakeToken(_tStakeToken);
@@ -199,46 +263,34 @@ contract TerraStakeFractions is
         whenNotPaused
         returns (address fractionTokenAddress) 
     {
-        require(params.fractionSupply > 0 && params.fractionSupply <= MAX_FRACTION_SUPPLY, "Invalid fraction supply");
-        require(params.lockPeriod >= MIN_LOCK_PERIOD && params.lockPeriod <= MAX_LOCK_PERIOD, "Invalid lock period");
-        require(nftToFractionToken[params.tokenId] == address(0), "NFT already fractionalized");
+        if (params.fractionSupply == 0 || params.fractionSupply > MAX_FRACTION_SUPPLY) 
+            revert InvalidFractionSupply();
+            
+        if (params.lockPeriod < MIN_LOCK_PERIOD || params.lockPeriod > MAX_LOCK_PERIOD) 
+            revert InvalidLockPeriod();
+            
+        if (nftToFractionToken[params.tokenId] != address(0)) 
+            revert NFTAlreadyFractionalized();
         
         // Transfer the fractionalization fee
-        require(tStakeToken.transferFrom(msg.sender, address(this), fractionalizationFee), "Fee transfer failed");
+        bool feeTransferred = tStakeToken.transferFrom(msg.sender, address(this), fractionalizationFee);
+        if (!feeTransferred) revert TransferFailed();
         
         // Transfer the NFT from the owner to this contract
         terraStakeNFT.safeTransferFrom(msg.sender, address(this), params.tokenId, 1, "");
         
-        // Get NFT metadata for verification
-        (
-            ,
-            uint256 projectId,
-            uint256 impactValue,
-            ,
-            string memory location,
-            uint256 capacity,
-            ,
-            string memory projectType,
-            bool isVerified,
-            ,
-            ,
-            ,
-            bytes32 projectDataHash,
-            bytes32 impactReportHash,
-            ,
-            ,
-            
-        ) = terraStakeNFT.getTokenMetadata(params.tokenId);
+        // Get the impact certificate to extract data
+        ITerraStakeNFT.ImpactCertificate memory certificate = terraStakeNFT.getImpactCertificate(params.tokenId);
+        ITerraStakeNFT.NFTMetadata memory metadata = terraStakeNFT.getTokenMetadata(params.tokenId);
         
-        require(isVerified, "NFT must be verified");
+        if (!certificate.isVerified) revert NFTNotVerified();
         
         // Create verification hash
         bytes32 verificationHash = keccak256(abi.encodePacked(
-            projectId,
-            impactValue,
-            projectDataHash,
-            impactReportHash,
-            block.timestamp
+            certificate.projectId,
+            certificate.impactValue,
+            certificate.reportHash,
+            certificate.verificationDate
         ));
         
         // Deploy a new ERC20 token for this NFT
@@ -247,7 +299,10 @@ contract TerraStakeFractions is
             params.symbol,
             params.fractionSupply,
             params.tokenId,
-            address(this)
+            address(this),
+            certificate.impactValue,
+            certificate.category,
+            certificate.reportHash
         );
         
         fractionTokenAddress = address(newFractionToken);
@@ -262,8 +317,8 @@ contract TerraStakeFractions is
             lockEndTime: block.timestamp + params.lockPeriod,
             creator: msg.sender,
             creationTime: block.timestamp,
-            impactValue: impactValue,
-            projectType: projectType,
+            impactValue: certificate.impactValue,
+            category: certificate.category,
             verificationHash: verificationHash
         });
         
@@ -289,7 +344,9 @@ contract TerraStakeFractions is
             params.tokenId, 
             fractionTokenAddress, 
             params.fractionSupply, 
-            msg.sender
+            msg.sender,
+            certificate.category,
+            certificate.impactValue
         );
         
         return fractionTokenAddress;
@@ -300,17 +357,19 @@ contract TerraStakeFractions is
      * @param fractionToken The address of the fraction token
      * @param redemptionPrice The price offered for redemption in TStake
      */
-    function offerRedemption(address fractionToken, uint256 redemptionPrice) 
+    function offerRedemption(address fractionToken, uint256 redemptionPrice)
+
         external 
         nonReentrant 
         whenNotPaused
     {
         FractionData memory data = fractionData[fractionToken];
-        require(data.isActive, "Fractionalization not active");
-        require(block.timestamp >= data.lockEndTime, "NFT still locked");
+        if (!data.isActive) revert FractionalizationNotActive();
+        if (block.timestamp < data.lockEndTime) revert NFTStillLocked();
         
         // Transfer the redemption price to this contract
-        require(tStakeToken.transferFrom(msg.sender, address(this), redemptionPrice), "Price transfer failed");
+        bool transferred = tStakeToken.transferFrom(msg.sender, address(this), redemptionPrice);
+        if (!transferred) revert TransferFailed();
         
         // Store the redemption offer
         redemptionOffers[fractionToken] = redemptionPrice;
@@ -329,8 +388,8 @@ contract TerraStakeFractions is
         whenNotPaused
     {
         FractionData memory data = fractionData[fractionToken];
-        require(data.isActive, "Fractionalization not active");
-        require(block.timestamp >= data.lockEndTime, "NFT still locked");
+        if (!data.isActive) revert FractionalizationNotActive();
+        if (block.timestamp < data.lockEndTime) revert NFTStillLocked();
         
         FractionToken token = FractionToken(fractionToken);
         uint256 offerPrice = redemptionOffers[fractionToken];
@@ -352,15 +411,15 @@ contract TerraStakeFractions is
         }
         
         // Otherwise, check if there's a valid redemption offer
-        require(offerPrice > 0, "No redemption offer");
-        require(offeror != address(0), "No valid offeror");
+        if (offerPrice == 0) revert NoRedemptionOffer();
+        if (offeror == address(0)) revert InvalidAddress();
         
         // Calculate token distribution
         uint256 totalTokens = token.totalSupply();
-        require(totalTokens > 0, "No tokens in circulation");
+        if (totalTokens == 0) revert InvalidAmount();
         
         // Transfer tokens from holders to this contract and distribute the redemption price
-uint256 balance = token.balanceOf(msg.sender);
+        uint256 balance = token.balanceOf(msg.sender);
         if (balance > 0) {
             // Calculate proportional share of redemption price
             uint256 userShare = (offerPrice * balance) / totalTokens;
@@ -397,7 +456,7 @@ uint256 balance = token.balanceOf(msg.sender);
         whenNotPaused
     {
         FractionData memory data = fractionData[fractionToken];
-        require(data.isActive, "Fractionalization not active");
+        if (!data.isActive) revert FractionalizationNotActive();
         
         FractionToken token = FractionToken(fractionToken);
         
@@ -405,14 +464,15 @@ uint256 balance = token.balanceOf(msg.sender);
         uint256 unitPrice = marketData[fractionToken].lastTradePrice;
         uint256 totalPrice = unitPrice * amount;
         
-        require(totalPrice <= maxPrice, "Price exceeds max price");
-        require(token.balanceOf(address(this)) >= amount, "Not enough tokens available");
+        if (totalPrice > maxPrice) revert PriceTooHigh();
+        if (token.balanceOf(address(this)) < amount) revert InsufficientBalance();
         
         // Calculate and transfer the fee
         uint256 fee = (totalPrice * tradingFeePercentage) / BASIS_POINTS;
         uint256 netPrice = totalPrice + fee;
         
-        require(tStakeToken.transferFrom(msg.sender, address(this), netPrice), "Payment transfer failed");
+        bool transferred = tStakeToken.transferFrom(msg.sender, address(this), netPrice);
+        if (!transferred) revert TransferFailed();
         
         // Transfer fractions to buyer
         token.transfer(msg.sender, amount);
@@ -448,7 +508,7 @@ uint256 balance = token.balanceOf(msg.sender);
         whenNotPaused
     {
         FractionData memory data = fractionData[fractionToken];
-        require(data.isActive, "Fractionalization not active");
+        if (!data.isActive) revert FractionalizationNotActive();
         
         FractionToken token = FractionToken(fractionToken);
         
@@ -456,18 +516,20 @@ uint256 balance = token.balanceOf(msg.sender);
         uint256 unitPrice = marketData[fractionToken].lastTradePrice;
         uint256 totalPrice = unitPrice * amount;
         
-        require(totalPrice >= minPrice, "Price below min price");
-        require(token.balanceOf(msg.sender) >= amount, "Not enough tokens owned");
+        if (totalPrice < minPrice) revert PriceTooLow();
+        if (token.balanceOf(msg.sender) < amount) revert InsufficientBalance();
         
         // Calculate and deduct the fee
         uint256 fee = (totalPrice * tradingFeePercentage) / BASIS_POINTS;
         uint256 netPayout = totalPrice - fee;
         
         // Transfer fractions to contract
-        require(token.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        bool transferred = token.transferFrom(msg.sender, address(this), amount);
+        if (!transferred) revert TransferFailed();
         
         // Pay the seller
-        require(tStakeToken.transfer(msg.sender, netPayout), "Payment failed");
+        bool paymentSent = tStakeToken.transfer(msg.sender, netPayout);
+        if (!paymentSent) revert TransferFailed();
         
         // Update market data
         FractionMarketData storage market = marketData[fractionToken];
@@ -499,13 +561,16 @@ uint256 balance = token.balanceOf(msg.sender);
         whenNotPaused
     {
         FractionData memory data = fractionData[fractionToken];
-        require(data.isActive, "Fractionalization not active");
+        if (!data.isActive) revert FractionalizationNotActive();
         
         FractionToken token = FractionToken(fractionToken);
         
         // Transfer assets to this contract
-        require(token.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
-        require(tStakeToken.transferFrom(msg.sender, address(this), tStakeAmount), "TStake transfer failed");
+        bool tokensTransferred = token.transferFrom(msg.sender, address(this), amount);
+        if (!tokensTransferred) revert TransferFailed();
+        
+        bool tStakeTransferred = tStakeToken.transferFrom(msg.sender, address(this), tStakeAmount);
+        if (!tStakeTransferred) revert TransferFailed();
         
         // Update market data
         FractionMarketData storage market = marketData[fractionToken];
@@ -547,7 +612,7 @@ uint256 balance = token.balanceOf(msg.sender);
         external 
         onlyRole(GOVERNANCE_ROLE)
     {
-        require(newFeePercentage <= 1000, "Fee too high"); // Max 10%
+        if (newFeePercentage > 1000) revert FeeTooHigh(); // Max 10%
         tradingFeePercentage = newFeePercentage;
     }
 
@@ -559,7 +624,7 @@ uint256 balance = token.balanceOf(msg.sender);
         external 
         onlyRole(GOVERNANCE_ROLE)
     {
-        require(newTreasury != address(0), "Invalid address");
+        if (newTreasury == address(0)) revert InvalidAddress();
         treasuryWallet = newTreasury;
     }
 
@@ -571,7 +636,7 @@ uint256 balance = token.balanceOf(msg.sender);
         external 
         onlyRole(GOVERNANCE_ROLE)
     {
-        require(newImpactFund != address(0), "Invalid address");
+        if (newImpactFund == address(0)) revert InvalidAddress();
         impactFundWallet = newImpactFund;
     }
 
@@ -596,6 +661,30 @@ uint256 balance = token.balanceOf(msg.sender);
     }
 
     /**
+     * @notice Emergency withdraw of a fractionalized NFT in case of critical issues
+     * @param fractionToken The address of the fraction token
+     * @param recipient The address to receive the NFT
+     */
+    function emergencyWithdrawNFT(address fractionToken, address recipient)
+        external
+        onlyRole(GOVERNANCE_ROLE)
+        whenPaused
+    {
+        if (recipient == address(0)) revert InvalidAddress();
+        
+        FractionData storage data = fractionData[fractionToken];
+        if (!data.isActive) revert FractionalizationNotActive();
+        
+        // Transfer the NFT to the recipient
+        terraStakeNFT.safeTransferFrom(address(this), recipient, data.nftId, 1, "");
+        
+        // Mark as inactive
+        data.isActive = false;
+        
+        emit NFTRedeemed(data.nftId, recipient, 0);
+    }
+
+    /**
      * @notice Manually update market data for a fraction token
      * @param fractionToken The address of the fraction token
      * @param lastTradePrice The new last trade price
@@ -604,7 +693,7 @@ uint256 balance = token.balanceOf(msg.sender);
         external 
         onlyRole(OPERATOR_ROLE)
     {
-        require(fractionData[fractionToken].isActive, "Fractionalization not active");
+        if (!fractionData[fractionToken].isActive) revert FractionalizationNotActive();
         
         marketData[fractionToken].lastTradePrice = lastTradePrice;
         marketData[fractionToken].lastTradeTime = block.timestamp;
@@ -708,33 +797,97 @@ uint256 balance = token.balanceOf(msg.sender);
         uint256 unitPrice = marketData[fractionToken].lastTradePrice;
         return unitPrice * amount;
     }
-}
-
-/**
- * @title FractionToken
- * @dev ERC20 token representing fractions of a TerraStake NFT
- */
-contract FractionToken is ERC20, ERC20Burnable, ERC20Permit {
-    uint256 public nftId;
-    address public fractionManager;
-
+    
     /**
-     * @notice Initializes the FractionToken contract
-     * @param name The name of the token
-     * @param symbol The symbol of the token
-     * @param initialSupply The initial token supply
-     * @param _nftId The ID of the fractionalized NFT
-     * @param _fractionManager The address of the fraction manager contract
+     * @notice Get total count of unique fractionalizations
+     * @return The count of fractionalized NFTs
      */
-    constructor(
-        string memory name,
-        string memory symbol,
-        uint256 initialSupply,
-        uint256 _nftId,
-        address _fractionManager
-    ) ERC20(name, symbol) ERC20Permit(name) {
-        nftId = _nftId;
-        fractionManager = _fractionManager;
-        _mint(fractionManager, initialSupply);
+    function getTotalFractionalizationCount() 
+        external 
+        view 
+        returns (uint256 count) 
+    {
+        // Iterate through all NFTs in the TerraStakeNFT contract
+        uint256 totalNFTs = terraStakeNFT.getTotalTokenCount();
+        for (uint256 i = 1; i <= totalNFTs; i++) {
+            if (nftToFractionToken[i] != address(0) && fractionData[nftToFractionToken[i]].isActive) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    /**
+     * @notice Get detailed market statistics for a fraction token
+     * @param fractionToken The fraction token address
+     * @return volume24h Trading volume in the last 24 hours
+     * @return priceChange24h Price change percentage in the last 24 hours
+     * @return totalHolders Estimated number of unique holders
+     * @return marketCap Total market capitalization
+     */
+    function getMarketStatistics(address fractionToken)
+        external
+        view
+        returns (
+            uint256 volume24h,
+            int256 priceChange24h,
+            uint256 totalHolders,
+            uint256 marketCap
+        )
+    {
+        FractionData memory data = fractionData[fractionToken];
+        if (!data.isActive) return (0, 0, 0, 0);
+        
+        FractionMarketData memory market = marketData[fractionToken];
+        
+        // Calculate market cap
+        marketCap = market.lastTradePrice * data.totalSupply;
+        
+        // Holders is approximated from market data
+        totalHolders = market.totalActiveUsers;
+        
+        // These would be calculated from events in a real implementation
+        // Simplified for this example
+        volume24h = market.volumeTraded;
+        priceChange24h = 0;
+        
+        return (volume24h, priceChange24h, totalHolders, marketCap);
+    }
+    
+    /**
+     * @notice Get environmental impact data for a fractionalized NFT
+     * @param fractionToken The fraction token address
+     * @return category The environmental project category
+     * @return impactValue The quantified environmental impact
+     * @return isVerified Whether the impact has been verified
+     * @return impactPerToken Impact value per single fraction token
+     */
+    function getImpactData(address fractionToken)
+        external
+        view
+        returns (
+            ITerraStakeNFT.ProjectCategory category,
+            uint256 impactValue,
+            bool isVerified,
+            uint256 impactPerToken
+        )
+    {
+        FractionData memory data = fractionData[fractionToken];
+        if (!data.isActive) return (ITerraStakeNFT.ProjectCategory.CarbonCredits, 0, false, 0);
+        
+        // Get impact data from the NFT
+        ITerraStakeNFT.ImpactCertificate memory certificate = 
+            terraStakeNFT.getImpactCertificate(data.nftId);
+        
+        category = certificate.category;
+        impactValue = certificate.impactValue;
+        isVerified = certificate.isVerified;
+        
+        // Calculate impact per token
+        if (data.totalSupply > 0) {
+            impactPerToken = impactValue / data.totalSupply;
+        }
+        
+        return (category, impactValue, isVerified, impactPerToken);
     }
 }
