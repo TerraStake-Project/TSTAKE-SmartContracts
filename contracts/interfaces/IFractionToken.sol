@@ -7,10 +7,10 @@ import "./interfaces/ITerraStakeToken.sol";
 import "./interfaces/ITerraStakeNFT.sol";
 
 /**
- * @title ITerraStakeFractionsToken
- * @dev Interface for the TerraStakeFractionsToken contract
+ * @title IFractionToken
+ * @dev Interface for the FractionToken contract
  */
-interface ITerraStakeFractionsToken is KeeperCompatibleInterface {
+interface IFractionToken is KeeperCompatibleInterface {
     // =====================================================
     // Structs
     // =====================================================
