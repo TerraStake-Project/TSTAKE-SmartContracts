@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+
+pragma solidity 0.8.28; 
 
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
@@ -11,9 +12,9 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import {ITerraStakeProjects} from "../interfaces/ITerraStakeProjects.sol";
-import {ITerraStakeNFT} from "../interfaces/ITerraStakeNFT.sol";
-import {ITerraStakeMarketPlace} from "../interfaces/ITerraStakeMarketPlace.sol";
+import {ITerraStakeProjects} from "./interfaces/ITerraStakeProjects.sol";
+import {ITerraStakeNFT} from "./interfaces/ITerraStakeNFT.sol";
+import {ITerraStakeMarketPlace} from "./interfaces/ITerraStakeMarketPlace.sol";
 
 /**
  * @title TerraStakeProjects 
@@ -47,13 +48,14 @@ contract TerraStakeProjects is
     IERC20 public tStakeToken;
     uint256 public projectCount;
     
-    // Added from context (wasn't in original but referenced)
+    // Added from context
     address public terraTokenAddress;
     address public treasuryAddress;
-    uint256 public accumulatedBuybackFunds;
+    uint256 public buybackFund;
     uint256 public constant MIN_CLAIM_PERIOD = 1 days;
     uint256 public constant TIME_REWARD_RATE = 1; // 0.01% per day
     address public constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     
     FeeStructure public fees;
     address public treasury;
@@ -71,7 +73,24 @@ contract TerraStakeProjects is
     // Project data storage
     mapping(uint256 => ProjectData) public projectMetadata;
     mapping(uint256 => ProjectStateData) public projectStateData;
-    mapping(uint256 => ValidationData) public projectValidations;
+    
+    // Adding struct definitions for data structures used in mappings
+    struct VerificationData {
+        address verifier;
+        uint256 verificationDate;
+        bytes32 verificationDocumentHash;
+        bool isVerified;
+        string verifierNotes;
+    }
+    
+    struct GeneralMetadata {
+        string website;
+        string[] team;
+        string[] partners;
+        string[] socialMedia;
+        uint256 lastUpdated;
+    }
+
     mapping(uint256 => VerificationData) public projectVerifications;
     mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
     
@@ -84,6 +103,18 @@ contract TerraStakeProjects is
     mapping(uint256 => mapping(uint256 => string[])) public projectDocumentPages;
     mapping(uint256 => uint256) public projectDocumentPageCount;
     uint256 public constant DOCUMENTS_PER_PAGE = 20;
+
+    // Project document handling
+    struct ProjectDocument {
+        string name;
+        string docType;
+        bytes32 ipfsHash;
+        uint256 timestamp;
+        address uploader;
+    }
+    mapping(uint256 => mapping(uint256 => ProjectDocument)) public projectDocuments;
+    mapping(uint256 => uint256) public projectDocumentCount;
+    mapping(uint256 => uint256[]) private _projectDocumentIndex;
     
     mapping(uint256 => ProjectAnalytics) public projectAnalytics;
     mapping(uint256 => ImpactReport[]) public projectImpactReports;
@@ -92,6 +123,55 @@ contract TerraStakeProjects is
     
     // Category requirements tracking
     mapping(ProjectCategory => ImpactRequirement) public categoryRequirements;
+
+    // Impact report structures
+    struct ImpactRequirements {
+        uint32 minStakingPeriod;
+        uint32 reportingFrequency;
+        uint32 verificationThreshold;
+        uint32 impactDataFormat;
+        bool requiresAudit;
+    }
+
+    // Report statuses
+    enum ReportStatus {
+        Submitted,
+        Validated,
+        Rejected,
+        Pending
+    }
+
+    struct ProjectVerification {
+        uint256 verificationDate;
+        address verifier;
+        bytes32 verificationDataHash;
+        bool isVerified;
+        string verifierNotes;
+        uint256 lastVerificationTime;
+    }
+
+    struct UserStake {
+        uint256 amount;
+        uint256 adjustedAmount;
+        uint256 stakedAt;
+        uint256 lastRewardUpdate;
+        uint256 claimedRewards;
+        bool isStaking;
+    }
+
+    struct ImpactReport {
+        uint256 timestamp;
+        address reporter;
+        bytes32 reportDataHash;
+        string reportURI;
+        string description;
+        uint256 measuredValue;
+        string measurement;
+        ReportStatus status;
+        address validator;
+        string validatorNotes;
+        uint256 validationTime;
+    }
     
     // Granular permission system for project owners and collaborators
     mapping(uint256 => mapping(address => mapping(bytes32 => bool))) public projectPermissions;
@@ -104,15 +184,22 @@ contract TerraStakeProjects is
     mapping(address => uint256[]) private _projectsByOwner;
     mapping(ProjectCategory => uint256[]) private _projectsByCategory;
     uint256[] private _activeProjects;
+    uint256[] private _projectsPendingVerification;
     
     // Circuit breaker security
     bool public emergencyMode;
     
     // Staking tracking
-    mapping(uint256 => mapping(address => uint256)) public projectStakes;
-    mapping(uint256 => address[]) public projectStakers;
+    mapping(uint256 => mapping(address => UserStake)) public projectStakes;
+    mapping(uint256 => address[]) public _projectStakers;
     mapping(address => uint256[]) public userStakedProjects;
-    mapping(uint256 => mapping(address => uint256)) public lastRewardClaim;
+    
+    // Project report tracking
+    mapping(uint256 => mapping(uint256 => ImpactReport)) public projectReports;
+    mapping(uint256 => uint256) public projectReportCount;
+    mapping(uint256 => uint256[]) private _projectReportIndex;
+    mapping(uint256 => uint256) public projectLastReportTime;
+    mapping(uint256 => uint256) public projectLastValidationTime;
     
     // Verification comments
     mapping(uint256 => mapping(uint256 => string)) public projectVerificationComments;
@@ -125,14 +212,6 @@ contract TerraStakeProjects is
         string[] metricUnits;
         string verificationStandard;
         uint256 impactWeight;
-    }
-
-    // Verification struct 
-    struct ProjectVerification {
-        address verifier;
-        uint256 verificationDate;
-        string verificationStandard;
-        bytes32 verificationDocumentHash;
     }
 
     // ====================================================
@@ -157,7 +236,7 @@ contract TerraStakeProjects is
     );
     
     // Project metadata update event
-    event ProjectMetadataUpdated(uint256 indexed projectId, string name);
+    event ProjectMetadataUpdated(uint256 indexed projectId, string name, bytes32 ipfsHash);
     
     // Fee management events
     event TokensBurned(uint256 amount);
@@ -177,21 +256,19 @@ contract TerraStakeProjects is
     // Project events
     event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
     event ProjectStateChanged(uint256 indexed projectId, ProjectState oldState, ProjectState newState);
-    event DocumentationUpdated(uint256 indexed projectId, string[] ipfsHashes);
-    event ImpactReported(uint256 indexed projectId, uint256 reportIndex, bytes32 reportHash, address reporter);
-    event RewardsAccumulated(uint256 indexed projectId, uint256 amount);
-    event ImpactVerified(uint256 indexed projectId, uint256 reportIndex, address verifier, bool approved);
-    event PermissionUpdated(uint256 indexed projectId, address indexed user, uint8 permission, bool value);
-    event OwnershipTransferred(uint256 indexed projectId, address indexed oldOwner, address indexed newOwner);
-    event Staked(uint256 indexed projectId, address indexed staker, uint256 amount);
-    event Unstaked(uint256 indexed projectId, address indexed staker, uint256 amount);
+    event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
+    event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, bool approved, address validator);
+    event RewardsDistributed(uint256 indexed projectId, uint256 amount);
+    event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
+    event ProjectUnstaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
     event RewardsClaimed(uint256 indexed projectId, address indexed staker, uint256 amount);
-    event FeesUpdated(uint256 projectFee, uint256 reportingFee, uint256 updateFee);
-    event EmergencyModeToggled(bool active);
-    event TokensRecovered(address token, address recipient, uint256 amount);
-    event TerraTokenSet(address tokenAddress);
-    event TreasuryAddressSet(address treasuryAddress);
-    event ProjectVerified(uint256 indexed projectId, address verifier, string standard, bytes32 documentHash);
+    event ProjectDocumentAdded(uint256 indexed projectId, uint256 documentId, string name, bytes32 ipfsHash);
+    event TokensRecovered(address tokenAddress, uint256 amount);
+    event ProjectVerified(uint256 indexed projectId, bool approved, address verifier, bytes32 verificationDataHash);
+    event ImpactRequirementsUpdated(uint256 indexed projectId);
+    event CategoryRequirementsUpdated(ProjectCategory indexed category);
+    event TreasuryAddressChanged(address oldTreasury, address newTreasury);
+    event RewardPoolIncreased(uint256 indexed projectId, uint256 amount, address contributor);
 
     // ====================================================
     // 🚨 Errors
@@ -212,7 +289,7 @@ contract TerraStakeProjects is
     error CannotRevokeOwnerPermissions();
     error EmergencyModeActive();
     error CallerNotStakingContract();
-    error InvalidReportIndex();
+    error InvalidReportId();
     error ReportAlreadyVerified();
     error ZeroAmount();
     error TokenNotConfigured();
@@ -222,6 +299,18 @@ contract TerraStakeProjects is
     error NoBuybackFunds();
     error ExceedsRecoverableAmount();
     error InvalidPermission();
+    error InvalidAmount();
+    error StakeTransferFailed();
+    error NotStaking();
+    error MinStakingPeriodNotMet();
+    error UnstakeTransferFailed();
+    error NoRewardsToClaim();
+    error RewardTransferFailed();
+    error ProjectEndingTooSoon();
+    error ReportingTooFrequent();
+    error InvalidReportStatus();
+    error TransferFailed();
+    error InvalidPermissionType();
 
     // ====================================================
     // 🚀 Initialization & Upgrades
@@ -279,6 +368,7 @@ contract TerraStakeProjects is
      * Called by {upgradeTo} and {upgradeToAndCall}.
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+
     // Initialize category data with real-world standards and requirements
     function _initializeCategoryData() internal {
         // Carbon Credit projects
@@ -306,7 +396,7 @@ contract TerraStakeProjects is
             name: "Ocean Cleanup",
             description: "Marine conservation and plastic removal initiatives",
             standardBodies: ["Ocean Cleanup Foundation", "Plastic Bank", "Ocean Conservancy"],
-            metricUnits: ["Tons of Plastic Removed", "Area Protected (km²)", "Marine Species Protected"],
+            metricUnits: ["Tons of Plastic Removed", "Area Protected (km2)", "Marine Species Protected"],
             verificationStandard: "UNEP Clean Seas Protocol",
             impactWeight: 85
         });
@@ -341,7 +431,7 @@ contract TerraStakeProjects is
             name: "Sustainable Agriculture",
             description: "Regenerative farming and sustainable agricultural practices",
             standardBodies: ["Regenerative Organic Certified", "USDA Organic", "Rainforest Alliance"],
-            metricUnits: ["Organic Produce (tons)", "Soil Carbon Added (tons)", "Water Saved (m³)"],
+            metricUnits: ["Organic Produce (tons)", "Soil Carbon Added (tons)", "Water Saved (m3)"],
             verificationStandard: "Global G.A.P.",
             impactWeight: 80
         });
@@ -351,7 +441,7 @@ contract TerraStakeProjects is
             name: "Waste Management",
             description: "Recycling and waste reduction initiatives",
             standardBodies: ["Zero Waste International Alliance", "ISO 14001", "Cradle to Cradle"],
-            metricUnits: ["Waste Diverted (tons)", "Recycling Rate (%)", "Landfill Reduction (m³)"],
+            metricUnits: ["Waste Diverted (tons)", "Recycling Rate (%)", "Landfill Reduction (m3)"],
             verificationStandard: "ISO 14001",
             impactWeight: 75
         });
@@ -361,7 +451,7 @@ contract TerraStakeProjects is
             name: "Water Conservation",
             description: "Water efficiency and protection initiatives",
             standardBodies: ["Alliance for Water Stewardship", "Water Footprint Network", "LEED"],
-            metricUnits: ["Water Saved (m³)", "Area Protected (ha)", "People Served"],
+            metricUnits: ["Water Saved (m3)", "Area Protected (ha)", "People Served"],
             verificationStandard: "ISO 14046",
             impactWeight: 85
         });
@@ -391,7 +481,7 @@ contract TerraStakeProjects is
             name: "Green Building",
             description: "Energy-efficient infrastructure & sustainable construction",
             standardBodies: ["LEED", "BREEAM", "Passive House", "Living Building Challenge"],
-            metricUnits: ["Energy Saved (kWh)", "CO2 Reduced (tons)", "Water Saved (m³)"],
+            metricUnits: ["Energy Saved (kWh)", "CO2 Reduced (tons)", "Water Saved (m3)"],
             verificationStandard: "LEED Certification",
             impactWeight: 70
         });
@@ -539,577 +629,570 @@ contract TerraStakeProjects is
         uint48 startBlock,
         uint48 endBlock
     ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
-        if (bytes(name).length == 0) revert NameRequired();
-        if (uint256(category) > 12) revert InvalidCategory(); // Assuming 13 categories (0-12)
+        if (bytes(name).length == 0) revert EmptyProjectName();
+        if (bytes(description).length == 0) revert EmptyProjectDescription();
+        if (bytes(location).length == 0) revert EmptyProjectLocation();
+        if (bytes(impactMetrics).length == 0) revert EmptyImpactMetrics();
+        if (ipfsHash == bytes32(0)) revert InvalidIpfsHash();
+        if (stakingMultiplier == 0) revert InvalidStakingMultiplier();
+        if (startBlock >= endBlock) revert InvalidBlockRange();
         
-        // Fee Collection (50% Burn, 45% Treasury, 5% Buyback)
-        if (!_collectFee(msg.sender, fees.projectSubmissionFee)) revert FeeTransferFailed();
+        // Fee handling
+        uint256 submissionFee = fees.projectSubmissionFee;
+        if (submissionFee > 0) {
+            bool success = tStakeToken.transferFrom(msg.sender, address(this), submissionFee);
+            if (!success) revert TokenTransferFailed();
             
-        // Store Project Data
-        uint256 newProjectId = projectCount++;
+            // Update fee collections
+            totalFeesCollected += submissionFee;
+            feesByType[FeeType.ProjectSubmission] += submissionFee;
+            
+            emit FeeCollected(projectCounter + 1, FeeType.ProjectSubmission, submissionFee);
+        }
         
-        projectMetadata[newProjectId] = ProjectData(name, description, location, impactMetrics, ipfsHash, true);
-        projectStateData[newProjectId] = ProjectStateData({
-            category: category,
-            state: ProjectState.Proposed,
-            stakingMultiplier: stakingMultiplier,
-            totalStaked: 0,
-            rewardPool: 0,
-            isActive: false,
-            startBlock: startBlock,
-            endBlock: endBlock,
-            owner: msg.sender,
-            lastReportedValue: 0,
-            lastRewardUpdate: block.timestamp,
-            accumulatedRewards: 0
+        projectCounter++;
+        uint256 projectId = projectCounter;
+        
+        // Store project metadata
+        projectMetadata[projectId] = ProjectMetadata({
+            name: name,
+            description: description,
+            location: location,
+            impactMetrics: impactMetrics,
+            ipfsHash: ipfsHash,
+            exists: true,
+            creationTime: uint48(block.timestamp)
         });
         
-        // Set default impact requirements based on category
-        projectImpactRequirements[newProjectId] = categoryRequirements[category];
+        // Store project state
+        projectStateData[projectId] = ProjectStateData({
+            category: category,
+            stakingMultiplier: stakingMultiplier,
+            state: ProjectState.Pending,
+            startBlock: startBlock,
+            endBlock: endBlock
+        });
         
-        // Set up initial permissions - owner has all permissions
-        projectPermissions[newProjectId][msg.sender][EDIT_METADATA_PERMISSION] = true;
-        projectPermissions[newProjectId][msg.sender][UPLOAD_DOCS_PERMISSION] = true;
-        projectPermissions[newProjectId][msg.sender][SUBMIT_REPORTS_PERMISSION] = true;
-        projectPermissions[newProjectId][msg.sender][MANAGE_COLLABORATORS_PERMISSION] = true;
+        allProjectIds.push(projectId);
+        projectsByCategory[category].push(projectId);
         
-        // Update index tracking
-        _projectsByOwner[msg.sender].push(newProjectId);
-        _projectsByCategory[category].push(newProjectId);
-        
-        emit ProjectAdded(newProjectId, name, category);
+        emit ProjectCreated(
+            projectId,
+            msg.sender,
+            name,
+            category,
+            stakingMultiplier,
+            startBlock,
+            endBlock
+        );
     }
     
-    function updateProjectState(uint256 projectId, ProjectState newState) 
-        external 
-        override 
-        nonReentrant 
-        onlyRole(GOVERNANCE_ROLE) 
-        whenNotPaused
-    {
+    function updateProject(
+        uint256 projectId,
+        string memory name,
+        string memory description,
+        string memory location,
+        string memory impactMetrics,
+        bytes32 ipfsHash,
+        uint48 startBlock,
+        uint48 endBlock
+    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
-        ProjectState oldState = projectStateData[projectId].state;
-        if (oldState == newState) revert StateUnchanged();
-        
-        projectStateData[projectId].state = newState;
-        
-        // If transitioning to Active, update active projects list
-        if (newState == ProjectState.Active && oldState != ProjectState.Active) {
-            projectStateData[projectId].isActive = true;
-            _activeProjects.push(projectId);
+        // Ensure project isn't in a terminal state
+        ProjectState currentState = projectStateData[projectId].state;
+        if (currentState == ProjectState.Completed || 
+            currentState == ProjectState.Cancelled) {
+            revert ProjectInTerminalState();
         }
         
-        // If transitioning away from Active, update active status
-        if (oldState == ProjectState.Active && newState != ProjectState.Active) {
-            projectStateData[projectId].isActive = false;
+        // Validate new data
+        if (bytes(name).length == 0) revert EmptyProjectName();
+        if (bytes(description).length == 0) revert EmptyProjectDescription();
+        if (bytes(location).length == 0) revert EmptyProjectLocation();
+        if (bytes(impactMetrics).length == 0) revert EmptyImpactMetrics();
+        if (ipfsHash == bytes32(0)) revert InvalidIpfsHash();
+        if (startBlock >= endBlock) revert InvalidBlockRange();
+        
+        // Update project metadata
+        projectMetadata[projectId].name = name;
+        projectMetadata[projectId].description = description;
+        projectMetadata[projectId].location = location;
+        projectMetadata[projectId].impactMetrics = impactMetrics;
+        projectMetadata[projectId].ipfsHash = ipfsHash;
+        
+        // Update project state data
+        projectStateData[projectId].startBlock = startBlock;
+        projectStateData[projectId].endBlock = endBlock;
+        
+        emit ProjectUpdated(
+            projectId,
+            msg.sender,
+            name,
+            startBlock,
+            endBlock
+        );
+    }
+    
+    function changeProjectCategory(
+        uint256 projectId,
+        ProjectCategory newCategory
+    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        ProjectStateData storage project = projectStateData[projectId];
+        
+        // Ensure project isn't in a terminal state
+        if (project.state == ProjectState.Completed || 
+            project.state == ProjectState.Cancelled) {
+            revert ProjectInTerminalState();
+        }
+        
+        // Don't do anything if category is the same
+        if (project.category == newCategory) {
+            return;
+        }
+        
+        // Fee handling
+        uint256 categoryChangeFee = fees.categoryChangeFee;
+        if (categoryChangeFee > 0) {
+            bool success = tStakeToken.transferFrom(msg.sender, address(this), categoryChangeFee);
+            if (!success) revert TokenTransferFailed();
             
-            // Remove from active projects array
-            for (uint256 i = 0; i < _activeProjects.length; i++) {
-                if (_activeProjects[i] == projectId) {
-                    _activeProjects[i] = _activeProjects[_activeProjects.length - 1];
-                    _activeProjects.pop();
-                    break;
-                }
-            }
+            // Update fee collections
+            totalFeesCollected += categoryChangeFee;
+            feesByType[FeeType.CategoryChange] += categoryChangeFee;
+            
+            emit FeeCollected(projectId, FeeType.CategoryChange, categoryChangeFee);
         }
         
-        emit ProjectStateChanged(projectId, oldState, newState);
-    }
-    
-    function updateProjectPermission(
-        uint256 projectId, 
-        address user, 
-        bytes32 permission, 
-        bool value
-    ) external whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        // Update category arrays
+        ProjectCategory oldCategory = project.category;
         
-        // Only project owner or user with MANAGE_COLLABORATORS_PERMISSION can update permissions
-        if (
-            msg.sender != projectStateData[projectId].owner && 
-            !projectPermissions[projectId][msg.sender][MANAGE_COLLABORATORS_PERMISSION] &&
-            !hasRole(GOVERNANCE_ROLE, msg.sender)
-        ) {
-            revert NotAuthorized();
-        }
-        
-        // Cannot revoke owner's permissions
-        if (user == projectStateData[projectId].owner && !value) {
-            revert CannotRevokeOwnerPermissions();
-        }
-        
-        projectPermissions[projectId][user][permission] = value;
-        
-        emit ProjectPermissionUpdated(projectId, user, permission, value);
-    }
-    
-    function transferProjectOwnership(uint256 projectId, address newOwner) 
-        external 
-        nonReentrant 
-        whenNotPaused
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (newOwner == address(0)) revert InvalidAddress();
-        
-        // Only current owner or governance can transfer ownership
-        if (msg.sender != projectStateData[projectId].owner && !hasRole(GOVERNANCE_ROLE, msg.sender)) {
-            revert NotAuthorized();
-        }
-        
-        address oldOwner = projectStateData[projectId].owner;
-        projectStateData[projectId].owner = newOwner;
-        
-        // Transfer all permissions to new owner
-        projectPermissions[projectId][newOwner][EDIT_METADATA_PERMISSION] = true;
-        projectPermissions[projectId][newOwner][UPLOAD_DOCS_PERMISSION] = true;
-        projectPermissions[projectId][newOwner][SUBMIT_REPORTS_PERMISSION] = true;
-        projectPermissions[projectId][newOwner][MANAGE_COLLABORATORS_PERMISSION] = true;
-        
-        // Update owner tracking
-        for (uint256 i = 0; i < _projectsByOwner[oldOwner].length; i++) {
-            if (_projectsByOwner[oldOwner][i] == projectId) {
-                _projectsByOwner[oldOwner][i] = _projectsByOwner[oldOwner][_projectsByOwner[oldOwner].length - 1];
-                _projectsByOwner[oldOwner].pop();
+        // Remove from old category array
+        uint256 indexInOld = type(uint256).max;
+        for (uint256 i = 0; i < projectsByCategory[oldCategory].length; i++) {
+            if (projectsByCategory[oldCategory][i] == projectId) {
+                indexInOld = i;
                 break;
             }
         }
-        _projectsByOwner[newOwner].push(projectId);
         
-        emit OwnershipTransferred(projectId, oldOwner, newOwner);
+        if (indexInOld != type(uint256).max) {
+            // Replace with the last element and pop
+            projectsByCategory[oldCategory][indexInOld] = projectsByCategory[oldCategory][projectsByCategory[oldCategory].length - 1];
+            projectsByCategory[oldCategory].pop();
+        }
+        
+        // Add to new category array
+        projectsByCategory[newCategory].push(projectId);
+        
+        // Update project state
+        project.category = newCategory;
+        
+        emit ProjectCategoryChanged(projectId, oldCategory, newCategory);
     }
     
-    function addProjectDocumentation(uint256 projectId, string[] calldata ipfsHashes) 
-        external 
-        override 
-        nonReentrant 
-        whenNotPaused
-    {
+    function updateProjectState(
+        uint256 projectId,
+        ProjectState newState
+    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        ProjectStateData storage project = projectStateData[projectId];
         
-        // Only owner, users with permission, or governance can add documentation
-        if (
-            msg.sender != projectStateData[projectId].owner && 
-            !projectPermissions[projectId][msg.sender][UPLOAD_DOCS_PERMISSION] &&
-            !hasRole(GOVERNANCE_ROLE, msg.sender)
-        ) {
-            revert NotAuthorized();
+        // Check for valid state transitions
+        ProjectState currentState = project.state;
+        
+        // Cannot change from terminal states
+        if (currentState == ProjectState.Completed || 
+            currentState == ProjectState.Cancelled) {
+            revert ProjectInTerminalState();
         }
         
-        // Calculate which page to add to
-        uint256 currentPageCount = projectDocumentPageCount[projectId];
-        uint256 lastPageItemCount = 0;
-        
-        if (currentPageCount > 0) {
-            lastPageItemCount = projectDocumentPages[projectId][currentPageCount - 1].length;
+        // Cannot set to same state
+        if (currentState == newState) {
+            return;
         }
         
-        // Add documents to appropriate page
-        for (uint256 i = 0; i < ipfsHashes.length; i++) {
-            if (currentPageCount == 0 || lastPageItemCount == DOCUMENTS_PER_PAGE) {
-                // Start a new page
-                currentPageCount++;
-                lastPageItemCount = 0;
+        // Validation for specific state transitions
+        if (newState == ProjectState.Active) {
+            // Only projects that are Pending or Paused can be set to Active
+            if (currentState != ProjectState.Pending && 
+                currentState != ProjectState.Paused) {
+                revert InvalidStateTransition();
             }
             
-            projectDocumentPages[projectId][currentPageCount - 1].push(ipfsHashes[i]);
-            lastPageItemCount++;
+            // Require verification before activation
+            if (projectVerifications[projectId].verificationDate == 0) {
+                revert ProjectNotVerified();
+            }
         }
         
-        projectDocumentPageCount[projectId] = currentPageCount;
-        
-        emit DocumentationUpdated(projectId, ipfsHashes);
-    }
-    
-    function getProjectDocumentPage(uint256 projectId, uint256 pageNumber) 
-        external 
-        view 
-        override 
-        returns (string[] memory) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (pageNumber >= projectDocumentPageCount[projectId]) revert PageDoesNotExist();
-        
-        return projectDocumentPages[projectId][pageNumber];
-    }
-    
-    function addProjectComment(uint256 projectId, string calldata comment) 
-        external 
-        override 
-        whenNotPaused
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        // Calculate which page to add to
-        uint256 currentPageCount = projectCommentsPageCount[projectId];
-        uint256 lastPageItemCount = 0;
-        
-        if (currentPageCount > 0) {
-            lastPageItemCount = projectCommentsPages[projectId][currentPageCount - 1].length;
+        // Terminal state logic
+        if (newState == ProjectState.Completed || newState == ProjectState.Cancelled) {
+            // Process final staking and cleanup logic
+            _finalizeProjectStaking(projectId);
         }
         
-        // Create new comment
-        Comment memory newComment = Comment({
-            author: msg.sender,
-            timestamp: uint48(block.timestamp),
-            content: comment
-        });
+        // Update project state
+        project.state = newState;
         
-        // Add comment to appropriate page
-        if (currentPageCount == 0 || lastPageItemCount == COMMENTS_PER_PAGE) {
-            // Start a new page
-            currentPageCount++;
-            projectCommentsPages[projectId][currentPageCount - 1] = new Comment[](0);
-        }
-        
-        projectCommentsPages[projectId][currentPageCount - 1].push(newComment);
-        projectCommentsPageCount[projectId] = currentPageCount;
+        emit ProjectStateChanged(projectId, currentState, newState);
     }
     
-    function getProjectCommentsPage(uint256 projectId, uint256 pageNumber) 
-        external 
-        view 
-        override 
-        returns (Comment[] memory) 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (pageNumber >= projectCommentsPageCount[projectId]) revert PageDoesNotExist();
+    function _finalizeProjectStaking(uint256 projectId) internal {
+        // Handle any final staking logic, rewards, etc.
+        // This could distribute final rewards or clean up staking positions
         
-        return projectCommentsPages[projectId][pageNumber];
+        // For now, we'll just emit an event
+        emit ProjectStakingFinalized(projectId);
     }
     
-    // ====================================================
-    // 🔹 Impact Reporting & Verification
-    // ====================================================
-    
-    function submitImpactReport(
+    function updateStakingMultiplier(
         uint256 projectId,
-        uint256 impactValue,
-        string calldata ipfsMetadataHash,
-        string calldata reportingPeriod,
-        bytes32 reportHash
-    ) external override nonReentrant whenNotPaused {
+        uint32 newMultiplier
+    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        if (newMultiplier == 0) revert InvalidStakingMultiplier();
         
-        // Only owner, users with permission, or validators/governance can submit reports
-        if (
-            msg.sender != projectStateData[projectId].owner && 
-            !projectPermissions[projectId][msg.sender][SUBMIT_REPORTS_PERMISSION] &&
-            !hasRole(VALIDATOR_ROLE, msg.sender) &&
-            !hasRole(GOVERNANCE_ROLE, msg.sender)
-        ) {
-            revert NotAuthorized();
+        ProjectStateData storage project = projectStateData[projectId];
+        
+        // Ensure project isn't in a terminal state
+        if (project.state == ProjectState.Completed || 
+            project.state == ProjectState.Cancelled) {
+            revert ProjectInTerminalState();
         }
         
-        // Collect reporting fee (50% Burn, 45% Treasury, 5% Buyback)
-        if (!_collectFee(msg.sender, fees.impactReportingFee)) revert FeeTransferFailed();
+        // Update multiplier
+        uint32 oldMultiplier = project.stakingMultiplier;
+        project.stakingMultiplier = newMultiplier;
         
-        // Create impact report
-        ImpactReport memory newReport = ImpactReport({
-            reporter: msg.sender,
-            timestamp: uint48(block.timestamp),
-            impactValue: impactValue,
-            ipfsMetadataHash: ipfsMetadataHash,
-            reportingPeriod: reportingPeriod,
-            reportHash: reportHash,
-            verified: false,
-            verifier: address(0),
-            verificationDate: 0
-        });
-        
-        // Add to project's impact reports
-        projectImpactReports[projectId].push(newReport);
-        
-        // Update last reported value
-        projectStateData[projectId].lastReportedValue = impactValue;
-        
-        // Update project analytics
-        projectAnalytics[projectId].totalReports++;
-        projectAnalytics[projectId].cumulativeImpact += impactValue;
-        projectAnalytics[projectId].lastReportDate = uint48(block.timestamp);
-        
-        emit ImpactReported(projectId, projectImpactReports[projectId].length - 1, reportHash, msg.sender);
+        emit StakingMultiplierUpdated(projectId, oldMultiplier, newMultiplier);
     }
     
-    function verifyImpactReport(
-        uint256 projectId, 
-        uint256 reportIndex, 
-        bool approved,
-        string calldata verificationComment
+    // ====================================================
+    // 🔹 Verification, Validation & Impact Reporting
+    // ====================================================
+    
+    function verifyProject(
+        uint256 projectId,
+        address verifier,
+        string calldata verificationDetails,
+        bytes32 documentHash
     ) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
-        ImpactReport[] storage reports = projectImpactReports[projectId];
-        if (reportIndex >= reports.length) revert InvalidReportIndex();
-        if (reports[reportIndex].verified) revert ReportAlreadyVerified();
-        
-        // Update verification status
-        reports[reportIndex].verified = approved;
-        reports[reportIndex].verifier = msg.sender;
-        reports[reportIndex].verificationDate = uint48(block.timestamp);
-        
-        // Store verification comment
-        projectVerificationComments[projectId][reportIndex] = verificationComment;
-        
-        // Update project analytics
-        if (approved) {
-            projectAnalytics[projectId].verifiedReports++;
-            projectAnalytics[projectId].verifiedImpact += reports[reportIndex].impactValue;
+        // Fee handling
+        uint256 verificationFee = fees.verificationFee;
+        if (verificationFee > 0) {
+            bool success = tStakeToken.transferFrom(msg.sender, address(this), verificationFee);
+            if (!success) revert TokenTransferFailed();
             
-            // Add to reward pool based on impact and staking multiplier
-            uint256 rewardAmount = reports[reportIndex].impactValue * projectStateData[projectId].stakingMultiplier / 100;
-            projectStateData[projectId].rewardPool += rewardAmount;
-            projectStateData[projectId].accumulatedRewards += rewardAmount;
+            // Update fee collections
+            totalFeesCollected += verificationFee;
+            feesByType[FeeType.Verification] += verificationFee;
             
-            emit RewardsAccumulated(projectId, rewardAmount);
+            emit FeeCollected(projectId, FeeType.Verification, verificationFee);
         }
         
-        emit ImpactVerified(projectId, reportIndex, msg.sender, approved);
+        // Create or update verification record
+        projectVerifications[projectId] = VerificationRecord({
+            verifier: verifier,
+            verificationDate: uint48(block.timestamp),
+            verificationDetails: verificationDetails,
+            documentHash: documentHash
+        });
+        
+        emit ProjectVerified(projectId, verifier, documentHash);
+    }
+    
+    function submitImpactReport(
+        uint256 projectId,
+        string calldata reportTitle,
+        string calldata reportDetails,
+        bytes32 ipfsReportHash,
+        uint256 impactMetricValue
+    ) external override nonReentrant whenNotPaused {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        // Ensure project is active
+        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
+        
+        // Fee handling
+        uint256 reportingFee = fees.impactReportingFee;
+        if (reportingFee > 0) {
+            bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
+            if (!success) revert TokenTransferFailed();
+            
+            // Update fee collections
+            totalFeesCollected += reportingFee;
+            feesByType[FeeType.ImpactReporting] += reportingFee;
+            
+            emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
+        }
+        
+        // Create impact report
+        impactReportCounter++;
+        uint256 reportId = impactReportCounter;
+        
+        impactReports[reportId] = ImpactReport({
+            projectId: projectId,
+            reporter: msg.sender,
+            timestamp: uint48(block.timestamp),
+            title: reportTitle,
+            details: reportDetails,
+            ipfsHash: ipfsReportHash,
+            metricValue: impactMetricValue,
+            validated: false
+        });
+        
+        projectImpactReports[projectId].push(reportId);
+        
+        emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
+    }
+    
+    function validateImpactReport(
+        uint256 reportId,
+        bool isValid,
+        string calldata validationNotes
+    ) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
+        ImpactReport storage report = impactReports[reportId];
+        
+        // Check if report exists
+        if (report.timestamp == 0) revert InvalidReportId();
+        
+        // Check if already validated
+        if (report.validated) revert ReportAlreadyValidated();
+        
+        // Update validation status
+        report.validated = isValid;
+        
+        // Store validation
+        reportValidations[reportId] = ReportValidation({
+            validator: msg.sender,
+            validationTime: uint48(block.timestamp),
+            validationNotes: validationNotes,
+            isValid: isValid
+        });
+        
+        // Update project impact metrics if valid
+        if (isValid) {
+            uint256 projectId = report.projectId;
+            totalValidatedImpact[projectId] += report.metricValue;
+            
+            // Apply category weight to the impact value for weighted metrics
+            ProjectCategory category = projectStateData[projectId].category;
+            uint256 weight = categoryInfo[category].impactWeight;
+            uint256 weightedImpact = (report.metricValue * weight) / 100;
+            
+            totalWeightedImpact[projectId] += weightedImpact;
+        }
+        
+        emit ImpactReportValidated(reportId, report.projectId, msg.sender, isValid);
     }
     
     // ====================================================
-    // 🔹 Project Staking
+    // 🔹 Staking & Rewards
     // ====================================================
     
-    function stakeInProject(uint256 projectId, uint256 amount) external override nonReentrant whenNotPaused {
+    function stakeOnProject(
+        uint256 projectId,
+        uint256 amount
+    ) external override nonReentrant whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (amount == 0) revert ZeroAmount();
-        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
+        
+        // Ensure project is in an active state for staking
+        ProjectState state = projectStateData[projectId].state;
+        if (state != ProjectState.Active) revert ProjectNotActive();
+        
+        // Check for minimum stake amount
+        if (amount < minimumStakeAmount) revert StakeTooSmall();
         
         // Transfer tokens from user to contract
-        tStakeToken.safeTransferFrom(msg.sender, address(this), amount);
+        bool success = tStakeToken.transferFrom(msg.sender, address(this), amount);
+        if (!success) revert TokenTransferFailed();
         
         // Update staking records
-        if (projectStakes[projectId][msg.sender] == 0) {
-            projectStakers[projectId].push(msg.sender);
-            userStakedProjects[msg.sender].push(projectId);
-            lastRewardClaim[projectId][msg.sender] = block.timestamp;
-        }
+        userStakes[msg.sender][projectId] += amount;
+        totalStakedOnProject[projectId] += amount;
+        totalStakedByUser[msg.sender] += amount;
+        totalStaked += amount;
         
-        projectStakes[projectId][msg.sender] += amount;
-        projectStateData[projectId].totalStaked += amount;
+        // Track staking history
+        stakingHistory.push(StakingAction({
+            user: msg.sender,
+            projectId: projectId,
+            amount: amount,
+            timestamp: uint48(block.timestamp),
+            actionType: StakingActionType.Stake
+        }));
         
-        // Grant staker role if they don't have it
+        // Grant staker role if this is their first stake
         if (!hasRole(STAKER_ROLE, msg.sender)) {
             _grantRole(STAKER_ROLE, msg.sender);
         }
         
-        emit Staked(projectId, msg.sender, amount);
+        emit ProjectStaked(projectId, msg.sender, amount);
     }
-    
-    function unstakeFromProject(uint256 projectId, uint256 amount) external override nonReentrant {
+        function unstakeFromProject(
+        uint256 projectId,
+        uint256 amount
+    ) external override nonReentrant whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (amount == 0) revert ZeroAmount();
-        if (projectStakes[projectId][msg.sender] < amount) revert InsufficientStake();
         
-        // Claim any pending rewards first
-        _claimRewards(projectId);
+        // Check if user has enough staked
+        uint256 userStake = userStakes[msg.sender][projectId];
+        if (userStake < amount) revert InsufficientStake();
         
         // Update staking records
-        projectStakes[projectId][msg.sender] -= amount;
-        projectStateData[projectId].totalStaked -= amount;
+        userStakes[msg.sender][projectId] -= amount;
+        totalStakedOnProject[projectId] -= amount;
+        totalStakedByUser[msg.sender] -= amount;
+        totalStaked -= amount;
         
-        // Remove from tracking arrays if completely unstaked
-        if (projectStakes[projectId][msg.sender] == 0) {
-            _removeFromStakers(projectId, msg.sender);
-            _removeFromUserStakedProjects(msg.sender, projectId);
-        }
+        // Track unstaking history
+        stakingHistory.push(StakingAction({
+            user: msg.sender,
+            projectId: projectId,
+            amount: amount,
+            timestamp: uint48(block.timestamp),
+            actionType: StakingActionType.Unstake
+        }));
         
-        // Transfer tokens back to user
-        tStakeToken.safeTransfer(msg.sender, amount);
+        // Transfer tokens from contract to user
+        bool success = tStakeToken.transfer(msg.sender, amount);
+        if (!success) revert TokenTransferFailed();
         
-        emit Unstaked(projectId, msg.sender, amount);
+        emit ProjectUnstaked(projectId, msg.sender, amount);
     }
     
-    function claimProjectRewards(uint256 projectId) external override nonReentrant {
+    function calculateRewards(
+        address user,
+        uint256 projectId
+    ) external view override returns (uint256) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
-        uint256 rewards = _claimRewards(projectId);
-        if (rewards == 0) revert NoRewardsAvailable();
+        uint256 userStake = userStakes[user][projectId];
+        if (userStake == 0) return 0;
+        
+        // Get staking multiplier for this project
+        uint32 multiplier = projectStateData[projectId].stakingMultiplier;
+        
+        // Calculate base rewards based on time staked, amount, and project multiplier
+        uint256 baseRewards = _calculateBaseRewards(user, projectId, userStake, multiplier);
+        
+        // Apply impact performance bonus if applicable
+        uint256 impactBonus = _calculateImpactBonus(projectId, baseRewards);
+        
+        return baseRewards + impactBonus;
+    }
+    
+    function _calculateBaseRewards(
+        address user,
+        uint256 projectId,
+        uint256 userStake,
+        uint32 multiplier
+    ) internal view returns (uint256) {
+        // Get the earliest staking action for this user and project
+        uint48 stakingStartTime = type(uint48).max;
+        
+        for (uint256 i = 0; i < stakingHistory.length; i++) {
+            StakingAction memory action = stakingHistory[i];
+            if (action.user == user && action.projectId == projectId && action.actionType == StakingActionType.Stake) {
+                if (action.timestamp < stakingStartTime) {
+                    stakingStartTime = action.timestamp;
+                }
+            }
+        }
+        
+        // Calculate staking duration in days (minimum 1 day for calculation purposes)
+        uint256 stakingDuration = block.timestamp > stakingStartTime 
+            ? (block.timestamp - stakingStartTime) / 1 days 
+            : 1;
+        
+        // Base annual reward rate: 5% (500 basis points)
+        uint256 baseRewardRate = 500;
+        
+        // Apply multiplier (scaled to basis points, where 100 = 1x)
+        uint256 adjustedRate = (baseRewardRate * multiplier) / 100;
+        
+        // Calculate daily reward rate
+        uint256 dailyRate = adjustedRate / 365;
+        
+        // Calculate rewards based on stake amount, daily rate and duration
+        // Formula: (stake * dailyRate * duration) / 10000
+        return (userStake * dailyRate * stakingDuration) / 10000;
+    }
+    
+    function _calculateImpactBonus(
+        uint256 projectId,
+        uint256 baseRewards
+    ) internal view returns (uint256) {
+        // Get total validated impact
+        uint256 impact = totalValidatedImpact[projectId];
+        
+        // Get impact targets
+        uint256 targetImpact = projectTargets[projectId].impactTarget;
+        
+        // If no target set or impact is zero, no bonus
+        if (targetImpact == 0 || impact == 0) return 0;
+        
+        // Calculate achievement percentage (capped at 150%)
+        uint256 achievementPercentage = (impact * 100) / targetImpact;
+        achievementPercentage = achievementPercentage > 150 ? 150 : achievementPercentage;
+        
+        // Bonus starts at 5% achievement, maxes at 50% bonus at 150% achievement
+        if (achievementPercentage < 5) return 0;
+        
+        // Scale bonus from 0-50% based on achievement
+        uint256 bonusPercentage = ((achievementPercentage - 5) * 50) / 145;
+        
+        // Apply bonus to base rewards
+        return (baseRewards * bonusPercentage) / 100;
+    }
+    
+    function claimRewards(
+        uint256 projectId
+    ) external override nonReentrant whenNotPaused {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        // Get claimable rewards
+        uint256 rewards = this.calculateRewards(msg.sender, projectId);
+        if (rewards == 0) revert NoRewardsToClaim();
+        
+        // Reset last claimed timestamp
+        lastRewardClaim[msg.sender][projectId] = uint48(block.timestamp);
+        
+        // Update total rewards claimed
+        totalRewardsClaimed += rewards;
+        userRewardsClaimed[msg.sender] += rewards;
         
         // Transfer rewards to user
-        tStakeToken.safeTransfer(msg.sender, rewards);
+        bool success = tStakeToken.transfer(msg.sender, rewards);
+        if (!success) revert TokenTransferFailed();
         
         emit RewardsClaimed(projectId, msg.sender, rewards);
     }
     
-    function _claimRewards(uint256 projectId) internal returns (uint256) {
-        uint256 stakedAmount = projectStakes[projectId][msg.sender];
-        if (stakedAmount == 0) return 0;
-        
-        uint256 lastClaim = lastRewardClaim[projectId][msg.sender];
-        uint256 timeSinceLastClaim = block.timestamp - lastClaim;
-        
-        // Must have staked for at least 1 day
-        if (timeSinceLastClaim < MIN_CLAIM_PERIOD) return 0;
-        
-        // Calculate time-based rewards: stake * days * daily rate
-        uint256 timeReward = stakedAmount * timeSinceLastClaim * TIME_REWARD_RATE / (100 * 1 days);
-        
-        // Calculate impact-based rewards: proportional share of verified impact
-        uint256 impactReward = 0;
-        if (projectStateData[projectId].totalStaked > 0 && projectStateData[projectId].rewardPool > 0) {
-            impactReward = projectStateData[projectId].rewardPool * stakedAmount / projectStateData[projectId].totalStaked;
-            
-            // Reduce the reward pool
-            projectStateData[projectId].rewardPool -= impactReward;
-        }
-        
-        // Update last claim time
-        lastRewardClaim[projectId][msg.sender] = block.timestamp;
-        
-        // Total rewards = time-based + impact-based
-        return timeReward + impactReward;
-    }
-    
-    function _removeFromStakers(uint256 projectId, address staker) internal {
-        address[] storage stakers = projectStakers[projectId];
-        for (uint256 i = 0; i < stakers.length; i++) {
-            if (stakers[i] == staker) {
-                stakers[i] = stakers[stakers.length - 1];
-                stakers.pop();
-                break;
-            }
-        }
-    }
-    
-    function _removeFromUserStakedProjects(address user, uint256 projectId) internal {
-        uint256[] storage projects = userStakedProjects[user];
-        for (uint256 i = 0; i < projects.length; i++) {
-            if (projects[i] == projectId) {
-                projects[i] = projects[projects.length - 1];
-                projects.pop();
-                break;
-            }
-        }
-    }
-    
-    // ====================================================
-    // 🔹 REC Management
-    // ====================================================
-    
-    function registerREC(
-        uint256 projectId, 
-        uint256 mwhAmount, 
-        string calldata generation_period,
-        string calldata location,
-        bytes32 recId
-    ) external nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
+    function setProjectTargets(
+        uint256 projectId,
+        uint256 impactTarget,
+        uint256 stakingTarget
+    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
         
-        // Create new REC
-        RECData memory newREC = RECData({
-            mwhAmount: mwhAmount,
-            generationPeriod: generation_period,
-            location: location,
-            recId: recId,
-            issueDate: uint48(block.timestamp),
-            owner: projectStateData[projectId].owner,
-            active: true,
-            retired: false,
-            retirementPurpose: "",
-            retirementDate: 0,
-            externalRegistryId: ""
+        projectTargets[projectId] = ProjectTargets({
+            impactTarget: impactTarget,
+            stakingTarget: stakingTarget
         });
         
-        // Add to project's RECs
-        projectRECs[projectId].push(newREC);
-        
-        // Add to project analytics
-        projectAnalytics[projectId].totalRECs++;
-        projectAnalytics[projectId].totalMWh += mwhAmount;
+        emit ProjectTargetsSet(projectId, impactTarget, stakingTarget);
     }
     
-    function retireREC(uint256 projectId, uint256 recIndex, string calldata purpose) 
-        external 
-        nonReentrant 
-        whenNotPaused 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        RECData[] storage recs = projectRECs[projectId];
-        if (recIndex >= recs.length) revert RECNotFound();
-        if (!recs[recIndex].active || recs[recIndex].retired) revert RECNotActive();
-        if (recs[recIndex].owner != msg.sender) revert NotRECOwner();
-        
-        // Update REC status
-        recs[recIndex].retired = true;
-        recs[recIndex].active = false;
-        recs[recIndex].retirementPurpose = purpose;
-        recs[recIndex].retirementDate = uint48(block.timestamp);
-        
-        // Update project analytics
-        projectAnalytics[projectId].retiredRECs++;
-        projectAnalytics[projectId].retiredMWh += recs[recIndex].mwhAmount;
-        
-        emit RECRetired(projectId, recs[recIndex].recId, msg.sender, purpose);
-    }
-    
-    function transferREC(uint256 projectId, uint256 recIndex, address newOwner) 
-        external 
-        nonReentrant 
-        whenNotPaused 
-    {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (newOwner == address(0)) revert InvalidAddress();
-        
-        RECData[] storage recs = projectRECs[projectId];
-        if (recIndex >= recs.length) revert RECNotFound();
-        if (!recs[recIndex].active || recs[recIndex].retired) revert RECNotActive();
-        if (recs[recIndex].owner != msg.sender) revert NotRECOwner();
-        
-        // Transfer ownership
-        address previousOwner = recs[recIndex].owner;
-        recs[recIndex].owner = newOwner;
-        
-        emit RECTransferred(projectId, recs[recIndex].recId, previousOwner, newOwner);
-    }
-    
-    function syncRECWithExternalRegistry(
-        uint256 projectId, 
-        uint256 recIndex, 
-        string calldata externalId
-    ) external nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        RECData[] storage recs = projectRECs[projectId];
-        if (recIndex >= recs.length) revert RECNotFound();
-        
-        // Update external registry ID
-        recs[recIndex].externalRegistryId = externalId;
-        
-        emit RECRegistrySync(projectId, recs[recIndex].recId, externalId);
-    }
-    
-    // ====================================================
-    // 🔹 Project Verification
-    // ====================================================
-    
-    function verifyProject(
-        uint256 projectId, 
-        string calldata verificationStandard, 
-        bytes32 documentHash
-    ) external nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        // Record verification data
-        projectValidations[projectId] = ValidationData({
-            validator: msg.sender,
-            validationDate: uint48(block.timestamp),
-            validStandard: verificationStandard,
-            documentHash: documentHash
-        });
-        
-        // Update project verification
-        projectVerifications[projectId] = VerificationData({
-            verifier: msg.sender,
-            verificationDate: uint48(block.timestamp),
-            verificationStandard: verificationStandard,
-            documentHash: documentHash
-        });
-        
-        emit ProjectVerified(projectId, msg.sender, verificationStandard, documentHash);
+    function setMinimumStakeAmount(
+        uint256 amount
+    ) external override onlyRole(GOVERNANCE_ROLE) {
+        minimumStakeAmount = amount;
+        emit MinimumStakeAmountSet(amount);
     }
     
     // ====================================================
@@ -1117,231 +1200,527 @@ contract TerraStakeProjects is
     // ====================================================
     
     function updateFeeStructure(
-        uint256 projectFee,
-        uint256 reportingFee,
-        uint256 categoryChangeFee,
-        uint256 verificationFee
-    ) external onlyRole(GOVERNANCE_ROLE) {
+        uint256 newProjectSubmissionFee,
+        uint256 newImpactReportingFee,
+        uint256 newVerificationFee,
+        uint256 newCategoryChangeFee
+    ) external override onlyRole(GOVERNANCE_ROLE) {
         fees = FeeStructure({
-            projectSubmissionFee: projectFee,
-            impactReportingFee: reportingFee,
-            categoryChangeFee: categoryChangeFee,
-            verificationFee: verificationFee
+            projectSubmissionFee: newProjectSubmissionFee,
+            impactReportingFee: newImpactReportingFee,
+            verificationFee: newVerificationFee,
+            categoryChangeFee: newCategoryChangeFee
         });
         
-        emit FeeStructureUpdated(projectFee, reportingFee, verificationFee, categoryChangeFee);
+        emit FeeStructureUpdated(
+            newProjectSubmissionFee,
+            newImpactReportingFee,
+            newVerificationFee,
+            newCategoryChangeFee
+        );
     }
     
-    function _collectFee(address payer, uint256 feeAmount) internal returns (bool) {
-        if (feeAmount == 0) return true;
+    function withdrawFees(
+        address recipient, 
+        uint256 amount
+    ) external override nonReentrant onlyRole(TREASURY_ROLE) {
+        if (recipient == address(0)) revert InvalidAddress();
+        if (amount == 0) revert InvalidAmount();
         
-        // Transfer fees from payer to contract
-        bool success = tStakeToken.transferFrom(payer, address(this), feeAmount);
-        if (!success) return false;
+        // Check available fees to withdraw
+        uint256 availableFees = totalFeesCollected - totalFeesWithdrawn;
+        if (amount > availableFees) revert InsufficientFees();
         
-        // Calculate fee distribution
-        uint256 burnAmount = feeAmount * 50 / 100;     // 50% burn
-        uint256 treasuryAmount = feeAmount * 45 / 100; // 45% to treasury
-        uint256 buybackAmount = feeAmount * 5 / 100;   // 5% for buyback
+        // Update withdrawn amount
+        totalFeesWithdrawn += amount;
         
-        // Burn tokens
-        tStakeToken.transfer(DEAD_ADDRESS, burnAmount);
+        // Transfer fees to recipient
+        bool success = tStakeToken.transfer(recipient, amount);
+        if (!success) revert TokenTransferFailed();
         
-        // Send to treasury if configured
-        if (treasuryAddress != address(0)) {
-            tStakeToken.transfer(treasuryAddress, treasuryAmount);
-        } else {
-            // If treasury not set, add to buyback amount
-            buybackAmount += treasuryAmount;
-        }
-        
-        // Add to buyback funds
-        accumulatedBuybackFunds += buybackAmount;
-        
-        emit FeeCollected(payer, feeAmount, burnAmount, treasuryAmount, buybackAmount);
-        emit TokensBurned(burnAmount);
-        
-        return true;
-    }
-    
-    function executeBuyback() external onlyRole(TREASURY_ROLE) nonReentrant {
-        if (accumulatedBuybackFunds == 0) revert NoBuybackFunds();
-        
-        uint256 amount = accumulatedBuybackFunds;
-        accumulatedBuybackFunds = 0;
-        
-        // In a real implementation, this would interact with a liquidity pool
-        // For this example, we'll just emit the event
-        emit BuybackExecuted(amount);
+        emit FeesWithdrawn(recipient, amount);
     }
     
     // ====================================================
-    // 🔹 Administrative Functions
+    // 🔹 Query & View Functions
     // ====================================================
     
-    function setTreasuryAddress(address _treasuryAddress) external onlyRole(GOVERNANCE_ROLE) {
-        if (_treasuryAddress == address(0)) revert InvalidAddress();
-        treasuryAddress = _treasuryAddress;
-        emit TreasuryAddressSet(_treasuryAddress);
-    }
-    
-    function toggleEmergencyMode() external onlyRole(GOVERNANCE_ROLE) {
-        emergencyMode = !emergencyMode;
-        
-        if (emergencyMode) {
-            _pause();
-            emit EmergencyModeActivated(msg.sender);
-        } else {
-            _unpause();
-            emit EmergencyModeDeactivated(msg.sender);
-        }
-        
-        emit EmergencyModeToggled(emergencyMode);
-    }
-    
-    function recoverTokens(address token, uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        if (token == address(0)) revert InvalidAddress();
-        if (amount == 0) revert ZeroAmount();
-        
-        // For native token, can't be the system token
-        if (token == address(tStakeToken)) {
-            // Calculate maximum recoverable amount (excluding staked tokens and rewards)
-            uint256 maxRecoverable = tStakeToken.balanceOf(address(this)) - accumulatedBuybackFunds;
-            
-            for (uint256 i = 0; i < _activeProjects.length; i++) {
-                uint256 projectId = _activeProjects[i];
-                maxRecoverable -= projectStateData[projectId].totalStaked;
-                maxRecoverable -= projectStateData[projectId].rewardPool;
-            }
-            
-            if (amount > maxRecoverable) revert ExceedsRecoverableAmount();
-        }
-        
-        // Transfer tokens to treasury
-        if (token == address(0)) {
-            // Native token (ETH)
-            payable(treasuryAddress).transfer(amount);
-        } else {
-            // ERC20 tokens
-            IERC20(token).safeTransfer(treasuryAddress, amount);
-        }
-        
-        emit TokensRecovered(token, treasuryAddress, amount);
-    }
-    
-    // ====================================================
-    // 🔹 View Functions
-    // ====================================================
-    
-    function getProjectMetadata(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (ProjectData memory) 
-    {
+    function getProjectMetadata(
+        uint256 projectId
+    ) external view override returns (ProjectMetadata memory) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectMetadata[projectId];
     }
     
-    function getProjectStateData(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (ProjectStateData memory) 
-    {
+    function getProjectState(
+        uint256 projectId
+    ) external view override returns (ProjectStateData memory) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectStateData[projectId];
     }
     
-    function getProjectAnalytics(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (ProjectAnalytics memory) 
-    {
-        return projectAnalytics[projectId];
+    function getProjectVerification(
+        uint256 projectId
+    ) external view override returns (VerificationRecord memory) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        return projectVerifications[projectId];
     }
     
-    function getProjectsByOwner(address owner) 
-        external 
-        view 
-        override 
-        returns (uint256[] memory) 
-    {
-        return _projectsByOwner[owner];
+    function getImpactReport(
+        uint256 reportId
+    ) external view override returns (ImpactReport memory) {
+        if (impactReports[reportId].timestamp == 0) revert InvalidReportId();
+        return impactReports[reportId];
     }
     
-    function getProjectsByCategory(ProjectCategory category) 
-        external 
-        view 
-        override 
-        returns (uint256[] memory) 
-    {
-        return _projectsByCategory[category];
-    }
-    
-    function getActiveProjects() 
-        external 
-        view 
-        override 
-        returns (uint256[] memory) 
-    {
-        return _activeProjects;
-    }
-    
-    function getProjectImpactReports(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (ImpactReport[] memory) 
-    {
+    function getProjectImpactReports(
+        uint256 projectId
+    ) external view override returns (uint256[] memory) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectImpactReports[projectId];
     }
     
-    function getStakersForProject(uint256 projectId) 
-        external 
-        view 
-        override 
-        returns (address[] memory) 
-    {
-        return projectStakers[projectId];
+    function getReportValidation(
+        uint256 reportId
+    ) external view override returns (ReportValidation memory) {
+        if (impactReports[reportId].timestamp == 0) revert InvalidReportId();
+        return reportValidations[reportId];
     }
     
-    function getUserStakedProjects(address user) 
-        external 
-        view 
-        override 
-        returns (uint256[] memory) 
-    {
-        return userStakedProjects[user];
+    function getProjectsByCategory(
+        ProjectCategory category
+    ) external view override returns (uint256[] memory) {
+        return projectsByCategory[category];
     }
     
-    function calculatePendingRewards(uint256 projectId, address staker) 
-        external 
-        view 
-        override 
-        returns (uint256) 
-    {
-        uint256 stakedAmount = projectStakes[projectId][staker];
-        if (stakedAmount == 0) return 0;
+    function getAllProjectIds() external view override returns (uint256[] memory) {
+        return allProjectIds;
+    }
+    
+    function getProjectCount() external view override returns (uint256) {
+        return projectCounter;
+    }
+    
+    function getCategoryInfo(
+        ProjectCategory category
+    ) external view override returns (CategoryInfo memory) {
+        return categoryInfo[category];
+    }
+    
+    function getStakedAmount(
+        address user,
+        uint256 projectId
+    ) external view override returns (uint256) {
+        return userStakes[user][projectId];
+    }
+    
+    function getTotalStakedByUser(
+        address user
+    ) external view override returns (uint256) {
+        return totalStakedByUser[user];
+    }
+    
+    function getTotalStakedOnProject(
+        uint256 projectId
+    ) external view override returns (uint256) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        return totalStakedOnProject[projectId];
+    }
+    
+    function getProjectTargets(
+        uint256 projectId
+    ) external view override returns (ProjectTargets memory) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        return projectTargets[projectId];
+    }
+    
+    function getTotalValidatedImpact(
+        uint256 projectId
+    ) external view override returns (uint256) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        return totalValidatedImpact[projectId];
+    }
+    
+    function getTotalWeightedImpact(
+        uint256 projectId
+    ) external view override returns (uint256) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        return totalWeightedImpact[projectId];
+    }
+    
+    function getFeeStructure() external view override returns (FeeStructure memory) {
+        return fees;
+    }
+    
+    function getTotalFeesCollected() external view override returns (uint256) {
+        return totalFeesCollected;
+    }
+    
+    function getTotalFeesWithdrawn() external view override returns (uint256) {
+        return totalFeesWithdrawn;
+    }
+    
+    function getFeesByType(
+        FeeType feeType
+    ) external view override returns (uint256) {
+        return feesByType[feeType];
+    }
+    
+    // ====================================================
+    // 🔹 Admin & Emergency Functions
+    // ====================================================
+    
+    function pause() external override onlyRole(GOVERNANCE_ROLE) {
+        _pause();
+        emit ContractPaused(msg.sender);
+    }
+    
+    function unpause() external override onlyRole(GOVERNANCE_ROLE) {
+        _unpause();
+        emit ContractUnpaused(msg.sender);
+    }
+    
+    function recoverERC20(
+        address tokenAddress,
+        address to,
+        uint256 amount
+    ) external override nonReentrant onlyRole(GOVERNANCE_ROLE) {
+        // Prevent recovering the primary TSTAKE token
+        if (tokenAddress == terraTokenAddress) revert CannotRecoverPrimaryToken();
         
-        uint256 lastClaim = lastRewardClaim[projectId][staker];
-        uint256 timeSinceLastClaim = block.timestamp - lastClaim;
+        IERC20 token = IERC20(tokenAddress);
+        bool success = token.transfer(to, amount);
+        if (!success) revert TokenTransferFailed();
         
-        // Calculate time-based rewards
-        uint256 timeReward = stakedAmount * timeSinceLastClaim * TIME_REWARD_RATE / (100 * 1 days);
-        
-        // Calculate impact-based rewards
-        uint256 impactReward = 0;
-        if (projectStateData[projectId].totalStaked > 0 && projectStateData[projectId].rewardPool > 0) {
-            impactReward = projectStateData[projectId].rewardPool * stakedAmount / projectStateData[projectId].totalStaked;
+        emit TokenRecovered(tokenAddress, to, amount);
+    }
+    
+    function setRoleAdmin(
+        bytes32 role,
+        bytes32 adminRole
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setRoleAdmin(role, adminRole);
+        emit RoleAdminChanged(role, getRoleAdmin(role), adminRole);
+    }
+    
+    // ====================================================
+    // 🔹 Implementation-specific functions
+    // ====================================================
+    
+    // Function to get staking history for a specific user
+    function getUserStakingHistory(
+        address user
+    ) external view returns (StakingAction[] memory) {
+        // Count user's actions first
+        uint256 count = 0;
+        for (uint256 i = 0; i < stakingHistory.length; i++) {
+            if (stakingHistory[i].user == user) {
+                count++;
+            }
         }
         
-        return timeReward + impactReward;
+        // Create appropriately sized array
+        StakingAction[] memory userHistory = new StakingAction[](count);
+        
+        // Fill the array
+        uint256 index = 0;
+        for (uint256 i = 0; i < stakingHistory.length; i++) {
+            if (stakingHistory[i].user == user) {
+                userHistory[index] = stakingHistory[i];
+                index++;
+            }
+        }
+        
+        return userHistory;
+    }
+    
+    // Function to get active projects (pagination supported)
+    function getActiveProjects(
+        uint256 offset,
+        uint256 limit
+    ) external view returns (uint256[] memory) {
+        // Count active projects
+        uint256 activeCount = 0;
+        for (uint256 i = 0; i < allProjectIds.length; i++) {
+            uint256 projectId = allProjectIds[i];
+            if (projectStateData[projectId].state == ProjectState.Active) {
+                activeCount++;
+            }
+        }
+        
+        // Adjust limit if needed
+        if (offset >= activeCount) {
+            return new uint256[](0);
+        }
+        
+        uint256 resultSize = (offset + limit > activeCount) ? activeCount - offset : limit;
+        uint256[] memory activeProjects = new uint256[](resultSize);
+        
+        // Fill the result array
+        uint256 index = 0;
+        uint256 skipped = 0;
+        
+        for (uint256 i = 0; i < allProjectIds.length && index < resultSize; i++) {
+            uint256 projectId = allProjectIds[i];
+            if (projectStateData[projectId].state == ProjectState.Active) {
+                if (skipped < offset) {
+                    skipped++;
+                } else {
+                    activeProjects[index] = projectId;
+                    index++;
+                }
+            }
+        }
+        
+        return activeProjects;
+    }
+    
+    // Function to get validated impact reports for a project
+    function getValidatedReports(
+        uint256 projectId
+    ) external view returns (uint256[] memory) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        uint256[] memory allReportIds = projectImpactReports[projectId];
+        
+        // Count validated reports
+        uint256 validatedCount = 0;
+        for (uint256 i = 0; i < allReportIds.length; i++) {
+            uint256 reportId = allReportIds[i];
+            if (impactReports[reportId].validated) {
+                validatedCount++;
+            }
+        }
+        
+        // Create result array
+        uint256[] memory validatedReports = new uint256[](validatedCount);
+        
+        // Fill the result array
+        uint256 index = 0;
+        for (uint256 i = 0; i < allReportIds.length; i++) {
+            uint256 reportId = allReportIds[i];
+            if (impactReports[reportId].validated) {
+                validatedReports[index] = reportId;
+                index++;
+            }
+        }
+        
+        return validatedReports;
+    }
+    
+    // Function to get project performance metrics
+    function getProjectPerformance(
+        uint256 projectId
+    ) external view returns (
+        uint256 totalStaked,
+        uint256 totalImpact,
+        uint256 stakingTargetPercentage,
+        uint256 impactTargetPercentage
+    ) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        totalStaked = totalStakedOnProject[projectId];
+        totalImpact = totalValidatedImpact[projectId];
+        
+        ProjectTargets memory targets = projectTargets[projectId];
+        
+        // Calculate percentages (100% = 10000 for precision)
+        stakingTargetPercentage = targets.stakingTarget > 0 
+            ? (totalStaked * 10000) / targets.stakingTarget 
+            : 0;
+            
+        impactTargetPercentage = targets.impactTarget > 0 
+            ? (totalImpact * 10000) / targets.impactTarget 
+            : 0;
+            
+        return (totalStaked, totalImpact, stakingTargetPercentage, impactTargetPercentage);
+    }
+    
+    // Function to get project leaderboard by impact
+    function getProjectLeaderboard(
+        uint256 limit
+    ) external view returns (
+        uint256[] memory projectIds,
+        uint256[] memory impactValues
+    ) {
+        // Limit the number of projects to return
+        uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
+        
+        // Initialize arrays
+        projectIds = new uint256[](resultSize);
+        impactValues = new uint256[](resultSize);
+        
+        // Create temporary array of project IDs and impact values
+        uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
+        uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
+        
+        // Fill temporary arrays
+        for (uint256 i = 0; i < allProjectIds.length; i++) {
+            uint256 projectId = allProjectIds[i];
+            tempProjectIds[i] = projectId;
+            tempImpactValues[i] = totalWeightedImpact[projectId];
+        }
+        
+        // Sort projects by impact (simple bubble sort)
+        for (uint256 i = 0; i < tempProjectIds.length; i++) {
+            for (uint256 j = i + 1; j < tempProjectIds.length; j++) {
+                if (tempImpactValues[i] < tempImpactValues[j]) {
+                    // Swap impact values
+                    uint256 tempImpact = tempImpactValues[i];
+                    tempImpactValues[i] = tempImpactValues[j];
+                    tempImpactValues[j] = tempImpact;
+                    
+                    // Swap project IDs
+                    uint256 tempId = tempProjectIds[i];
+                    tempProjectIds[i] = tempProjectIds[j];
+                    tempProjectIds[j] = tempId;
+                }
+            }
+        }
+        
+        // Take the top 'resultSize' projects
+        for (uint256 i = 0; i < resultSize; i++) {
+            projectIds[i] = tempProjectIds[i];
+            impactValues[i] = tempImpactValues[i];
+        }
+        
+        return (projectIds, impactValues);
+    }
+    
+    // Function to generate a summary of the platform
+    function getPlatformSummary() external view returns (
+        uint256 numberOfProjects,
+        uint256 activeProjects,
+        uint256 totalStakedAmount,
+        uint256 totalImpactGenerated,
+        uint256 totalRewards,
+        uint256 numberOfStakers
+    ) {
+        numberOfProjects = projectCounter;
+        
+        // Count active projects
+        for (uint256 i = 0; i < allProjectIds.length; i++) {
+            if (projectStateData[allProjectIds[i]].state == ProjectState.Active) {
+                activeProjects++;
+            }
+        }
+        
+        totalStakedAmount = totalStaked;
+        
+        // Sum impact across all projects
+        for (uint256 i = 0; i < allProjectIds.length; i++) {
+            totalImpactGenerated += totalValidatedImpact[allProjectIds[i]];
+        }
+        
+        totalRewards = totalRewardsClaimed;
+        
+        // Count unique stakers (approximate using role - not perfect but efficient)
+        numberOfStakers = _getRoleMemberCount(STAKER_ROLE);
+        
+        return (
+            numberOfProjects,
+            activeProjects,
+            totalStakedAmount,
+            totalImpactGenerated,
+            totalRewards,
+            numberOfStakers
+        );
+    }
+    
+    // Helper function to efficiently get count of role members
+    function _getRoleMemberCount(bytes32 role) internal view returns (uint256) {
+        return getRoleMemberCount(role);
     }
     
     // ====================================================
-    // 🔹 Receive Function
+    // 🔹 External Configuration Functions
     // ====================================================
     
-    // Allow contract to receive ETH
-    receive() external payable {}
+    function updateCategoryInfo(
+        ProjectCategory category,
+        string calldata name,
+        string calldata description,
+        string[] calldata standardBodies,
+        string[] calldata metricUnits,
+        string calldata verificationStandard,
+        uint8 impactWeight
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        // Validate impact weight
+        if (impactWeight == 0 || impactWeight > 100) revert InvalidImpactWeight();
+        
+        // Update category info
+        categoryInfo[category] = CategoryInfo({
+            name: name,
+            description: description,
+            standardBodies: standardBodies,
+            metricUnits: metricUnits,
+            verificationStandard: verificationStandard,
+            impactWeight: impactWeight
+        });
+        
+        emit CategoryInfoUpdated(category, name, impactWeight);
+    }
+    
+    // ====================================================
+    // 🔹 Analytics & Reporting Functions
+    // ====================================================
+    
+    function getUserAnalytics(
+        address user
+    ) external view returns (
+        uint256 totalStaked,
+        uint256 totalRewardsClaimed,
+        uint256 projectsStaked,
+        uint256 averageStakePerProject
+    ) {
+        totalStaked = totalStakedByUser[user];
+        totalRewardsClaimed = userRewardsClaimed[user];
+        
+        // Count projects with active stakes
+        for (uint256 i = 0; i < allProjectIds.length; i++) {
+            uint256 projectId = allProjectIds[i];
+            if (userStakes[user][projectId] > 0) {
+                projectsStaked++;
+            }
+        }
+        
+        // Calculate average stake per project
+        averageStakePerProject = projectsStaked > 0 ? totalStaked / projectsStaked : 0;
+        
+        return (
+            totalStaked,
+            totalRewardsClaimed,
+            projectsStaked,
+            averageStakePerProject
+        );
+    }
+    
+    // Function to get fee analytics
+    function getFeeAnalytics() external view onlyRole(TREASURY_ROLE) returns (
+        uint256 totalFees,
+        uint256 projectSubmissionFees,
+        uint256 impactReportingFees,
+        uint256 verificationFees,
+        uint256 categoryChangeFees,
+        uint256 feesWithdrawn,
+        uint256 feesAvailable
+    ) {
+        totalFees = totalFeesCollected;
+        projectSubmissionFees = feesByType[FeeType.ProjectSubmission];
+        impactReportingFees = feesByType[FeeType.ImpactReporting];
+        verificationFees = feesByType[FeeType.Verification];
+        categoryChangeFees = feesByType[FeeType.CategoryChange];
+        feesWithdrawn = totalFeesWithdrawn;
+        feesAvailable = totalFees - feesWithdrawn;
+        
+        return (
+            totalFees,
+            projectSubmissionFees,
+            impactReportingFees,
+            verificationFees,
+            categoryChangeFees,
+            feesWithdrawn,
+            feesAvailable
+        );
+    }
 }
