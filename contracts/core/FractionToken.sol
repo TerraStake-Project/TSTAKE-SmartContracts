@@ -53,7 +53,7 @@ contract FractionToken is ERC20, ERC20Burnable, ERC20Permit {
  * @dev Combined contract for fractionalization of TerraStake NFTs and governance
  * with integrated multisig and oracle-based pricing
  */
-contract FractionTokene is 
+contract FractionToken is 
     ERC1155Holder, 
     AccessControl, 
     ReentrancyGuard, 
