@@ -2,7 +2,8 @@
 pragma solidity 0.8.28;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 
 /**
  * @title ITerraStakeAccessControl
