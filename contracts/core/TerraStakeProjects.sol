@@ -99,6 +99,55 @@ contract TerraStakeProjects is
     
     // Category requirements tracking
     mapping(ProjectCategory => ImpactRequirement) public categoryRequirements;
+
+    // Impact report structures
+    struct ImpactRequirements {
+        uint32 minStakingPeriod;
+        uint32 reportingFrequency;
+        uint32 verificationThreshold;
+        uint32 impactDataFormat;
+        bool requiresAudit;
+    }
+
+    // Report statuses
+    enum ReportStatus {
+        Submitted,
+        Validated,
+        Rejected,
+        Pending
+    }
+
+    struct ProjectVerification {
+        uint256 verificationDate;
+        address verifier;
+        bytes32 verificationDataHash;
+        bool isVerified;
+        string verifierNotes;
+        uint256 lastVerificationTime;
+    }
+
+    struct UserStake {
+        uint256 amount;
+        uint256 adjustedAmount;
+        uint256 stakedAt;
+        uint256 lastRewardUpdate;
+        uint256 claimedRewards;
+        bool isStaking;
+    }
+
+    struct ImpactReport {
+        uint256 timestamp;
+        address reporter;
+        bytes32 reportDataHash;
+        string reportURI;
+        string description;
+        uint256 measuredValue;
+        string measurement;
+        ReportStatus status;
+        address validator;
+        string validatorNotes;
+        uint256 validationTime;
+    }
     
     // Granular permission system for project owners and collaborators
     mapping(uint256 => mapping(address => mapping(bytes32 => bool))) public projectPermissions;
@@ -787,7 +836,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  Verification, Validation & Impact Reporting
+    // 🔹 Verification, Validation & Impact Reporting
     // ====================================================
     
     function verifyProject(
@@ -908,7 +957,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  Staking & Rewards
+    // 🔹 Staking & Rewards
     // ====================================================
     
     function stakeOnProject(
@@ -1159,7 +1208,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  Query & View Functions
+    // 🔹 Query & View Functions
     // ====================================================
     
     function getProjectMetadata(
@@ -1284,7 +1333,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  Admin & Emergency Functions
+    // 🔹 Admin & Emergency Functions
     // ====================================================
     
     function pause() external override onlyRole(GOVERNANCE_ROLE) {
@@ -1321,7 +1370,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  Implementation-specific functions
+    // 🔹 Implementation-specific functions
     // ====================================================
     
     // Function to get staking history for a specific user
@@ -1550,7 +1599,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  External Configuration Functions
+    // 🔹 External Configuration Functions
     // ====================================================
     
     function updateCategoryInfo(
@@ -1579,7 +1628,7 @@ contract TerraStakeProjects is
     }
     
     // ====================================================
-    //  Analytics & Reporting Functions
+    // 🔹 Analytics & Reporting Functions
     // ====================================================
     
     function getUserAnalytics(

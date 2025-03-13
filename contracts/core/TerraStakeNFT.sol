@@ -776,9 +776,7 @@ contract TerraStakeNFT is
     function getTokenMetadata(uint256 tokenId)
         external
         view
-        returns
-
-        (NFTMetadata memory)
+        returns (NFTMetadata memory)
     {
         if (!exists(tokenId)) revert InvalidTokenId();
         return tokenMetadata[tokenId];
@@ -1041,8 +1039,6 @@ contract TerraStakeNFT is
                 }
             }
         }
-
-
     }
 
     /**

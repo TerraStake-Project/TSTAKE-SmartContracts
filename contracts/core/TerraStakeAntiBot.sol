@@ -27,6 +27,7 @@ contract AntiBot is
     // ================================
     //  Custom Errors
     // ================================
+
     error InvalidPriceOracle();
     error TransactionThrottled(address user, uint256 cooldownEnds);
     error TimelockNotExpired(address account, uint256 unlockTime);
@@ -41,6 +42,7 @@ contract AntiBot is
     // ================================
     //  Role Management
     // ================================
+
     bytes32 public constant BOT_ROLE = keccak256("BOT_ROLE");
     bytes32 public constant CONFIG_MANAGER_ROLE = keccak256("CONFIG_MANAGER_ROLE");
     bytes32 public constant TRANSACTION_MONITOR_ROLE = keccak256("TRANSACTION_MONITOR_ROLE");
@@ -51,6 +53,7 @@ contract AntiBot is
     // ================================
     //  Security Parameters
     // ================================
+
     bool public isAntibotEnabled = true;
     bool public isBuybackPaused = false;
     bool public isCircuitBreakerTriggered = false;
@@ -79,6 +82,7 @@ contract AntiBot is
     // ================================
     //  Events for Transparency
     // ================================
+
     event AntibotStatusUpdated(bool isEnabled);
     event BlockThresholdUpdated(uint256 newThreshold);
     event BuybackPaused(bool status);
@@ -87,7 +91,7 @@ contract AntiBot is
     event EmergencyCircuitBreakerReset(address indexed admin, bytes32 indexed callerRole); // Log caller's role
     event AddressExempted(address indexed account);
     event ExemptionRevoked(address indexed account, bytes32 indexed callerRole); // Log caller's role
-    event TransactionThrottledEvent(address indexed from, uint256 blockNumber, uint256 cooldownEnds); // Renamed event
+    event TransactionThrottled(address indexed from, uint256 blockNumber, uint256 cooldownEnds);
     event TrustedContractAdded(address indexed contractAddress);
     event TrustedContractRemoved(address indexed contractAddress, bytes32 indexed callerRole); // Log caller's role
     event PriceImpactThresholdUpdated(uint256 newThreshold);
@@ -141,18 +145,18 @@ contract AntiBot is
     // ================================
     //  Transaction Throttling
     // ================================
+
     modifier checkThrottle(address from) {
         if (isAntibotEnabled && !_isExempt(from)) {
             // Use local variable to reduce SLOADs
             uint256 cooldown = userCooldown[from];
             uint256 threshold = cooldown > 0 ? cooldown : blockThreshold;
-            
+
             if (block.timestamp <= cooldown + (threshold * 12)) { // Use block.timestamp directly
                 uint256 cooldownEnds = cooldown + (threshold * 12);
-                emit TransactionThrottledEvent(from, block.number, cooldownEnds); // Updated event name
+                emit TransactionThrottled(from, block.number, cooldownEnds);
                 revert TransactionThrottled(from, cooldownEnds);
             }
-            
             // Optimized SSTORE: Only write if the value has changed
             if(cooldown != block.timestamp){
                 userCooldown[from] = block.timestamp;
@@ -225,13 +229,12 @@ contract AntiBot is
         // Use block.timestamp directly and local variables to reduce gas
         uint256 currentTime = block.timestamp;
         if (currentTime < lastPriceCheckTime + priceCheckCooldown) return;
-        
+
         int256 currentPrice = _getLatestPrice();
-        
         // Calculate price change using integers to avoid floating-point math
         int256 priceChange = ((currentPrice - lastCheckedPrice) * 100) / lastCheckedPrice;
+
         int256 oldPrice = lastCheckedPrice;
-        
         // Optimized SSTOREs
         if(lastCheckedPrice != currentPrice){
             lastCheckedPrice = currentPrice;
@@ -253,7 +256,7 @@ contract AntiBot is
             isBuybackPaused = false; // No need to check, always change if reached here
             emit BuybackPaused(false);
         }
-        
+
         _checkCircuitBreaker(currentPrice, priceChange);
     }
 
