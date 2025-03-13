@@ -1,4 +1,5 @@
-/**
+/**Missing functions for TerraStakeTreasuryManager
+/** 
  * @notice Process fees from project submission or impact reporting
  * @param feeType The type of fee: 1 for project submission, 2 for impact reporting
  * @param amount The amount of USDC to collect
