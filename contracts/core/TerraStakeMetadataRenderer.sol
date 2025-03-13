@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0
-
 pragma solidity 0.8.28;
 
-import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {Base64Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/Base64Upgradeable.sol";
-import {StringsUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol";
-import "./interfaces/ITerraStakeMetadataRenderer.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/utils/Base64.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "../interfaces/ITerraStakeMetadataRenderer.sol";
 
 /**
  * @title TerraStakeMetadataRenderer (Enhanced)
@@ -20,7 +19,7 @@ contract TerraStakeMetadataRenderer is
     UUPSUpgradeable,
     ITerraStakeMetadataRenderer 
 {
-    using StringsUpgradeable for uint256;
+    using Strings for uint256;
     
     bytes32 public constant PROJECTS_CONTRACT_ROLE = keccak256("PROJECTS_CONTRACT_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -114,16 +113,17 @@ contract TerraStakeMetadataRenderer is
         
         // Initialize SVG template with placeholders for optimization
         _svgTemplate = string(abi.encodePacked(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 100 100">',
-            '<defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="{{PRIMARY_COLOR}}"/><stop offset="100%" stop-color="{{SECONDARY_COLOR}}"/></linearGradient></defs>',
-            '<rect width="100" height="100" fill="url(#bg)" rx="5" ry="5"/>',
-            '<g id="icon" fill="none" stroke="white" stroke-width="1.5">{{ICON}}</g>',
-            '<text x="50" y="20" font-family="Arial" font-size="4" fill="white" text-anchor="middle">{{CATEGORY_NAME}}</text>',
-            '<text x="50" y="90" font-family="Arial" font-size="3" fill="white" text-anchor="middle">{{PROJECT_ID}}</text>',
-            '<circle cx="50" cy="50" r="{{IMPACT_SIZE}}" fill="white" fill-opacity="0.3">{{ANIMATION}}</circle>',
-            '<text x="50" y="52" font-family="Arial" font-size="5" fill="white" text-anchor="middle" font-weight="bold">{{IMPACT_VALUE}}</text>',
-            '<text x="50" y="58" font-family="Arial" font-size="2" fill="white" text-anchor="middle">{{IMPACT_UNIT}}</text>',
-            '</svg>'
+          '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 100 100">',
+          '<defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="{{PRIMARY_COLOR}}"/>',
+          '<stop offset="100%" stop-color="{{SECONDARY_COLOR}}"/></linearGradient></defs>',
+          '<rect width="100" height="100" fill="url(#bg)" rx="5" ry="5"/>',
+          '<g id="icon" fill="none" stroke="white" stroke-width="1.5">{{ICON}}</g>',
+          '<text x="50" y="20" font-family="Arial" font-size="4" fill="white" text-anchor="middle">{{CATEGORY_NAME}}</text>',
+          '<text x="50" y="90" font-family="Arial" font-size="3" fill="white" text-anchor="middle">{{PROJECT_ID}}</text>',
+          '<circle cx="50" cy="50" r="{{IMPACT_SIZE}}" fill="white" fill-opacity="0.3">{{ANIMATION}}</circle>',
+          '<text x="50" y="52" font-family="Arial" font-size="5" fill="white" text-anchor="middle" font-weight="bold">{{IMPACT_VALUE}}</text>',
+          '<text x="50" y="58" font-family="Arial" font-size="2" fill="white" text-anchor="middle">{{IMPACT_UNIT}}</text>',
+          '</svg>'
         ));
     }
     
@@ -253,7 +253,7 @@ contract TerraStakeMetadataRenderer is
         }
         
         // Encode SVG as base64
-        string memory encodedSVG = Base64Upgradeable.encode(bytes(svgImage));
+        string memory encodedSVG = Base64.encode(bytes(svgImage));
         
         // Generate attributes with optional interactive trait
         string memory attributes;
@@ -275,7 +275,7 @@ contract TerraStakeMetadataRenderer is
         // Generate and return full JSON metadata
         return string(abi.encodePacked(
             'data:application/json;base64,',
-            Base64Upgradeable.encode(bytes(abi.encodePacked(
+            Base64.encode(bytes(abi.encodePacked(
                 '{"name":"', projectName, ' #', tokenId.toString(), '",',
                 '"description":"', projectDescription, '",',
                 '"image":"data:image/svg+xml;base64,', encodedSVG, '",',
@@ -317,11 +317,6 @@ contract TerraStakeMetadataRenderer is
         ];
         
         string[9] memory replacements = [
-            primaryColor,
-            secondaryColor,
-            _categoryIcons[category],
-            _categoryNames[category],
-            string(abi.encodePacked("Token #", tokenId.toString()
             primaryColor,
             secondaryColor,
             _categoryIcons[category],
@@ -447,14 +442,14 @@ contract TerraStakeMetadataRenderer is
         uint256 foundIndex;
         
         for (uint256 i = 0; i <= sourceBytes.length - placeholderBytes.length; i++) {
-            bool match = true;
+            bool ismatch = true;
             for (uint256 j = 0; j < placeholderBytes.length; j++) {
                 if (sourceBytes[i + j] != placeholderBytes[j]) {
-                    match = false;
+                    ismatch = false;
                     break;
                 }
             }
-            if (match) {
+            if (ismatch) {
                 found = true;
                 foundIndex = i;
                 break;
@@ -781,6 +776,7 @@ contract TerraStakeMetadataRenderer is
     }
     
     /**
+
      * @notice Update the entire SVG template
      * @param newTemplate New SVG template with placeholders
      */
@@ -1007,61 +1003,4 @@ contract TerraStakeMetadataRenderer is
         override 
         onlyRole(UPGRADER_ROLE) 
     {}
-    
-    // =====================================================
-    // Events
-    // =====================================================
-    
-    event CategoryColorsUpdated(
-        uint8 indexed category,
-        string primaryColor,
-        string secondaryColor
-    );
-    
-    event CategoryIconUpdated(
-        uint8 indexed category,
-        string svgPath
-    );
-    
-    event CategoryNameUpdated(
-        uint8 indexed category,
-        string name
-    );
-    
-    event ScalingFactorUpdated(
-        uint8 indexed category,
-        uint256 factor
-    );
-    
-    event MaxScalingFactorUpdated(
-        uint256 maxFactor
-    );
-    
-    event AnimationUpdated(
-        uint8 indexed category,
-        string animation
-    );
-    
-    event SizeLimitsUpdated(
-        uint256 minSize,
-        uint256 maxSize
-    );
-    
-    event TemplateUpdated();
-    
-    event CategoryConfigured(
-        uint8 indexed category,
-        string name,
-        string primaryColor,
-        string secondaryColor,
-        string icon,
-        uint256 scalingFactor
-    );
-    
-    event InteractiveModeSet(bool enabled);
-    
-    event InteractiveElementsSet(
-        uint8 indexed category,
-        string elements
-    );
 }

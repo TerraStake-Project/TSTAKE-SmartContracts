@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/contracts-5.0/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title ITerraStakeAccessControl
@@ -11,7 +11,7 @@ import "@openzeppelin/contracts-5.0/token/ERC20/IERC20.sol";
  */
 interface ITerraStakeAccessControl {
     // ====================================================
-    // 🔹 Role Constants
+    //  Role Constants
     // ====================================================
     function MINTER_ROLE() external view returns (bytes32);
     function GOVERNANCE_ROLE() external view returns (bytes32);
@@ -25,7 +25,7 @@ interface ITerraStakeAccessControl {
     function DISTRIBUTION_ROLE() external view returns (bytes32);
     
     // ====================================================
-    // 🔹 Structs
+    //  Structs
     // ====================================================
     struct RoleInfo {
         bytes32 id;           // Role identifier
@@ -35,7 +35,7 @@ interface ITerraStakeAccessControl {
     }
     
     // ====================================================
-    // 🔹 Events
+    //  Events
     // ====================================================
     event RoleGrantedWithExpiration(bytes32 indexed role, address indexed account, uint256 expiration);
     event RoleRequirementUpdated(bytes32 indexed role, uint256 oldRequirement, uint256 newRequirement);
@@ -51,7 +51,7 @@ interface ITerraStakeAccessControl {
     event TokenConfigurationUpdated(address indexed token, string tokenType);
     
     // ====================================================
-    // 🔹 Functions
+    //  Functions
     // ====================================================
     function initialize(
         address admin,

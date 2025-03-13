@@ -1,24 +1,18 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
-
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/IAccessControlEnumerableUpgradeable.sol";
 
 /**
  * @title ITerraStakeStaking
- * @notice Interface for TerraStake staking contract with governance, liquidity protection, and upgradeability.
+ * @dev Interface for the TerraStake staking system
  */
-interface ITerraStakeStaking is IAccessControlEnumerableUpgradeable {
-    // ================================
-    // 🔹 Data Structures
-    // ================================
-    
+interface ITerraStakeStaking {
+    // Structs
     struct StakingPosition {
-        uint256 amount;
-        uint256 lastCheckpoint;
-        uint256 stakingStart;
-        uint256 duration;
         uint256 projectId;
+        uint256 amount;
+        uint256 stakingStart;
+        uint256 lastCheckpoint;
+        uint256 duration;
         bool isLPStaker;
         bool hasNFTBoost;
         bool autoCompounding;
@@ -26,129 +20,101 @@ interface ITerraStakeStaking is IAccessControlEnumerableUpgradeable {
     
     struct StakingTier {
         uint256 minDuration;
-        uint256 rewardMultiplier;
-        bool governanceRights;
+        uint256 multiplier;
+        bool hasVotingRights;
     }
     
-    // ================================
-    // 🔹 Token & Liquidity Management
-    // ================================
+    struct PenaltyEvent {
+        uint256 projectId;
+        uint256 timestamp;
+        uint256 totalPenalty;
+        uint256 redistributed;
+        uint256 burned;
+        uint256 toLiquidity;
+    }
     
-    function stakingToken() external view returns (address);
-    function rewardDistributor() external view returns (address);
-    function liquidityPool() external view returns (address);
-    function liquidityInjectionRate() external view returns (uint256);
-    function autoLiquidityEnabled() external view returns (bool);
-    function updateLiquidityInjectionRate(uint256 newRate) external;
-    function toggleAutoLiquidity() external;
+    struct PositionWithTier {
+        StakingPosition position;
+        uint256 currentTier;
+        uint256 nextTier;
+        uint256 timeToNextTier;
+        uint256 pendingRewards;
+        uint256 remainingLockTime;
+    }
     
-    // ================================
-    // 🔹 Staking Functions
-    // ================================
+    // Events
+    event Staked(address indexed user, uint256 indexed projectId, uint256 amount, uint256 duration, uint256 timestamp, uint256 totalStaked);
+    event Unstaked(address indexed user, uint256 indexed projectId, uint256 amount, uint256 penalty, uint256 timestamp);
+    event RewardClaimed(address indexed user, uint256 indexed projectId, uint256 amount, uint256 timestamp);
+    event RewardCompounded(address indexed user, uint256 indexed projectId, uint256 amount, uint256 timestamp);
+    event PenaltyApplied(address indexed user, uint256 indexed projectId, uint256 totalPenalty, uint256 burned, uint256 redistributed, uint256 toLiquidity);
+    event LiquidityInjected(address indexed liquidityPool, uint256 amount, uint256 timestamp);
+    event ValidatorAdded(address indexed validator, uint256 timestamp);
+    event ValidatorStatusChanged(address indexed validator, bool isActive);
+    event ValidatorCommissionUpdated(address indexed validator, uint256 newCommission);
+    event ValidatorRewardsDistributed(address indexed validator, uint256 amount);
+    event ValidatorRewardsAccumulated(uint256 amount, uint256 newTotal);
+    event ProposalVoted(uint256 indexed proposalId, address indexed voter, uint256 weight, bool support);
+    event GovernanceProposalCreated(uint256 indexed proposalId, address indexed creator, string description);
+    event GovernanceViolatorMarked(address indexed violator, uint256 timestamp);
+    event TiersUpdated(uint256[] minDurations, uint256[] multipliers, bool[] votingRights);
+    event LiquidityInjectionRateUpdated(uint256 newRate);
+    event AutoLiquidityToggled(bool enabled);
+    event ValidatorThresholdUpdated(uint256 newThreshold);
+    event RewardDistributorUpdated(address indexed newDistributor);
+    event LiquidityPoolUpdated(address indexed newPool);
+    event TokenRecovered(address indexed token, uint256 amount, address recipient);
+    event Slashed(address indexed validator, uint256 amount, uint256 timestamp);
     
-    function stake(
-        uint256 projectId,
-        uint256 amount,
-        uint256 duration,
-        bool isLP,
-        bool autoCompound
-    ) external;
-    
+    // Core staking functions
+    function stake(uint256 projectId, uint256 amount, uint256 duration, bool isLP, bool autoCompound) external;
+    function batchStake(uint256[] calldata projectIds, uint256[] calldata amounts, uint256[] calldata durations, bool[] calldata isLP, bool[] calldata autoCompound) external;
     function unstake(uint256 projectId) external;
+    function batchUnstake(uint256[] calldata projectIds) external;
     function claimRewards(uint256 projectId) external;
+    
+    // Validator functions
+    function becomeValidator() external;
+    function claimValidatorRewards() external;
+    function updateValidatorCommission(uint256 newCommissionRate) external;
+    
+    // Governance functions
+    function voteOnProposal(uint256 proposalId, bool support) external;
+    function createProposal(string calldata description, address[] calldata targets, uint256[] calldata values, bytes[] calldata calldatas) external;
+    function markGovernanceViolator(address violator) external;
+    
+    // Admin functions
+    function updateTiers(uint256[] calldata minDurations, uint256[] calldata multipliers, bool[] calldata votingRights) external;
+    function setLiquidityInjectionRate(uint256 newRate) external;
+    function toggleAutoLiquidity(bool enabled) external;
+    function setValidatorThreshold(uint256 newThreshold) external;
+    function setRewardDistributor(address newDistributor) external;
+    function setLiquidityPool(address newPool) external;
+    function pause() external;
+    function unpause() external;
+    function recoverERC20(address token) external returns (bool);
+    function slash(address validator, uint256 amount) external returns (bool);
+    
+    // View functions
     function calculateRewards(address user, uint256 projectId) external view returns (uint256);
-    
-    // ================================
-    // 🔹 Governance & Validator Functions
-    // ================================
-    
+    function getApplicableTier(uint256 duration) external view returns (uint256);
+    function getUserStake(address user, uint256 projectId) external view returns (uint256);
+    function getUserTotalStake(address user) external view returns (uint256);
+    function getUserPositions(address user) external view returns (StakingPosition[] memory);
+    function getUserPositionsWithTiers(address user) external view returns (PositionWithTier[] memory);
+    function getPenaltyHistory(address user) external view returns (PenaltyEvent[] memory);
+    function isValidator(address user) external view returns (bool);
+    function getValidatorCommission(address validator) external view returns (uint256);
+    function isGovernanceViolator(address user) external view returns (bool);
     function getGovernanceVotes(address user) external view returns (uint256);
-    function hasGovernanceRights(address user) external view returns (bool);
-    function isValidator(address account) external view returns (bool);
-    function addValidator(address validator) external;
-    function removeValidator(address validator) external;
-    function slashValidator(address validator, uint256 amount) external returns (bool);
-    function getValidatorThreshold() external view returns (uint256);
-    function getValidatorCount() external view returns (uint256);
-    function updateValidatorThreshold(uint256 newThreshold) external;
-    
-    // ================================
-    // 🔹 Halving Mechanism
-    // ================================
-    
+    function slashGovernanceVote(address user) external view returns (uint256);
+    function getTotalStaked() external view returns (uint256);
+    function getValidatorRewardPool() external view returns (uint256);
+    function getAllTiers() external view returns (StakingTier[] memory);
+    function getBatchUserStakes(address[] calldata users, uint256 projectId) external view returns (uint256[] memory);
+    function getTopStakers(uint256 limit) external view returns (address[] memory stakers, uint256[] memory amounts);
+    function getActiveStakers() external view returns (address[] memory);
     function halvingPeriod() external view returns (uint256);
     function lastHalvingTime() external view returns (uint256);
     function halvingEpoch() external view returns (uint256);
-    function applyHalving() external;
-    function updateHalvingPeriod(uint256 newPeriod) external;
-    
-    // ================================
-    // 🔹 Security & Emergency Functions
-    // ================================
-    
-    function toggleEmergencyPause(bool paused) external;
-    function recoverERC20(address token, uint256 amount, address recipient) external;
-    
-    // ================================
-    // 🔹 Tier Management
-    // ================================
-    
-    function addStakingTier(
-        uint256 minDuration,
-        uint256 rewardMultiplier,
-        bool governanceRights
-    ) external;
-    
-    function updateStakingTier(
-        uint256 tierId,
-        uint256 minDuration,
-        uint256 rewardMultiplier,
-        bool governanceRights
-    ) external;
-    
-    function getStakingTiers() external view returns (StakingTier[] memory);
-    function getTierMultiplier(uint256 duration) external view returns (uint256);
-    
-    // ================================
-    // 🔹 View Functions
-    // ================================
-    
-    function getTotalStaked() external view returns (uint256);
-    function getTotalStakedByUser(address user) external view returns (uint256);
-    function getUserStakingPositions(address user) external view returns (
-        uint256[] memory projectIds,
-        StakingPosition[] memory positions
-    );
-    function getDynamicAPR(bool isLP, bool hasNFT) external view returns (uint256);
-    function getCurrentBaseAPR() external view returns (uint256);
-    function getProtocolStats() external view returns (
-        uint256 totalStaked,
-        uint256 validators,
-        uint256 stakersCount,
-        uint256 currentAPR
-    );
-    function version() external pure returns (string memory);
-    
-    // ================================
-    // 🔹 Events
-    // ================================
-    
-    event Staked(address indexed user, uint256 indexed projectId, uint256 amount, uint256 duration);
-    event Unstaked(address indexed user, uint256 indexed projectId, uint256 amount, uint256 penalty);
-    event RewardsDistributed(address indexed user, uint256 indexed projectId, uint256 amount);
-    event RewardsCompounded(address indexed user, uint256 indexed projectId, uint256 amount);
-    event ValidatorStatusChanged(address indexed validator, bool status);
-    event ValidatorSlashed(address indexed validator, uint256 amount);
-    event LiquidityInjected(uint256 amount);
-    event LiquidityInjectionRateUpdated(uint256 newRate);
-    event AutoLiquidityToggled(bool status);
-    event GovernanceRightsUpdated(address indexed user, bool hasRights);
-    event HalvingApplied(uint256 newEpoch, uint256 adjustedAPR);
-    event HalvingPeriodUpdated(uint256 newPeriod);
-    event EmergencyPauseToggled(bool paused);
-    event StakingTierAdded(uint256 indexed tierId, uint256 minDuration, uint256 rewardMultiplier, bool governanceRights);
-    event StakingTierUpdated(uint256 indexed tierId, uint256 minDuration, uint256 rewardMultiplier, bool governanceRights);
-    event ValidatorThresholdUpdated(uint256 newThreshold);
-    event ERC20Recovered(address indexed token, uint256 amount, address indexed recipient);
-    event SlashingContractUpdated(address indexed slashingContract);
 }

@@ -9,7 +9,7 @@ pragma solidity 0.8.28;
  */
 interface ITerraStakeProjects {
     // ====================================================
-    // 📋 Enums
+    //  Enums
     // ====================================================
     
     /**
@@ -42,21 +42,29 @@ interface ITerraStakeProjects {
         Archived,
         Rejected
     }
-    
+    // Report statuses
+    enum ReportStatus {
+        Submitted,
+        Validated,
+        Rejected,
+        Pending
+    }
+
     // ====================================================
-    // 📋 Structs
+    //  Structs
     // ====================================================
     
     /**
      * @notice Core project metadata
      */
-    struct ProjectData {
+    struct ProjectMetaData {
         string name;
         string description;
         string location;
         string impactMetrics;
         bytes32 ipfsHash;
         bool exists;
+        uint48 creationTime;
     }
     
     /**
@@ -81,12 +89,11 @@ interface ITerraStakeProjects {
      * @notice Additional project metadata fields
      */
     struct GeneralMetadata {
-        string[] tags;
-        string[] contacts;
-        uint256 establishedDate;
-        uint256 expectedCompletionDate;
-        string iconUri;
-        string imageUri;
+        string website;
+        string[] team;
+        string[] partners;
+        string[] socialMedia;
+        uint256 lastUpdated;
     }
     
     /**
@@ -103,8 +110,9 @@ interface ITerraStakeProjects {
      */
     struct ValidationData {
         address validator;
-        uint256 validationDate;
-        bytes32 validationReportHash;
+        uint48 validationTime;
+        string validationNotes;
+        bool isValid;
     }
     
     /**
@@ -113,7 +121,9 @@ interface ITerraStakeProjects {
     struct VerificationData {
         address verifier;
         uint256 verificationDate;
-        bytes32 verificationReportHash;
+        bytes32 verificationDocumentHash;
+        bool isVerified;
+        string verifierNotes;
     }
     
     /**
@@ -125,15 +135,22 @@ interface ITerraStakeProjects {
         uint256 stakingEfficiency;
         uint256 communityEngagement;
     }
-    
+
     /**
      * @notice Impact report structure
      */
     struct ImpactReport {
-        uint256 periodStart;
-        uint256 periodEnd;
-        uint256[] metrics;
-        bytes32 reportHash;
+        uint256 timestamp;
+        address reporter;
+        bytes32 reportDataHash;
+        string reportURI;
+        string description;
+        uint256 measuredValue;
+        string measurement;
+        ReportStatus status;
+        address validator;
+        string validatorNotes;
+        uint256 validationTime;
     }
     
     /**
@@ -177,9 +194,55 @@ interface ITerraStakeProjects {
         uint256 categoryChangeFee;
         uint256 verificationFee;
     }
+
+    // Project document handling
+    struct ProjectDocument {
+        string name;
+        string docType;
+        bytes32 ipfsHash;
+        uint256 timestamp;
+        address uploader;
+    }
+
+    // Impact report structures
+    struct ImpactRequirements {
+        uint32 minStakingPeriod;
+        uint32 reportingFrequency;
+        uint32 verificationThreshold;
+        uint32 impactDataFormat;
+        bool requiresAudit;
+    }
+
+    struct ProjectVerification {
+        uint256 verificationDate;
+        address verifier;
+        bytes32 verificationDataHash;
+        bool isVerified;
+        string verifierNotes;
+        uint256 lastVerificationTime;
+    }
+
+    struct UserStake {
+        uint256 amount;
+        uint256 adjustedAmount;
+        uint256 stakedAt;
+        uint256 lastRewardUpdate;
+        uint256 claimedRewards;
+        bool isStaking;
+    }
+
+    // Custom data structure to store real-world category information
+    struct CategoryInfo {
+        string name;
+        string description;
+        string[] standardBodies;
+        string[] metricUnits;
+        string verificationStandard;
+        uint256 impactWeight;
+    }
     
     // ====================================================
-    // 📣 Events
+    //  Events
     // ====================================================
     
     /**
@@ -303,7 +366,7 @@ interface ITerraStakeProjects {
     );
     
     // ====================================================
-    // 🔹 Core Functions
+    //  Core Functions
     // ====================================================
     
     /**
@@ -637,7 +700,7 @@ interface ITerraStakeProjects {
         external 
         view 
         returns (
-            ProjectData[] memory metadata,
+            ProjectMetaData[] memory metadata,
             ProjectStateData[] memory state,
             ProjectAnalytics[] memory analytics
         );

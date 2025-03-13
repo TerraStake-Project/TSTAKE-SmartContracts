@@ -1,11 +1,13 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "../interfaces/ITerraStakeGuardianCouncil.sol";
+
 
 /**
  * @title TerraStakeGuardianCouncil
@@ -22,7 +24,7 @@ contract TerraStakeGuardianCouncil is
     using ECDSA for bytes32;
     
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -36,7 +38,7 @@ contract TerraStakeGuardianCouncil is
     bytes4 public constant GUARDIAN_OVERRIDE = bytes4(keccak256("GUARDIAN_OVERRIDE"));
     
     // -------------------------------------------
-    // 🔹 State Variables
+    //  State Variables
     // -------------------------------------------
     
     // Guardian configuration
@@ -57,7 +59,7 @@ contract TerraStakeGuardianCouncil is
     mapping(bytes4 => address[]) public emergencyTargets;
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event GuardianAdded(address indexed guardian);
@@ -72,7 +74,7 @@ contract TerraStakeGuardianCouncil is
     event EmergencyActionAttempt(bytes4 operationType, bool success);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     
     error Unauthorized();
@@ -87,7 +89,7 @@ contract TerraStakeGuardianCouncil is
     error EmergencyActionFailed();
     
     // -------------------------------------------
-    // 🔹 Initializer & Upgrade Control
+    //  Initializer & Upgrade Control
     // -------------------------------------------
     
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -139,7 +141,7 @@ contract TerraStakeGuardianCouncil is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
-    // 🔹 Guardian Management Functions
+    //  Guardian Management Functions
     // -------------------------------------------
     
     /**
@@ -266,7 +268,7 @@ contract TerraStakeGuardianCouncil is
     }
     
     // -------------------------------------------
-    // 🔹 Emergency Target Management
+    //  Emergency Target Management
     // -------------------------------------------
     
     /**
@@ -314,7 +316,7 @@ contract TerraStakeGuardianCouncil is
     }
     
     // -------------------------------------------
-    // 🔹 Signature Verification and Guardian Override
+    //  Signature Verification and Guardian Override
     // -------------------------------------------
     
     /**
@@ -338,7 +340,7 @@ contract TerraStakeGuardianCouncil is
     function validateGuardianSignatures(
         bytes4 operation,
         address target,
-        bytes calldata data,
+        bytes memory data,
         bytes[] calldata signatures,
         uint256 timestamp
     ) public view returns (bool) {
@@ -375,7 +377,7 @@ contract TerraStakeGuardianCouncil is
             // Check if signer is a guardian and not a duplicate
             if (guardianCouncil[signer]) {
                 // Check for duplicates
-bool isDuplicate = false;
+                 bool isDuplicate = false;
                 for (uint256 j = 0; j < validSignatureCount; j++) {
                     if (signers[j] == signer) {
                         isDuplicate = true;
@@ -597,7 +599,7 @@ bool isDuplicate = false;
     }
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     /**

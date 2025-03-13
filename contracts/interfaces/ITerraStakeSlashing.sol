@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 /**
@@ -7,7 +7,7 @@ pragma solidity 0.8.28;
  */
 interface ITerraStakeSlashing {
     // -------------------------------------------
-    // 🔹 Structs
+    //  Structs
     // -------------------------------------------
     
     struct SlashProposal {
@@ -23,7 +23,7 @@ interface ITerraStakeSlashing {
     }
     
     // -------------------------------------------
-    // 🔹 Core Functions
+    //  Core Functions
     // -------------------------------------------
     
     function createSlashProposal(
@@ -49,7 +49,7 @@ interface ITerraStakeSlashing {
     function recoverERC20(address token, uint256 amount) external;
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     function getSlashProposal(uint256 proposalId) external view returns (SlashProposal memory);
@@ -87,7 +87,7 @@ interface ITerraStakeSlashing {
     );
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event SlashProposalCreated(

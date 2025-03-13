@@ -1,15 +1,15 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-import "./interfaces/ITerraStakeSlashing.sol";
-import "./interfaces/ITerraStakeGovernance.sol";
-import "./interfaces/ITerraStakeStaking.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "../interfaces/ITerraStakeSlashing.sol";
+import "../interfaces/ITerraStakeGovernance.sol";
+import "../interfaces/ITerraStakeStaking.sol";
 
 /**
  * @title TerraStakeSlashing
@@ -26,7 +26,7 @@ contract TerraStakeSlashing is
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -38,7 +38,7 @@ contract TerraStakeSlashing is
     uint256 public constant PERCENTAGE_DENOMINATOR = 100;
 
     // -------------------------------------------
-    // 🔹 State Variables
+    //  State Variables
     // -------------------------------------------
     
     // Core contracts
@@ -69,7 +69,7 @@ contract TerraStakeSlashing is
     bool public emergencyPaused;
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     event SlashProposalCreated(
         uint256 indexed proposalId,
@@ -100,7 +100,7 @@ contract TerraStakeSlashing is
     event CoolingOffPeriodUpdated(uint256 newPeriod);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     error Unauthorized();
     error InvalidParameters();
@@ -117,7 +117,7 @@ contract TerraStakeSlashing is
     error InsufficientValidatorStake();
     
     // -------------------------------------------
-    // 🔹 Initializer & Upgrade Control
+    //  Initializer & Upgrade Control
     // -------------------------------------------
     
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -184,7 +184,7 @@ contract TerraStakeSlashing is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
-    // 🔹 Slashing Proposal Management
+    //  Slashing Proposal Management
     // -------------------------------------------
     
     /**
@@ -206,18 +206,18 @@ contract TerraStakeSlashing is
         if (slashPercentage < MIN_SLASH_PERCENTAGE || slashPercentage > MAX_SLASH_PERCENTAGE) 
             revert InvalidSlashingAmount();
         
+        // Get validator's staked amount from staking contract
+        uint256 validatorStake = stakingContract.getValidatorStake(validator);
+
         // Check if validator is active
         if (!isActiveValidator[validator]) {
             // Try to refresh validator status from staking contract
-            uint256 validatorStake = stakingContract.getValidatorStake(validator);
             if (validatorStake == 0) revert ValidatorNotActive();
             
             // If validator has stake but wasn't marked as active, mark them now
             isActiveValidator[validator] = true;
         }
         
-        // Get validator's staked amount from staking contract
-        uint256 validatorStake = stakingContract.getValidatorStake(validator);
         if (validatorStake == 0) revert InsufficientValidatorStake();
         
         // Create the slash proposal
@@ -334,7 +334,7 @@ contract TerraStakeSlashing is
     }
     
     // -------------------------------------------
-    // 🔹 Parameter Management
+    //  Parameter Management
     // -------------------------------------------
     
     /**
@@ -394,7 +394,7 @@ contract TerraStakeSlashing is
     }
     
     // -------------------------------------------
-    // 🔹 Emergency Functions
+    //  Emergency Functions
     // -------------------------------------------
     
     /**
@@ -417,7 +417,7 @@ contract TerraStakeSlashing is
     }
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     /**
@@ -567,7 +567,7 @@ contract TerraStakeSlashing is
     }
     
     // -------------------------------------------
-    // 🔹 Internal Helper Functions
+    //  Internal Helper Functions
     // -------------------------------------------
     
     /**

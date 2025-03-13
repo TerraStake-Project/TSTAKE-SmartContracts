@@ -2,12 +2,12 @@
 pragma solidity 0.8.28;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/contracts-upgradeable-5.0/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable-5.0/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable-5.0/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable-5.0/security/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-5.0/token/ERC20/IERC20.sol";
-import "./interfaces/ITerraStakeAccessControl.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../interfaces/ITerraStakeAccessControl.sol";
 
 /**
  * @title TerraStakeAccessControl
@@ -22,13 +22,13 @@ contract TerraStakeAccessControl is
     PausableUpgradeable
 {
     // ====================================================
-    // 🔹 Constants
+    //  Constants
     // ====================================================
     // Maximum role duration set to 100 years to prevent timestamp overflow
     uint256 private constant MAX_ROLE_DURATION = 100 * 365 days;
     
     // ====================================================
-    // 🔹 State Variables
+    //  State Variables
     // ====================================================
     IERC20 private _tStakeToken;
     IERC20 private _usdc;
@@ -62,7 +62,7 @@ contract TerraStakeAccessControl is
     mapping(bytes32 => RoleInfo) private _roleInfo;
     
     // ====================================================
-    // 🔹 Errors
+    //  Errors
     // ====================================================
     error InvalidAddress();
     error InvalidDuration();
@@ -79,7 +79,7 @@ contract TerraStakeAccessControl is
     error DurationTooLong(uint256 duration, uint256 maxDuration);
 
     // ====================================================
-    // 🔹 Constructor & Initializer
+    //  Constructor & Initializer
     // ====================================================
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -91,13 +91,13 @@ contract TerraStakeAccessControl is
         address priceOracle,
         address usdcToken,
         address wethToken,
-        address tStakeToken,
+        address __tStakeToken,
         uint256 minimumLiquidity,
         uint256 minimumPrice,
         uint256 maximumPrice,
-        uint256 maxOracleDataAge
-    ) external override initializer {
-        if (admin == address(0) || tStakeToken == address(0) || 
+        uint256 __maxOracleDataAge
+    ) external initializer {
+        if (admin == address(0) || __tStakeToken == address(0) || 
             priceOracle == address(0) || usdcToken == address(0) || 
             wethToken == address(0)) revert InvalidAddress();
             
@@ -105,20 +105,20 @@ contract TerraStakeAccessControl is
         __ReentrancyGuard_init();
         __Pausable_init();
         
-        _tStakeToken = IERC20(tStakeToken);
+        _tStakeToken = IERC20(__tStakeToken);
         _usdc = IERC20(usdcToken);
         _weth = IERC20(wethToken);
         _priceFeed = AggregatorV3Interface(priceOracle);
         _minimumLiquidity = minimumLiquidity;
         _minimumPrice = minimumPrice;
         _maximumPrice = maximumPrice;
-        _maxOracleDataAge = maxOracleDataAge;
+        _maxOracleDataAge = __maxOracleDataAge;
         
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
     // ====================================================
-    // 🔹 Core Role Management Functions
+    //  Core Role Management Functions
     // ====================================================
     function grantRoleWithExpiration(
         bytes32 role, 
@@ -287,7 +287,7 @@ contract TerraStakeAccessControl is
         }
     }
     // ====================================================
-    // 🔹 Role Documentation Functions
+    //  Role Documentation Functions
     // ====================================================
     
     /**
@@ -317,7 +317,7 @@ contract TerraStakeAccessControl is
         return _roleInfo[role];
     }
     // ====================================================
-    // 🔹 Oracle and Configuration Updates
+    //  Oracle and Configuration Updates
     // ====================================================
     function updatePriceOracle(
         address newOracle
@@ -398,7 +398,7 @@ contract TerraStakeAccessControl is
         emit TokenConfigurationUpdated(token, tokenType);
     }
     // ====================================================
-    // 🔹 Pausing Functions
+    //  Pausing Functions
     // ====================================================
     function pause() external override onlyRole(PAUSER_ROLE) nonReentrant {
         _pause();
@@ -408,7 +408,7 @@ contract TerraStakeAccessControl is
         _unpause();
     }
     // ====================================================
-    // 🔹 Validation Functions
+    //  Validation Functions
     // ====================================================
     function validateWithTStakeSnapshot(
         address account,
@@ -487,7 +487,7 @@ contract TerraStakeAccessControl is
         }
     }
     // ====================================================
-    // 🔹 View Functions
+    //  View Functions
     // ====================================================
     function roleRequirements(bytes32 role) external view override returns (uint256) {
         return _roleRequirements[role];
@@ -546,4 +546,5 @@ contract TerraStakeAccessControl is
     function getMaxRoleDuration() external pure returns (uint256) {
         return MAX_ROLE_DURATION;
     }
-}
+} // End of contract TerraStakeAccessControl
+

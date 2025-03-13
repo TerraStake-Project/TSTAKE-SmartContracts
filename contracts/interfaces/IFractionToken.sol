@@ -2,9 +2,10 @@
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/KeeperCompatibleInterface.sol";
-import "./interfaces/ITerraStakeToken.sol";
-import "./interfaces/ITerraStakeNFT.sol";
+import "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
+import "./ITerraStakeToken.sol";
+import "./ITerraStakeNFT.sol";
+
 
 /**
  * @title IFractionToken

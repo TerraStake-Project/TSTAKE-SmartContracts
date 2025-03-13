@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 interface ITerraStakeToken {
     // ================================
-    // 🔹 Token & Supply Information
+    //  Token & Supply Information
     // ================================
     function MAX_SUPPLY() external view returns (uint256);
     function totalSupply() external view returns (uint256);
@@ -11,21 +11,21 @@ interface ITerraStakeToken {
     function decimals() external view returns (uint8);
 
     // ================================
-    // 🔹 Blacklist Management
+    //  Blacklist Management
     // ================================
     function setBlacklist(address account, bool status) external;
     function batchBlacklist(address[] calldata accounts, bool status) external;
     function isBlacklisted(address account) external view returns (bool);
 
     // ================================
-    // 🔹 Minting & Burning
+    //  Minting & Burning
     // ================================
     function mint(address to, uint256 amount) external;
     function burnFrom(address from, uint256 amount) external;
     function burn(uint256 amount) external;
 
     // ================================
-    // 🔹 Transfer & Allowance Functions
+    //  Transfer & Allowance Functions
     // ================================
     function transfer(address to, uint256 amount) external returns (bool);
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -33,25 +33,25 @@ interface ITerraStakeToken {
     function allowance(address owner, address spender) external view returns (uint256);
 
     // ================================
-    // 🔹 Permit Functions
+    //  Permit Functions
     // ================================
     function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
     function permitAndTransfer(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s, address to, uint256 amount) external;
 
     // ================================
-    // 🔹 Airdrop Function
+    //  Airdrop Function
     // ================================
     function airdrop(address[] calldata recipients, uint256 amount) external;
 
     // ================================
-    // 🔹 Security Functions
+    //  Security Functions
     // ================================
     function pause() external;
     function unpause() external;
     function paused() external view returns (bool);
 
     // ================================
-    // 🔹 Ecosystem Integrations
+    //  Ecosystem Integrations
     // ================================
     function updateGovernanceContract(address _governanceContract) external;
     function updateStakingContract(address _stakingContract) external;
@@ -61,7 +61,7 @@ interface ITerraStakeToken {
     function liquidityGuard() external view returns (address);
     
     // ================================
-    // 🔹 Staking Integration
+    //  Staking Integration
     // ================================
     function stakeTokens(address from, uint256 amount) external returns (bool);
     function unstakeTokens(address to, uint256 amount) external returns (bool);
@@ -69,7 +69,7 @@ interface ITerraStakeToken {
     function isGovernorPenalized(address account) external view returns (bool);
 
     // ================================
-    // 🔹 TWAP Oracle & Liquidity
+    //  TWAP Oracle & Liquidity
     // ================================
     function uniswapPool() external view returns (address);
     function getTWAPPrice(uint32 twapInterval) external returns (uint256 price);
@@ -83,7 +83,7 @@ interface ITerraStakeToken {
     );
 
     // ================================
-    // 🔹 Halving & Governance
+    //  Halving & Governance
     // ================================
     function triggerHalving() external returns (uint256);
     function getHalvingDetails() external view returns (uint256 period, uint256 lastTime, uint256 epoch);
@@ -93,7 +93,7 @@ interface ITerraStakeToken {
     function penalizeGovernanceViolator(address account) external;
 
     // ================================
-    // 🔹 Emergency Functions
+    //  Emergency Functions
     // ================================
     function emergencyWithdraw(address token, address to, uint256 amount) external;
     function emergencyWithdrawMultiple(
@@ -105,12 +105,12 @@ interface ITerraStakeToken {
     function resetCircuitBreaker() external;
 
     // ================================
-    // 🔹 Upgradeability
+    //  Upgradeability
     // ================================
     function getImplementation() external view returns (address);
 
     // ================================
-    // 🔹 Events
+    //  Events
     // ================================
     event BlacklistUpdated(address indexed account, bool status);
     event AirdropExecuted(address[] recipients, uint256 amount, uint256 totalAmount);
@@ -128,3 +128,5 @@ interface ITerraStakeToken {
     event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+

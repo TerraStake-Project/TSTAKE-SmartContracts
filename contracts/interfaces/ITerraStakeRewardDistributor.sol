@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 /**
@@ -13,6 +13,8 @@ interface ITerraStakeRewardDistributor {
      * @param amount Reward amount before halving adjustment
      */
     function distributeReward(address user, uint256 amount) external;
+
+    function claimRewards(address user) external returns(uint256);
 
     /**
      * @notice Redistribute penalties from slashed validators

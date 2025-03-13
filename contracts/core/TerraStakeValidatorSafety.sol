@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "../interfaces/ITerraStakeValidatorSafety.sol";
 
 /**
  * @title TerraStakeValidatorSafety
@@ -19,7 +20,7 @@ contract TerraStakeValidatorSafety is
     UUPSUpgradeable
 {
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -27,7 +28,7 @@ contract TerraStakeValidatorSafety is
     bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
     
     // -------------------------------------------
-    // 🔹 State Variables
+    //  State Variables
     // -------------------------------------------
     
     // Validator configuration
@@ -57,7 +58,7 @@ contract TerraStakeValidatorSafety is
     uint256 public emergencyModeCooldown;
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event ValidatorAdded(address indexed validator);
@@ -74,7 +75,7 @@ contract TerraStakeValidatorSafety is
     event EmergencyValidatorThresholdReduction(uint256 oldThreshold, uint256 newThreshold);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     
     error Unauthorized();
@@ -89,7 +90,7 @@ contract TerraStakeValidatorSafety is
     error QuorumTooHigh();
     
     // -------------------------------------------
-    // 🔹 Modifiers
+    //  Modifiers
     // -------------------------------------------
     
     /**
@@ -109,7 +110,7 @@ contract TerraStakeValidatorSafety is
     }
     
     // -------------------------------------------
-    // 🔹 Initializer & Upgrade Control
+    //  Initializer & Upgrade Control
     // -------------------------------------------
     
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -155,7 +156,7 @@ contract TerraStakeValidatorSafety is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
-    // 🔹 Validator Management Functions
+    //  Validator Management Functions
     // -------------------------------------------
     
     /**
@@ -285,7 +286,7 @@ contract TerraStakeValidatorSafety is
     }
     
     // -------------------------------------------
-    // 🔹 Risk Management Functions
+    //  Risk Management Functions
     // -------------------------------------------
     
     /**
@@ -332,7 +333,7 @@ contract TerraStakeValidatorSafety is
     }
     
     // -------------------------------------------
-    // 🔹 Emergency Functions
+    //  Emergency Functions
     // -------------------------------------------
     
     /**
@@ -397,7 +398,7 @@ contract TerraStakeValidatorSafety is
     }
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     /**

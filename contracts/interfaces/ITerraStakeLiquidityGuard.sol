@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "./ITerraStakeRewardDistributor.sol";
-import "./ITerraStakeTreasury.sol";
+import "./ITerraStakeTreasuryManager.sol";
 
 /**
  * @title ITerraStakeLiquidityGuard
@@ -48,12 +48,12 @@ interface ITerraStakeLiquidityGuard {
     event WeeklyLimitBelowRecommended(uint256 actualLimit, uint256 recommendedMinimum);
     
     // State variables access
-    function tStakeToken() external view returns (IERC20Upgradeable);
-    function usdcToken() external view returns (IERC20Upgradeable);
+    function tStakeToken() external view returns (IERC20);
+    function usdcToken() external view returns (IERC20);
     function positionManager() external view returns (INonfungiblePositionManager);
     function uniswapPool() external view returns (IUniswapV3Pool);
     function rewardDistributor() external view returns (ITerraStakeRewardDistributor);
-    function treasury() external view returns (ITerraStakeTreasury);
+    function treasury() external view returns (address);
     
     function reinjectionThreshold() external view returns (uint256);
     function autoLiquidityInjectionRate() external view returns (uint256);
@@ -131,6 +131,7 @@ interface ITerraStakeLiquidityGuard {
     function calculateTWAP() external view returns (uint256);
     function calculatePriceFromTick(int24 tick) external pure returns (uint256);
     function findBestPositionToIncrease(int24 currentTick) external view returns (uint256);
+    function verifyTWAPForWithdrawal() external view returns (bool);
     
     // Governance functions
     function updateLiquidityParameters(
@@ -178,4 +179,5 @@ interface ITerraStakeLiquidityGuard {
         uint256[2] memory withdrawalStats
     );
     function version() external pure returns (string memory);
+    function getLiquidityPool() external view returns (address);
 }

@@ -1,15 +1,15 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 
 import "../interfaces/ITerraStakeRewardDistributor.sol";
 import "../interfaces/ITerraStakeStaking.sol";
@@ -30,10 +30,10 @@ contract TerraStakeRewardDistributor is
     VRFConsumerBaseV2,
     ITerraStakeRewardDistributor 
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
+    using SafeERC20 for IERC20;
     
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     bytes32 public constant STAKING_CONTRACT_ROLE = keccak256("STAKING_CONTRACT_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
@@ -48,7 +48,7 @@ contract TerraStakeRewardDistributor is
     uint256 public constant PARAMETER_TIMELOCK = 2 days;       // Timelock for parameter changes
 
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     error Unauthorized();
     error InvalidAddress(string name);
@@ -56,7 +56,6 @@ contract TerraStakeRewardDistributor is
     error TransferFailed(address token, address from, address to, uint256 amount);
     error HalvingAlreadyRequested();
     error RandomizationFailed();
-    error LiquidityInjectionFailed(uint256 amount);
     error TimelockNotExpired(uint256 current, uint256 required);
     error NoUpdatePending(string paramName);
     error CircuitBreakerActive();
@@ -64,10 +63,10 @@ contract TerraStakeRewardDistributor is
     error MaxDistributionExceeded();
 
     // -------------------------------------------
-    // 🔹 State Variables
+    //  State Variables
     // -------------------------------------------
     // Core contracts and addresses
-    IERC20Upgradeable public rewardToken;
+    IERC20 public rewardToken;
     ITerraStakeStaking public stakingContract;
     ISwapRouter public uniswapRouter;
     ITerraStakeLiquidityGuard public liquidityGuard;
@@ -115,11 +114,12 @@ contract TerraStakeRewardDistributor is
     mapping(bytes32 => PendingUpdate) public pendingParameterUpdates;
 
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     event RewardDistributed(address indexed user, uint256 amount);
     event HalvingApplied(uint256 newRewardRate, uint256 halvingEpoch);
     event LiquidityInjected(uint256 amount);
+    event LiquidityInjectionFailed(uint256 amount);
     event PenaltyReDistributed(address indexed from, uint256 amount);
     event HalvingRequested(bytes32 requestId);
     event RandomnessReceived(bytes32 indexed requestId, uint256 randomness);
@@ -138,7 +138,7 @@ contract TerraStakeRewardDistributor is
     event EmergencyCircuitBreakerActivated(address activator, string reason);
 
     // -------------------------------------------
-    // 🔹 Constructor & Initializer
+    //  Constructor & Initializer
     // -------------------------------------------
     
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -182,7 +182,7 @@ contract TerraStakeRewardDistributor is
         if (_stakingContract == address(0)) revert InvalidAddress("stakingContract");
         if (_admin == address(0)) revert InvalidAddress("admin");
         
-        rewardToken = IERC20Upgradeable(_rewardToken);
+        rewardToken = IERC20(_rewardToken);
         rewardSource = _rewardSource;
         stakingContract = ITerraStakeStaking(_stakingContract);
         
@@ -234,7 +234,7 @@ contract TerraStakeRewardDistributor is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
-    // 🔹 Core Reward Functions
+    //  Core Reward Functions
     // -------------------------------------------
     
     /**
@@ -285,6 +285,49 @@ contract TerraStakeRewardDistributor is
         emit RewardDistributed(user, adjustedAmount);
     }
     
+    /**
+     * @notice Claim rewards for a user
+     * @param user Address of the user
+     * @return rewardAmount Amount of rewards claimed
+     */
+    function claimRewards(address user) 
+        external 
+        nonReentrant 
+        returns (uint256 rewardAmount) 
+    {
+        if (user == address(0)) revert InvalidAddress("user");
+        if (distributionPaused) revert CircuitBreakerActive();
+
+        _checkAndResetDailyLimit();
+
+        rewardAmount = stakingContract.calculateRewards(user);
+        
+        uint256 slashedReward = slashingContract.getUserSlashedRewards(user);
+        rewardAmount += slashedReward;
+
+        if (rewardAmount == 0) return 0;
+
+        uint256 adjustedReward = (rewardAmount * halvingReductionRate) / 100;
+
+        if (dailyDistributed + adjustedReward > maxDailyDistribution) revert MaxDistributionExceeded();
+        dailyDistributed += adjustedReward;
+
+        rewardToken.safeTransferFrom(rewardSource, user, adjustedReward);
+        totalDistributed += adjustedReward;
+
+        if (autoBuybackEnabled && address(liquidityGuard) != address(0)) {
+            uint256 injectionAmount = (adjustedReward * liquidityInjectionRate) / 100;
+            try liquidityGuard.injectLiquidity(injectionAmount) {
+                emit LiquidityInjected(injectionAmount);
+            } catch {
+                emit LiquidityInjectionFailed(injectionAmount);
+            }
+        }
+
+        emit RewardDistributed(user, adjustedReward);
+        return adjustedReward;
+    }
+
     /**
      * @notice Redistribute penalties from slashed validators
      * @param from Address of the slashed validator
@@ -414,7 +457,7 @@ contract TerraStakeRewardDistributor is
     }
     
     // -------------------------------------------
-    // 🔹 Halving Mechanism
+    //  Halving Mechanism
     // -------------------------------------------
     
     /**
@@ -538,7 +581,7 @@ contract TerraStakeRewardDistributor is
     }
     
     // -------------------------------------------
-    // 🔹 Parameter Management
+    //  Parameter Management
     // -------------------------------------------
     
     /**
@@ -660,7 +703,7 @@ contract TerraStakeRewardDistributor is
     }
     
     // -------------------------------------------
-    // 🔹 Contract Updates
+    //  Contract Updates
     // -------------------------------------------
     
     /**
@@ -849,7 +892,7 @@ contract TerraStakeRewardDistributor is
     }
     
     // -------------------------------------------
-    // 🔹 Emergency Recovery Functions
+    //  Emergency Recovery Functions
     // -------------------------------------------
     
     /**
@@ -865,7 +908,7 @@ contract TerraStakeRewardDistributor is
         // Prevent recovering the reward token to avoid draining rewards
         if (tokenAddress == address(rewardToken)) revert CannotRecoverRewardToken();
         
-        IERC20Upgradeable(tokenAddress).safeTransfer(msg.sender, amount);
+        IERC20(tokenAddress).safeTransfer(msg.sender, amount);
         emit EmergencyTokenRecovery(tokenAddress, amount, msg.sender);
     }
     
@@ -884,7 +927,7 @@ contract TerraStakeRewardDistributor is
     }
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     /**

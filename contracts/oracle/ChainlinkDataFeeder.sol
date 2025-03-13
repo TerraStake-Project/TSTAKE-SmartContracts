@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable-5.2/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable-5.2/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable-5.2/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable-5.2/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-5.2/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-
-interface ITerraStakeProjects {
-    function updateProjectDataFromChainlink(uint256 projectId, int256 price) external;
-    function updateProjectESGData(uint256 projectId, string memory category, string memory metric, int256 value) external;
-    function getProjectCategory(uint256 projectId) external view returns (uint8);
-}
-
-interface ITerraStakeToken {
-    function getGovernanceStatus() external view returns (bool);
-}
-
-interface ITerraStakeLiquidityGuard {
-    function validatePriceImpact(int256 price) external view returns (bool);
-}
+import "../interfaces/ITerraStakeProjects.sol";
+import "../interfaces/ITerraStakeToken.sol";
+import "../interfaces/ITerraStakeToken.sol";
+import "../interfaces/ITerraStakeLiquidityGuard.sol";
 
 /**
  * @title ChainlinkDataFeeder
@@ -34,7 +25,7 @@ contract ChainlinkDataFeeder is
     UUPSUpgradeable 
 {
     // -------------------------------------------
-    // 🔹 Custom Errors
+    //  Custom Errors
     // -------------------------------------------
     error InvalidAddress();
     error FeedNotActive();
@@ -55,7 +46,7 @@ contract ChainlinkDataFeeder is
     error MetricAlreadyExists();
 
     // -------------------------------------------
-    // 🔹 Enums & Data Structures
+    //  Enums & Data Structures
     // -------------------------------------------
     enum ProjectCategory {
         CarbonCredit,
@@ -294,7 +285,7 @@ contract ChainlinkDataFeeder is
     uint256 private constant DATA_VALIDITY_PERIOD = 30 days;
 
     // -------------------------------------------
-    // 🔹 Roles for Security
+    //  Roles for Security
     // -------------------------------------------
     bytes32 public constant DEVICE_MANAGER_ROLE = keccak256("DEVICE_MANAGER_ROLE");
     bytes32 public constant DATA_MANAGER_ROLE = keccak256("DATA_MANAGER_ROLE");
@@ -304,7 +295,7 @@ contract ChainlinkDataFeeder is
     bytes32 public constant CATEGORY_MANAGER_ROLE = keccak256("CATEGORY_MANAGER_ROLE");
 
     // -------------------------------------------
-    // 🔹 Oracle Feeds & Data Storage
+    //  Oracle Feeds & Data Storage
     // -------------------------------------------
     mapping(address => bool) public activeFeeds;
     mapping(address => int256) public lastKnownPrice;
@@ -313,29 +304,31 @@ contract ChainlinkDataFeeder is
     address[] public priceOracles;
 
     // -------------------------------------------
-    // 🔹 Oracle Price Storage (TWAP)
+    //  Oracle Price Storage (TWAP)
     // -------------------------------------------
     mapping(address => OracleData) public oracleRecords;
 
     // -------------------------------------------
-    // 🔹 Cross-Chain Data Validation
+    //  Cross-Chain Data Validation
     // -------------------------------------------
     mapping(bytes32 => int256) public crossChainData;
 
     // -------------------------------------------
-    // 🔹 Performance Analytics
+    //  Performance Analytics
     // -------------------------------------------
     mapping(address => FeedAnalytics) public feedAnalytics;
 
     // -------------------------------------------
-    // 🔹 ESG Metrics & Data
+    //  ESG Metrics & Data
     // -------------------------------------------
     mapping(bytes32 => ESGMetricDefinition) public esgMetrics;
     mapping(uint256 => mapping(bytes32 => ESGDataPoint[])) public projectESGData;
-    mapping(address => DataProvider) public dataProviders
+    mapping(address => DataProvider) public dataProviders;
+
     // -------------------------------------------
-    // 🔹 Project Category Data Mappings
+    //  Project Category Data Mappings
     // -------------------------------------------
+    // Mappings for storing project data by category
     mapping(uint256 => CarbonCreditData) public carbonCreditProjects;
     mapping(uint256 => RenewableEnergyData) public renewableEnergyProjects;
     mapping(uint256 => OceanCleanupData) public oceanCleanupProjects;
@@ -350,14 +343,14 @@ contract ChainlinkDataFeeder is
     mapping(uint256 => CircularEconomyData) public circularEconomyProjects;
 
     // -------------------------------------------
-    // 🔹 System Contracts
+    //  System Contracts
     // -------------------------------------------
     ITerraStakeProjects public terraStakeProjects;
     ITerraStakeToken public terraStakeToken;
     ITerraStakeLiquidityGuard public liquidityGuard;
 
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     event PriceUpdated(uint256 indexed projectId, int256 price, uint256 timestamp);
     event FeedActivated(address indexed feed);
@@ -395,11 +388,9 @@ contract ChainlinkDataFeeder is
             _projectsContract == address(0) || 
             _tokenContract == address(0) || 
             _liquidityGuardContract == address(0)) revert InvalidAddress();
-
         __AccessControl_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
-
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(DEVICE_MANAGER_ROLE, _admin);
         _grantRole(DATA_MANAGER_ROLE, _admin);
@@ -407,7 +398,6 @@ contract ChainlinkDataFeeder is
         _grantRole(UPGRADER_ROLE, _admin);
         _grantRole(VERIFIER_ROLE, _admin);
         _grantRole(CATEGORY_MANAGER_ROLE, _admin);
-
         terraStakeProjects = ITerraStakeProjects(_projectsContract);
         terraStakeToken = ITerraStakeToken(_tokenContract);
         liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuardContract);
@@ -447,7 +437,6 @@ contract ChainlinkDataFeeder is
     function updateProjectPrice(uint256 projectId, address oracle) external nonReentrant {
         if (!activeFeeds[oracle]) revert FeedNotActive();
         if (feedFailures[oracle] >= CIRCUIT_BREAKER_THRESHOLD) revert FeedNotActive();
-
         try AggregatorV3Interface(oracle).latestRoundData() returns (
             uint80 roundId,
             int256 answer,
@@ -706,28 +695,14 @@ contract ChainlinkDataFeeder is
     function updateRenewableEnergyData(uint256 projectId, RenewableEnergyData calldata data) 
         external onlyRole(CATEGORY_MANAGER_ROLE) 
     {
+        // Verify project category
         if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.RenewableEnergy)) 
             revert CategoryNotSupported();
         
         renewableEnergyProjects[projectId] = data;
         emit CategoryDataUpdated(projectId, ProjectCategory.RenewableEnergy);
     }
-
-    /**
-     * @notice Updates data for an Ocean Cleanup project
-     * @param projectId The ID of the ocean cleanup project
-     * @param data The new ocean cleanup data
-     */
-    function updateOceanCleanupData(uint256 projectId, OceanCleanupData calldata data) 
-        external onlyRole(CATEGORY_MANAGER_ROLE) 
-    {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.OceanCleanup)) 
-            revert CategoryNotSupported();
-        
-        oceanCleanupProjects[projectId] = data;
-        emit CategoryDataUpdated(projectId, ProjectCategory.OceanCleanup);
-    }
-
+    
     /**
      * @notice Updates data for a Reforestation project
      * @param projectId The ID of the reforestation project
@@ -742,7 +717,7 @@ contract ChainlinkDataFeeder is
         reforestationProjects[projectId] = data;
         emit CategoryDataUpdated(projectId, ProjectCategory.Reforestation);
     }
-
+    
     /**
      * @notice Updates data for a Biodiversity project
      * @param projectId The ID of the biodiversity project
@@ -763,14 +738,14 @@ contract ChainlinkDataFeeder is
      * @param projectId The ID of the sustainable agriculture project
      * @param data The new sustainable agriculture data
      */
-    function updateSustainableAgData(uint256 projectId, SustainableAgData calldata data) 
+    function updateSustainableAgricultureData(uint256 projectId, SustainableAgData calldata data) 
         external onlyRole(CATEGORY_MANAGER_ROLE) 
     {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.SustainableAg)) 
+        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.SustainableAgriculture)) 
             revert CategoryNotSupported();
         
         sustainableAgProjects[projectId] = data;
-        emit CategoryDataUpdated(projectId, ProjectCategory.SustainableAg);
+        emit CategoryDataUpdated(projectId, ProjectCategory.SustainableAgriculture);
     }
 
     /**
@@ -804,217 +779,135 @@ contract ChainlinkDataFeeder is
     }
 
     /**
-     * @notice Updates data for a Pollution Control project
-     * @param projectId The ID of the pollution control project
-     * @param data The new pollution control data
+     * @notice Resets the circuit breaker for a feed
+     * @param oracle Address of the oracle feed
      */
-    function updatePollutionControlData(uint256 projectId, PollutionControlData calldata data) 
-        external onlyRole(CATEGORY_MANAGER_ROLE) 
-    {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.PollutionControl)) 
-            revert CategoryNotSupported();
-        
-        pollutionControlProjects[projectId] = data;
-        emit CategoryDataUpdated(projectId, ProjectCategory.PollutionControl);
-    }
-
-    /**
-     * @notice Updates data for a Habitat Restoration project
-     * @param projectId The ID of the habitat restoration project
-     * @param data The new habitat restoration data
-     */
-    function updateHabitatRestorationData(uint256 projectId, HabitatRestorationData calldata data) 
-        external onlyRole(CATEGORY_MANAGER_ROLE) 
-    {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.HabitatRestoration)) 
-            revert CategoryNotSupported();
-        
-        habitatRestorationProjects[projectId] = data;
-        emit CategoryDataUpdated(projectId, ProjectCategory.HabitatRestoration);
-    }
-
-    /**
-     * @notice Updates data for a Green Building project
-     * @param projectId The ID of the green building project
-     * @param data The new green building data
-     */
-    function updateGreenBuildingData(uint256 projectId, GreenBuildingData calldata data) 
-        external onlyRole(CATEGORY_MANAGER_ROLE) 
-    {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.GreenBuilding)) 
-            revert CategoryNotSupported();
-        
-        greenBuildingProjects[projectId] = data;
-        emit CategoryDataUpdated(projectId, ProjectCategory.GreenBuilding);
-    }
-
-    /**
-     * @notice Updates data for a Circular Economy project
-     * @param projectId The ID of the circular economy project
-     * @param data The new circular economy data
-     */
-    function updateCircularEconomyData(uint256 projectId, CircularEconomyData calldata data) 
-        external onlyRole(CATEGORY_MANAGER_ROLE) 
-    {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.CircularEconomy)) 
-            revert CategoryNotSupported();
-        
-        circularEconomyProjects[projectId] = data;
-        emit CategoryDataUpdated(projectId, ProjectCategory.CircularEconomy);
-    }
-
-    /**
-     * @notice Gets the latest price from a specific oracle
-     * @param oracle The address of the Chainlink oracle
-     * @return price The latest price
-     * @return timestamp The timestamp of the latest price
-     */
-    function getLatestPrice(address oracle) external view returns (int256 price, uint256 timestamp) {
-        if (!activeFeeds[oracle]) revert FeedNotActive();
-        
-        OracleData memory data = oracleRecords[oracle];
-        if (data.timestamp == 0) revert NoValidDataAvailable();
-        if (block.timestamp - data.timestamp > ORACLE_TIMEOUT) revert StaleOracleData();
-        
-        return (data.price, data.timestamp);
-    }
-
-    /**
-     * @notice Gets the latest ESG data for a specific project and metric
-     * @param projectId The ID of the project
-     * @param metricId The ID of the ESG metric
-     * @return timestamp The timestamp of the latest data
-     * @return value The latest value
-     * @return verified Whether the data is verified
-     */
-    function getLatestESGData(uint256 projectId, bytes32 metricId) 
-        external view 
-        returns (uint256 timestamp, int256 value, bool verified) 
-    {
-        if (projectESGData[projectId][metricId].length == 0) revert NoValidDataAvailable();
-        
-        ESGDataPoint memory latestData = projectESGData[projectId][metricId][
-            projectESGData[projectId][metricId].length - 1
-        ];
-        
-        if (block.timestamp - latestData.timestamp > DATA_VALIDITY_PERIOD) revert DataStale();
-        
-        return (latestData.timestamp, latestData.value, latestData.verified);
-    }
-
-    /**
-     * @notice Gets project data based on category
-     * @param projectId The ID of the project
-     * @return category The project category
-     * @return data The project data (encoded)
-     */
-    function getProjectCategoryData(uint256 projectId) 
-        external view 
-        returns (ProjectCategory category, bytes memory data) 
-    {
-        uint8 categoryId = terraStakeProjects.getProjectCategory(projectId);
-        if (categoryId > uint8(type(ProjectCategory).max)) revert CategoryNotSupported();
-        
-        category = ProjectCategory(categoryId);
-        
-        if (category == ProjectCategory.CarbonCredit) {
-            data = abi.encode(carbonCreditProjects[projectId]);
-        } else if (category == ProjectCategory.RenewableEnergy) {
-            data = abi.encode(renewableEnergyProjects[projectId]);
-        } else if (category == ProjectCategory.OceanCleanup) {
-            data = abi.encode(oceanCleanupProjects[projectId]);
-        } else if (category == ProjectCategory.Reforestation) {
-            data = abi.encode(reforestationProjects[projectId]);
-        } else if (category == ProjectCategory.Biodiversity) {
-            data = abi.encode(biodiversityProjects[projectId]);
-        } else if (category == ProjectCategory.SustainableAg) {
-            data = abi.encode(sustainableAgProjects[projectId]);
-        } else if (category == ProjectCategory.WasteManagement) {
-            data = abi.encode(wasteManagementProjects[projectId]);
-        } else if (category == ProjectCategory.WaterConservation) {
-            data = abi.encode(waterConservationProjects[projectId]);
-        } else if (category == ProjectCategory.PollutionControl) {
-            data = abi.encode(pollutionControlProjects[projectId]);
-        } else if (category == ProjectCategory.HabitatRestoration) {
-            data = abi.encode(habitatRestorationProjects[projectId]);
-        } else if (category == ProjectCategory.GreenBuilding) {
-            data = abi.encode(greenBuildingProjects[projectId]);
-        } else if (category == ProjectCategory.CircularEconomy) {
-            data = abi.encode(circularEconomyProjects[projectId]);
-        }
-    }
-
-    /**
-     * @notice Resets circuit breaker for a feed
-     * @param oracle The address of the oracle feed
-     */
-    function resetCircuitBreaker(address oracle) external onlyRole(DEVICE_MANAGER_ROLE) {
-        if (feedFailures[oracle] < CIRCUIT_BREAKER_THRESHOLD) revert InvalidParameters();
+    function resetCircuitBreaker(address oracle) external onlyRole(GOVERNANCE_ROLE) {
+        if (feedFailures[oracle] < CIRCUIT_BREAKER_THRESHOLD) revert CircuitBreakerNotTriggered();
         
         feedFailures[oracle] = 0;
         emit CircuitBreakerReset(oracle);
     }
 
     /**
-     * @notice Updates a system contract address
-     * @param contractType The type of contract to update (0=Projects, 1=Token, 2=LiquidityGuard)
-     * @param newAddress The new contract address
+     * @notice Updates the reliability score for a data provider
+     * @param provider Address of the provider
+     * @param newScore New reliability score (0-100)
      */
-    function updateSystemContract(uint8 contractType, address newAddress) external onlyRole(GOVERNANCE_ROLE) {
-        if (newAddress == address(0)) revert InvalidAddress();
+    function updateProviderReliabilityScore(address provider, uint8 newScore) 
+        external onlyRole(GOVERNANCE_ROLE) 
+    {
+        if (newScore > 100) revert InvalidParameters();
+        if (!dataProviders[provider].active) revert InvalidAddress();
         
-        // Governance check
-        if (!terraStakeToken.getGovernanceStatus()) revert UnauthorizedAccess();
-        
-        bytes32 changeId = keccak256(abi.encodePacked(contractType, newAddress, block.timestamp));
-        
-        // Initialize delay for governance change
-        if (pendingOracleChanges[changeId] == 0) {
-            pendingOracleChanges[changeId] = block.timestamp + GOVERNANCE_CHANGE_DELAY;
-            return;
-        }
-        
-        // Verify delay has passed
-        if (block.timestamp < pendingOracleChanges[changeId]) revert GovernanceDelayNotMet();
-        
-        // Update appropriate contract reference
-        if (contractType == 0) {
-            terraStakeProjects = ITerraStakeProjects(newAddress);
-        } else if (contractType == 1) {
-            terraStakeToken = ITerraStakeToken(newAddress);
-        } else if (contractType == 2) {
-            liquidityGuard = ITerraStakeLiquidityGuard(newAddress);
-        } else {
-            revert InvalidParameters();
-        }
-        
-        // Clear pending change
-        delete pendingOracleChanges[changeId];
+        dataProviders[provider].reliabilityScore = newScore;
     }
 
     /**
-     * @notice Cross-chain data validation
-     * @param dataHash The hash of the data
-     * @param value The value to validate
+     * @notice Validates and records cross-chain data
+     * @param dataHash Hash of the original data
+     * @param sourceChainId ID of the source chain
+     * @param value Data value
+     * @param timestamp Timestamp of the data
      */
-    function validateCrossChainData(bytes32 dataHash, int256 value) external onlyRole(VERIFIER_ROLE) {
-        crossChainData[dataHash] = value;
+    function validateCrossChainData(
+        bytes32 dataHash,
+        uint256 sourceChainId,
+        int256 value,
+        uint256 timestamp
+    ) external onlyRole(VERIFIER_ROLE) {
+        if (block.timestamp < timestamp) revert InvalidParameters();
+        if (crossChainData[dataHash].validated) revert AlreadyProcessed();
+        
+        crossChainData[dataHash] = CrossChainDataPoint({
+            sourceChainId: sourceChainId,
+            value: value,
+            timestamp: timestamp,
+            validator: msg.sender,
+            validationTime: block.timestamp,
+            validated: true
+        });
+        
         emit CrossChainDataValidated(dataHash, value);
     }
 
     /**
-     * @notice Callback for UUPS upgrades
-     * @param newImplementation Address of the new implementation
+     * @notice Get the latest ESG data point for a project and metric
+     * @param projectId The project ID
+     * @param metricId The metric ID
+     * @return dataPoint The latest ESG data point
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
-        emit ContractUpgraded(newImplementation);
+    function getLatestESGData(uint256 projectId, bytes32 metricId) 
+        external view returns (ESGDataPoint memory dataPoint) 
+    {
+        uint256 dataLength = projectESGData[projectId][metricId].length;
+        
+        if (dataLength == 0) revert NoDataAvailable();
+        
+        return projectESGData[projectId][metricId][dataLength - 1];
     }
 
     /**
-     * @notice Gets all active price oracles
-     * @return Array of active oracle addresses
+     * @notice Get the count of ESG data points for a project and metric
+     * @param projectId The project ID
+     * @param metricId The metric ID
+     * @return count The count of data points
      */
-    function getActiveOracles() external view returns (address[] memory) {
+    function getESGDataCount(uint256 projectId, bytes32 metricId) 
+        external view returns (uint256 count) 
+    {
+        return projectESGData[projectId][metricId].length;
+    }
+
+    /**
+     * @notice Get analytics for a price feed
+     * @param oracle The oracle address
+     * @return analytics The feed analytics data
+     */
+    function getFeedAnalytics(address oracle) 
+        external view returns (FeedAnalytics memory) 
+    {
+        return feedAnalytics[oracle];
+    }
+
+    /**
+     * @notice Get the price history for a feed
+     * @param oracle The oracle address
+     * @return priceHistory Array of historical prices
+     */
+    function getPriceHistory(address oracle) 
+        external view returns (int256[] memory) 
+    {
+        return feedAnalytics[oracle].priceHistory;
+    }
+
+    /**
+     * @notice Get carbon credit data for a project
+     * @param projectId The project ID
+     * @return data The carbon credit data
+     */
+    function getCarbonCreditData(uint256 projectId) 
+        external view returns (CarbonCreditData memory) 
+    {
+        return carbonCreditProjects[projectId];
+    }
+
+    /**
+     * @notice Get renewable energy data for a project
+     * @param projectId The project ID
+     * @return data The renewable energy data
+     */
+    function getRenewableEnergyData(uint256 projectId) 
+        external view returns (RenewableEnergyData memory) 
+    {
+        return renewableEnergyProjects[projectId];
+    }
+
+    /**
+     * @notice Get the list of active price oracles
+     * @return oracles Array of active oracle addresses
+     */
+    function getActiveOracles() external view returns (address[] memory oracles) {
         uint256 activeCount = 0;
         
         // Count active oracles
@@ -1024,207 +917,51 @@ contract ChainlinkDataFeeder is
             }
         }
         
-        // Create return array with active oracles only
-        address[] memory active = new address[](activeCount);
+        oracles = new address[](activeCount);
         uint256 index = 0;
         
+        // Fill array with active oracles
         for (uint256 i = 0; i < priceOracles.length; i++) {
             if (activeFeeds[priceOracles[i]]) {
-                active[index] = priceOracles[i];
+                oracles[index] = priceOracles[i];
                 index++;
             }
         }
         
-        return active;
+        return oracles;
     }
 
     /**
-     * @notice Utility function to decode Carbon Credit data
-     * @param projectId The ID of the project
-     * @return data The Carbon Credit data structure
+     * @notice Get ESG metric definition by ID
+     * @param metricId The metric ID
+     * @return metric The ESG metric definition
      */
-    function getCarbonCreditData(uint256 projectId) external view returns (CarbonCreditData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.CarbonCredit)) 
-            revert CategoryNotSupported();
-            
-        return carbonCreditProjects[projectId];
+    function getESGMetric(bytes32 metricId) 
+        external view returns (ESGMetricDefinition memory) 
+    {
+        return esgMetrics[metricId];
     }
 
     /**
-     * @notice Utility function to decode Renewable Energy data
-     * @param projectId The ID of the project
-     * @return data The Renewable Energy data structure
+     * @notice Get data provider information
+     * @param provider The provider address
+     * @return providerData The data provider information
      */
-    function getRenewableEnergyData(uint256 projectId) external view returns (RenewableEnergyData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.RenewableEnergy)) 
-            revert CategoryNotSupported();
-            
-        return renewableEnergyProjects[projectId];
+    function getDataProvider(address provider) 
+        external view returns (DataProvider memory) 
+    {
+        return dataProviders[provider];
     }
 
     /**
-     * @notice Utility function to decode Ocean Cleanup data
-     * @param projectId The ID of the project
-     * @return data The Ocean Cleanup data structure
+     * @notice Required function for UUPS upgradeability pattern
+     * @param newImplementation The address of the new implementation
      */
-    function getOceanCleanupData(uint256 projectId) external view returns (OceanCleanupData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.OceanCleanup)) 
-            revert CategoryNotSupported();
-            
-        return oceanCleanupProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Reforestation data
-     * @param projectId The ID of the project
-     * @return data The Reforestation data structure
-     */
-    function getReforestationData(uint256 projectId) external view returns (ReforestationData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.Reforestation)) 
-            revert CategoryNotSupported();
-            
-        return reforestationProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Biodiversity data
-     * @param projectId The ID of the project
-     * @return data The Biodiversity data structure
-     */
-    function getBiodiversityData(uint256 projectId) external view returns (BiodiversityData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.Biodiversity)) 
-            revert CategoryNotSupported();
-            
-        return biodiversityProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Sustainable Agriculture data
-     * @param projectId The ID of the project
-     * @return data The Sustainable Agriculture data structure
-     */
-    function getSustainableAgData(uint256 projectId) external view returns (SustainableAgData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.SustainableAg)) 
-            revert CategoryNotSupported();
-            
-        return sustainableAgProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Waste Management data
-     * @param projectId The ID of the project
-     * @return data The Waste Management data structure
-     */
-    function getWasteManagementData(uint256 projectId) external view returns (WasteManagementData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.WasteManagement)) 
-            revert CategoryNotSupported();
-            
-        return wasteManagementProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Water Conservation data
-     * @param projectId The ID of the project
-     * @return data The Water Conservation data structure
-     */
-    function getWaterConservationData(uint256 projectId) external view returns (WaterConservationData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.WaterConservation)) 
-            revert CategoryNotSupported();
-            
-        return waterConservationProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Pollution Control data
-     * @param projectId The ID of the project
-     * @return data The Pollution Control data structure
-     */
-    function getPollutionControlData(uint256 projectId) external view returns (PollutionControlData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.PollutionControl)) 
-            revert CategoryNotSupported();
-            
-        return pollutionControlProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Habitat Restoration data
-     * @param projectId The ID of the project
-     * @return data The Habitat Restoration data structure
-     */
-    function getHabitatRestorationData(uint256 projectId) external view returns (HabitatRestorationData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.HabitatRestoration)) 
-            revert CategoryNotSupported();
-            
-        return habitatRestorationProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Green Building data
-     * @param projectId The ID of the project
-     * @return data The Green Building data structure
-     */
-    function getGreenBuildingData(uint256 projectId) external view returns (GreenBuildingData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.GreenBuilding)) 
-            revert CategoryNotSupported();
-            
-        return greenBuildingProjects[projectId];
-    }
-
-    /**
-     * @notice Utility function to decode Circular Economy data
-     * @param projectId The ID of the project
-     * @return data The Circular Economy data structure
-     */
-    function getCircularEconomyData(uint256 projectId) external view returns (CircularEconomyData memory data) {
-        if (terraStakeProjects.getProjectCategory(projectId) != uint8(ProjectCategory.CircularEconomy)) 
-            revert CategoryNotSupported();
-            
-        return circularEconomyProjects[projectId];
-    }
-
-    /**
-     * @notice Gets ESG metrics applicable to a specific project category
-     * @param category The project category
-     * @return metricIds Array of applicable metric IDs
-     */
-    function getCategoryMetrics(ProjectCategory category) external view returns (bytes32[] memory) {
-        bytes32[] memory applicableMetrics = new bytes32[](50); // Maximum expected size
-        uint256 count = 0;
-        
-        // Collect all metrics that apply to this category
-        bytes32[] memory allMetricIds = new bytes32[](50); // Arbitrary limit
-        uint256 metricCount = 0;
-        
-        // This is just a placeholder - in a real implementation, you would have a way to enumerate all metrics
-        // For this example, we're assuming that metric IDs are tracked elsewhere and accessible
-        
-        for (uint256 i = 0; i < metricCount; i++) {
-            bytes32 metricId = allMetricIds[i];
-            ESGMetricDefinition storage metric = esgMetrics[metricId];
-            
-            for (uint j = 0; j < metric.applicableCategories.length; j++) {
-                if (metric.applicableCategories[j] == category && metric.isActive) {
-                    applicableMetrics[count] = metricId;
-                    count++;
-                    break;
-                }
-            }
-        }
-        
-        // Create correctly sized return array
-        bytes32[] memory result = new bytes32[](count);
-        for (uint256 i = 0; i < count; i++) {
-            result[i] = applicableMetrics[i];
-        }
-        
-        return result;
-    }
-
-    /**
-     * @notice Returns the contract signature (version identifier)
-     * @return Signature bytes32 hash
-     */
-    function getContractSignature() external pure returns (bytes32) {
-        return CONTRACT_SIGNATURE;
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(UPGRADER_ROLE)
+    {
+        emit ContractUpgraded(newImplementation);
     }
 }

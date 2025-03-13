@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "../interfaces/ITerraStakeLiquidityGuard.sol";
+import "./ITerraStakeLiquidityGuard.sol";
 
 /**
  * @title ITerraStakeTreasuryManager
@@ -11,7 +11,7 @@ import "../interfaces/ITerraStakeLiquidityGuard.sol";
  */
 interface ITerraStakeTreasuryManager {
     // -------------------------------------------
-    // 🔹 Structs
+    //  Structs
     // -------------------------------------------
     
     struct FeeStructure {
@@ -24,7 +24,7 @@ interface ITerraStakeTreasuryManager {
     }
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event FeeStructureUpdated(
@@ -46,7 +46,7 @@ interface ITerraStakeTreasuryManager {
     event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     function GOVERNANCE_ROLE() external view returns (bytes32);
@@ -69,7 +69,7 @@ interface ITerraStakeTreasuryManager {
     function estimateTStakeForLiquidity(uint256 usdcAmount) external view returns (uint256);
     
     // -------------------------------------------
-    // 🔹 State-Changing Functions
+    //  State-Changing Functions
     // -------------------------------------------
     
     function initialize(

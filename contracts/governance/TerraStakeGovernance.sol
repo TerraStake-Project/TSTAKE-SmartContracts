@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -31,7 +31,7 @@ contract TerraStakeGovernance is
     using ECDSA for bytes32;
 
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -57,7 +57,7 @@ contract TerraStakeGovernance is
     uint8 public constant GUARDIAN_QUORUM = 3;                 // Minimum guardians for override
     
     // -------------------------------------------
-    // 🔹 State Variables
+    //  State Variables
     // -------------------------------------------
     
     // Core contracts
@@ -98,8 +98,8 @@ contract TerraStakeGovernance is
     mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => ExtendedProposalData) public proposalExtendedData;
     mapping(uint256 => mapping(address => bool)) public hasVoted;
-    mapping(bytes32 => bool) public executedHashes;
-    
+    mapping(bytes32 => bool) public executedHashes; 
+
     // Validator safety mechanism
     uint8 public governanceTier; // 0=Emergency, 1=Reduced, 2=Full
     bool public bootstrapMode;
@@ -114,7 +114,7 @@ contract TerraStakeGovernance is
     uint256 public currentNonce;
 
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     // Validator safety events
@@ -131,7 +131,7 @@ contract TerraStakeGovernance is
     event ValidatorRecruitmentInitiated(uint256 incentiveAmount, uint256 targetCount);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     error GovernanceThresholdNotMet();
     error ProposalNotReady();
@@ -149,7 +149,7 @@ contract TerraStakeGovernance is
     error NonceAlreadyExecuted();
     
     // -------------------------------------------
-    // 🔹 Modifiers
+    //  Modifiers
     // -------------------------------------------
     
     /**
@@ -176,7 +176,7 @@ contract TerraStakeGovernance is
     }
     
     // -------------------------------------------
-    // 🔹 Initializer & Upgrade Control
+    //  Initializer & Upgrade Control
     // -------------------------------------------
     
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -272,7 +272,7 @@ contract TerraStakeGovernance is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
-    // 🔹 Validator Safety Mechanisms
+    //  Validator Safety Mechanisms
     // -------------------------------------------
     
     /**
@@ -280,24 +280,25 @@ contract TerraStakeGovernance is
      * @return The updated governance tier
      */
     function updateGovernanceTier() public returns (uint8) {
-        uint256 validatorCount = stakingContract.getValidatorCount();
-        
-        uint8 newTier;
-        if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
-            newTier = 0; // Emergency tier
-        } else if (validatorCount < OPTIMAL_VALIDATOR_THRESHOLD) {
-            newTier = 1; // Reduced tier
-        } else {
-            newTier = 2; // Full tier
-        }
-        
-        if (newTier != governanceTier) {
-            governanceTier = newTier;
-            emit GovernanceTierUpdated(governanceTier, validatorCount);
-        }
-        
-        return governanceTier;
+    uint256 validatorCount = stakingContract.getValidatorCount();
+
+    uint8 newTier;
+    if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
+        newTier = 0; // Emergency tier
+    } else if (validatorCount < OPTIMAL_VALIDATOR_THRESHOLD) {
+        newTier = 1; // Reduced tier
+    } else {
+        newTier = 2; // Full tier
     }
+
+    if (newTier != governanceTier) {
+        governanceTier = newTier;
+        emit GovernanceTierUpdated(governanceTier, validatorCount);
+    }
+
+    return governanceTier;
+}
+
     
     /**
      * @notice Validates if proposal type is allowed in current governance tier
@@ -338,7 +339,7 @@ contract TerraStakeGovernance is
     function setValidatorBootstrap(uint256 duration) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(bootstrapMode, "Bootstrap mode already ended");
         bootstrapEndTime = block.timestamp + duration;
-emit BootstrapModeConfigured(duration);
+        emit BootstrapModeConfigured(duration);
     }
     
     /**
@@ -620,7 +621,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 Core Governance Functions
+    //  Core Governance Functions
     // -------------------------------------------
     
     /**
@@ -779,7 +780,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     /**
-* @notice Execute fee structure update from proposal
+     * @notice Execute fee structure update from proposal
      * @param proposalId ID of the fee proposal
      */
     function _executeFeeUpdate(uint256 proposalId) internal {
@@ -881,7 +882,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 Treasury Management Functions
+    //  Treasury Management Functions
     // -------------------------------------------
     
     /**
@@ -1051,7 +1052,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 Reward Distribution Functions
+    //  Reward Distribution Functions
     // -------------------------------------------
     
     /**
@@ -1084,7 +1085,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 Protocol Parameter Functions
+    //  Protocol Parameter Functions
     // -------------------------------------------
     
     /**
@@ -1135,7 +1136,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 Governance Penalty Functions
+    //  Governance Penalty Functions
     // -------------------------------------------
     
     /**
@@ -1181,7 +1182,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     /**
@@ -1268,7 +1269,7 @@ emit BootstrapModeConfigured(duration);
     }
     
     // -------------------------------------------
-    // 🔹 Emergency Functions
+    //  Emergency Functions
     // -------------------------------------------
     
     /**
@@ -1330,7 +1331,7 @@ function emergencyRecoverTokens(
 }
 
 // -------------------------------------------
-// 🔹 TStake Token Reception
+//  TStake Token Reception
 // -------------------------------------------
 
 /**
@@ -1353,4 +1354,5 @@ function notifyTStakeReceived(address sender, uint256 amount) external {
  */
 receive() external payable {
     emit TStakeReceived(msg.sender, msg.value);
+}
 }

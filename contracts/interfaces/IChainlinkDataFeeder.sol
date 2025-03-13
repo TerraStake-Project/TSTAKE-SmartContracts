@@ -8,7 +8,7 @@ pragma solidity 0.8.28;
  */
 interface IChainlinkDataFeeder {
     // -------------------------------------------
-    // 🔹 Enums & Data Structures
+    //  Enums & Data Structures
     // -------------------------------------------
     enum ProjectCategory {
         CarbonCredit,
@@ -228,7 +228,7 @@ interface IChainlinkDataFeeder {
     }
 
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     event PriceUpdated(uint256 indexed projectId, int256 price, uint256 timestamp);
     event FeedActivated(address indexed feed);
@@ -245,7 +245,7 @@ interface IChainlinkDataFeeder {
     event CircuitBreakerReset(address indexed feed);
 
     // -------------------------------------------
-    // 🔹 Core Oracle Functions
+    //  Core Oracle Functions
     // -------------------------------------------
     function addPriceOracle(address oracle) external;
     function deactivatePriceOracle(address oracle) external;
@@ -255,7 +255,7 @@ interface IChainlinkDataFeeder {
     function resetCircuitBreaker(address oracle) external;
 
     // -------------------------------------------
-    // 🔹 ESG Metrics & Data Management
+    //  ESG Metrics & Data Management
     // -------------------------------------------
     function registerESGMetric(
         string memory name,
@@ -290,7 +290,7 @@ interface IChainlinkDataFeeder {
     function getCategoryMetrics(ProjectCategory category) external view returns (bytes32[] memory);
 
     // -------------------------------------------
-    // 🔹 Data Provider Management
+    //  Data Provider Management
     // -------------------------------------------
     function registerDataProvider(
         address provider,
@@ -302,7 +302,7 @@ interface IChainlinkDataFeeder {
     ) external;
 
     // -------------------------------------------
-    // 🔹 Project Category Data Update Functions
+    //  Project Category Data Update Functions
     // -------------------------------------------
     function updateCarbonCreditData(uint256 projectId, CarbonCreditData calldata data) external;
     function updateRenewableEnergyData(uint256 projectId, RenewableEnergyData calldata data) external;
@@ -318,7 +318,7 @@ interface IChainlinkDataFeeder {
     function updateCircularEconomyData(uint256 projectId, CircularEconomyData calldata data) external;
 
     // -------------------------------------------
-    // 🔹 Project Category Data Query Functions
+    //  Project Category Data Query Functions
     // -------------------------------------------
     function getCarbonCreditData(uint256 projectId) external view returns (CarbonCreditData memory data);
     function getRenewableEnergyData(uint256 projectId) external view returns (RenewableEnergyData memory data);
@@ -334,14 +334,14 @@ interface IChainlinkDataFeeder {
     function getCircularEconomyData(uint256 projectId) external view returns (CircularEconomyData memory data);
     
     // -------------------------------------------
-    // 🔹 Generic Project Data Functions
+    //  Generic Project Data Functions
     // -------------------------------------------
     function getProjectCategoryData(uint256 projectId) 
         external view 
         returns (ProjectCategory category, bytes memory data);
 
     // -------------------------------------------
-    // 🔹 Cross-chain & Governance Functions
+    //  Cross-chain & Governance Functions
     // -------------------------------------------
     function validateCrossChainData(bytes32 dataHash, int256 value) external;
     function updateSystemContract(uint8 contractType, address newAddress) external;

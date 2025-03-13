@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/IERC1155Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
+import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 
 /**
  * @title ITerraStakeNFT
  * @dev Interface for the TerraStakeNFT contract
  */
-interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
+interface ITerraStakeNFT is IERC1155, IERC2981 {
     // ====================================================
-    // 📝 Structs
+    //  Structs
     // ====================================================
     
     enum NFTType { STANDARD, IMPACT, GOVERNANCE }
@@ -61,7 +61,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     }
     
     // ====================================================
-    // 🏭 Token Minting Functions
+    //  Token Minting Functions
     // ====================================================
     
     function mintStandardNFT(
@@ -86,7 +86,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     ) external;
     
     // ====================================================
-    // 🔄 Fractionalization Functions
+    //  Fractionalization Functions
     // ====================================================
     
     function fractionalizeToken(uint256 tokenId, uint256 fractionCount) 
@@ -96,7 +96,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function reassembleToken(uint256 originalTokenId) external;
     
     // ====================================================
-    // 🖼️ URI Management
+    //  URI Management
     // ====================================================
     
     function setTokenURI(uint256 tokenId, string calldata newUri) external;
@@ -106,7 +106,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function uri(uint256 tokenId) external view returns (string memory);
     
     // ====================================================
-    // 📊 Metadata & Query Functions
+    //  Metadata & Query Functions
     // ====================================================
     
     function getTokensByCategory(ProjectCategory category) external view returns (uint256[] memory);
@@ -124,7 +124,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function exists(uint256 tokenId) external view returns (bool);
     
     // ====================================================
-    // 💰 Fee Management
+    //  Fee Management
     // ====================================================
     
     function updateFeePercentages(
@@ -152,7 +152,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function adjustFeesBasedOnUsage() external;
     
     // ====================================================
-    // 🏆 Royalties Implementation
+    //  Royalties Implementation
     // ====================================================
     
     function setDefaultRoyalty(address receiver, uint96 feeNumerator) external;
@@ -169,7 +169,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
         returns (address receiver, uint256 royaltyAmount);
     
     // ====================================================
-    // 🛠️ Utility Functions
+    //  Utility Functions
     // ====================================================
     
     function requestRandomSeed() external returns (uint256 requestId);
@@ -189,7 +189,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     ) external;
     
     // ====================================================
-    // 🔒 Locking Mechanism Implementation
+    //  Locking Mechanism Implementation
     // ====================================================
     
     function lockToken(uint256 tokenId, uint256 duration) external;
@@ -201,7 +201,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function getLockInfo(uint256 tokenId) external view returns (TokenLock memory);
     
     // ====================================================
-    // 💵 Token Recovery
+    //  Token Recovery
     // ====================================================
     
     function recoverERC20(address tokenAddress, uint256 amount) external;
@@ -209,7 +209,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function executeBuyback(uint256 amount) external;
     
     // ====================================================
-    // 📣 Events
+    //  Events
     // ====================================================
     
     event TokenMinted(uint256 indexed tokenId, address indexed recipient, NFTType nftType, ProjectCategory category);

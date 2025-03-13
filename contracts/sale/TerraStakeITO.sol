@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
@@ -21,7 +21,7 @@ interface IBurnableERC20 is IERC20 {
  */
 contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     // ================================
-    // 🔹 Constants & Roles
+    //  Constants & Roles
     // ================================
     uint24 public constant POOL_FEE = 3000;
     uint256 public constant MAX_TOKENS_FOR_ITO = 300_000_000 * 10**18;
@@ -32,7 +32,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     // ================================
-    // 🔹 Contract State Variables
+    //  Contract State Variables
     // ================================
     IBurnableERC20 public immutable tStakeToken;
     IERC20 public immutable usdcToken;
@@ -57,7 +57,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     ITOState public itoState;
 
     // ================================
-    // 🔹 Vesting Struct & Variables
+    //  Vesting Struct & Variables
     // ================================
     enum VestingType { Treasury, Staking, Liquidity }
     struct VestingSchedule {
@@ -71,7 +71,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     mapping(VestingType => VestingSchedule) public vestingSchedules;
 
     // ================================
-    // 🔹 Events
+    //  Events
     // ================================
     event TokensPurchased(address indexed buyer, uint256 usdcAmount, uint256 tokenAmount, uint256 timestamp);
     event LiquidityAdded(uint256 usdcAmount, uint256 tStakeAmount, uint256 timestamp);
@@ -86,7 +86,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     event TokensBurned(uint256 amount, uint256 timestamp, uint256 newTotalSupply);
 
     // ================================
-    // 🔹 Constructor
+    //  Constructor
     // ================================
     constructor(
         address _tStakeToken,
@@ -131,7 +131,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Administrative Controls
+    //  Administrative Controls
     // ================================
     function setITOState(ITOState newState) external onlyRole(GOVERNANCE_ROLE) {
         itoState = newState;
@@ -151,7 +151,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Blacklist Management
+    //  Blacklist Management
     // ================================
     function updateBlacklist(address account, bool status) external onlyRole(GOVERNANCE_ROLE) {
         blacklist[account] = status;
@@ -159,7 +159,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Vesting Management
+    //  Vesting Management
     // ================================
     function getVestedAmount(VestingType vestingType) public view returns (uint256) {
         VestingSchedule storage schedule = vestingSchedules[vestingType];
@@ -194,7 +194,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Price Management
+    //  Price Management
     // ================================
     function getCurrentPrice() public view returns (uint256) {
         if (block.timestamp >= itoEndTime) return endingPrice;
@@ -218,7 +218,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Purchase Function
+    //  Purchase Function
     // ================================
     function buyTokens(uint256 usdcAmount, uint256 minTokensOut) external nonReentrant {
         require(itoState == ITOState.Active, "ITO not active");
@@ -238,7 +238,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Distribution Function
+    //  Distribution Function
     // ================================
     function _distributeUSDC(uint256 amount) internal {
         uint256 treasuryShare = (amount * 40) / 100;
@@ -251,7 +251,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Liquidity Injection Function
+    //  Liquidity Injection Function
     // ================================
     function _addLiquidity(uint256 liquidityUSDCAmount) internal {
         // Approve USDC for the position manager.
@@ -286,7 +286,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Burn Unsold Tokens Function
+    //  Burn Unsold Tokens Function
     // ================================
     function burnUnsoldTokens() external onlyRole(GOVERNANCE_ROLE) {
         require(itoState == ITOState.Ended, "ITO must be ended");
@@ -308,7 +308,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Emergency Functions
+    //  Emergency Functions
     // ================================
     function emergencyWithdraw(address token) external onlyRole(MULTISIG_ROLE) {
         require(itoState == ITOState.Ended, "ITO not ended");
@@ -318,7 +318,7 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 View Functions
+    //  View Functions
     // ================================
     function getITOStats() external view returns (
         uint256 totalSold,

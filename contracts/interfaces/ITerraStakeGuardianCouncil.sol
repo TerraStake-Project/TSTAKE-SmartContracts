@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL 3-0
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
 /**
@@ -9,7 +9,7 @@ pragma solidity 0.8.28;
  */
 interface ITerraStakeGuardianCouncil {
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     function GOVERNANCE_ROLE() external view returns (bytes32);
     function UPGRADER_ROLE() external view returns (bytes32);
@@ -22,7 +22,7 @@ interface ITerraStakeGuardianCouncil {
     function GUARDIAN_OVERRIDE() external view returns (bytes4);
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     event GuardianAdded(address indexed guardian);
     event GuardianRemoved(address indexed guardian);
@@ -36,7 +36,7 @@ interface ITerraStakeGuardianCouncil {
     event EmergencyActionAttempt(bytes4 operationType, bool success);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     error Unauthorized();
     error InvalidParameters();
@@ -50,7 +50,7 @@ interface ITerraStakeGuardianCouncil {
     error EmergencyActionFailed();
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     function GUARDIAN_QUORUM() external view returns (uint256);
     function currentNonce() external view returns (uint256);
@@ -83,7 +83,7 @@ interface ITerraStakeGuardianCouncil {
     ) external view returns (bool);
     
     // -------------------------------------------
-    // 🔹 State-Changing Functions
+    //  State-Changing Functions
     // -------------------------------------------
     function initialize(
         address _initialAdmin,
