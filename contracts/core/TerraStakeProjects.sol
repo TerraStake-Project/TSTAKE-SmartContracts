@@ -851,17 +851,17 @@ contract TerraStakeProjects is
         if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
         
         // Fee handling
-        uint256 reportingFee = fees.impactReportingFee;
-        if (reportingFee > 0) {
-            bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
-            if (!success) revert TokenTransferFailed();
-            
-            // Update fee collections
-            totalFeesCollected += reportingFee;
-            feesByType[FeeType.ImpactReporting] += reportingFee;
-            
-            emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
-        }
+uint256 reportingFee = fees.impactReportingFee;
+if (reportingFee > 0) {
+    bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
+    if (!success) revert TokenTransferFailed();
+    
+    // Update fee collections
+    totalFeesCollected += reportingFee;
+    feesByType[FeeType.ImpactReporting] += reportingFee;
+    
+    emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
+}
         
         // Create impact report
         ImpactReport memory impactReport = ImpactReport({
@@ -1471,54 +1471,54 @@ contract TerraStakeProjects is
     
     // Function to get project leaderboard by impact
     function getProjectLeaderboard(
-        uint256 limit
-    ) external view returns (
-        uint256[] memory projectIds,
-        uint256[] memory impactValues
-    ) {
-        // Limit the number of projects to return
-        uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
-        
-        // Initialize arrays
-        projectIds = new uint256[](resultSize);
-        impactValues = new uint256[](resultSize);
-        
-        // Create temporary array of project IDs and impact values
-        uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
-        uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
-        
-        // Fill temporary arrays
-        for (uint256 i = 0; i < allProjectIds.length; i++) {
-            uint256 projectId = allProjectIds[i];
-            tempProjectIds[i] = projectId;
-            tempImpactValues[i] = totalWeightedImpact[projectId];
-        }
-        
-        // Sort projects by impact (simple bubble sort)
-        for (uint256 i = 0; i < tempProjectIds.length; i++) {
-            for (uint256 j = i + 1; j < tempProjectIds.length; j++) {
-                if (tempImpactValues[i] < tempImpactValues[j]) {
-                    // Swap impact values
-                    uint256 tempImpact = tempImpactValues[i];
-                    tempImpactValues[i] = tempImpactValues[j];
-                    tempImpactValues[j] = tempImpact;
-                    
-                    // Swap project IDs
-                    uint256 tempId = tempProjectIds[i];
-                    tempProjectIds[i] = tempProjectIds[j];
-                    tempProjectIds[j] = tempId;
-                }
+    uint256 limit
+) external view returns (
+    uint256[] memory projectIds,
+    uint256[] memory impactValues
+) {
+    // Limit the number of projects to return
+    uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
+    
+    // Initialize arrays
+    projectIds = new uint256[](resultSize);
+    impactValues = new uint256[](resultSize);
+    
+    // Create temporary array of project IDs and impact values
+    uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
+    uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
+    
+    // Fill temporary arrays
+    for (uint256 i = 0; i < allProjectIds.length; i++) {
+        uint256 projectId = allProjectIds[i];
+        tempProjectIds[i] = projectId;
+        tempImpactValues[i] = totalWeightedImpact[projectId];
+    }
+    
+    // Sort projects by impact (optimized bubble sort)
+    for (uint256 i = 0; i < tempProjectIds.length - 1; i++) {
+        for (uint256 j = 0; j < tempProjectIds.length - i - 1; j++) {
+            if (tempImpactValues[j] < tempImpactValues[j + 1]) {
+                // Swap impact values
+                uint256 tempImpact = tempImpactValues[j];
+                tempImpactValues[j] = tempImpactValues[j + 1];
+                tempImpactValues[j + 1] = tempImpact;
+                
+                // Swap project IDs
+                uint256 tempId = tempProjectIds[j];
+                tempProjectIds[j] = tempProjectIds[j + 1];
+                tempProjectIds[j + 1] = tempId;
             }
         }
-        
-        // Take the top 'resultSize' projects
-        for (uint256 i = 0; i < resultSize; i++) {
-            projectIds[i] = tempProjectIds[i];
-            impactValues[i] = tempImpactValues[i];
-        }
-        
-        return (projectIds, impactValues);
     }
+    
+    // Take the top 'resultSize' projects
+    for (uint256 i = 0; i < resultSize; i++) {
+        projectIds[i] = tempProjectIds[i];
+        impactValues[i] = tempImpactValues[i];
+    }
+    
+    return (projectIds, impactValues);
+}
     
     // Function to generate a summary of the platform
     function getPlatformSummary() external view returns (
