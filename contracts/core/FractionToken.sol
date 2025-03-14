@@ -39,128 +39,147 @@ interface ISecondaryMarketCallback {
 }
 
 /**
- * @title FractionToken
- * @dev ERC20 token representing fractions of a TerraStake NFT
+ * @dev Creates a new fraction token for a TerraStake NFT
+ * @param nftId The ID of the NFT to fractionalize
+ * @param name The name of the fraction token
+ * @param symbol The symbol of the fraction token
+ * @param fractionCount The number of fractions to create
+ * @param lockPeriod The period for which the NFT will be locked
+ * @return fractionToken The address of the created fraction token
  */
-contract FractionToken is ERC20Upgradeable, ERC20BurnableUpgradeable, ERC20PermitUpgradeable {
-    uint256 public immutable nftId;
-    address public immutable fractionManager;
-    uint256 public immutable impactValue;
-    ITerraStakeNFT.ProjectCategory public immutable projectCategory;
-    bytes32 public immutable projectDataHash;
-
-    function initialize(
-        string memory name,
-        string memory symbol,
-        uint256 initialSupply,
-        uint256 _nftId,
-        address _fractionManager,
-        uint256 _impactValue,
-        ITerraStakeNFT.ProjectCategory _projectCategory,
-        bytes32 _projectDataHash
-    ) public initializer {
-        __ERC20_init(name, symbol);
-        __ERC20Burnable_init();
-        __ERC20Permit_init(name);
-        
-        nftId = _nftId;
-        fractionManager = _fractionManager;
-        impactValue = _impactValue;
-        projectCategory = _projectCategory;
-        projectDataHash = _projectDataHash;
-        _mint(_fractionManager, initialSupply);
-    }
-
-    /**
-     * @dev Destroys all amount of tokens from `account`
-     * @param account The address to burn tokens from
-     */
-    function burnAll(address account) public {
-        uint256 balance = balanceOf(account); // Get the caller's balance
-        require(balance > 0, "No tokens to burn"); // Ensure the caller has tokens
-        _burn(account, balance); // Burn all tokens from the caller
-    }
+function createFractionToken(
+    uint256 nftId,
+    string memory name,
+    string memory symbol,
+    uint256 fractionCount,
+    uint256 lockPeriod
+) external nonReentrant whenNotPaused onlyRole(FRACTIONALIZER_ROLE) returns (address fractionToken) {
+    // Validate inputs
+    require(terraStakeNFT.exists(nftId), "NFT does not exist");
+    require(terraStakeNFT.balanceOf(msg.sender, nftId) > 0, "Caller does not own the NFT");
+    require(fractionCount > 0 && fractionCount <= MAX_FRACTION_SUPPLY, "Invalid fraction count");
+    require(lockPeriod >= MIN_LOCK_PERIOD && lockPeriod <= MAX_LOCK_PERIOD, "Invalid lock period");
+    require(bytes(name).length > 0 && bytes(symbol).length > 0, "Empty name or symbol");
     
-    /**
-     * @dev Updates the token name
-     * @param newName The new token name
-     */
-    function updateName(string memory newName) external {
-        require(msg.sender == fractionManager, "Only fraction manager can update");
-        _name = newName;
-    }
+    // Get NFT metadata
+    (uint256 impactValue, ITerraStakeNFT.ProjectCategory projectCategory, bytes32 projectDataHash) = _getNFTMetadata(nftId);
     
-    /**
-     * @dev Updates the token symbol
-     * @param newSymbol The new token symbol
-     */
-    function updateSymbol(string memory newSymbol) external {
-        require(msg.sender == fractionManager, "Only fraction manager can update");
-        _symbol = newSymbol;
-    }
+    // Transfer NFT to this contract
+    terraStakeNFT.safeTransferFrom(msg.sender, address(this), nftId, 1, "");
+    
+    // Deploy new fraction token
+    FractionToken newFractionToken = new FractionToken();
+    
+    // Initialize the fraction token with proper parameters
+    newFractionToken.initialize(
+        name,
+        symbol,
+        fractionCount * 10**18, // Using 18 decimals for ERC20
+        nftId,
+        address(this),
+        impactValue,
+        projectCategory,
+        projectDataHash
+    );
+    
+    // Register the fractionalization
+    _registerFractionalization(
+        nftId, 
+        address(newFractionToken), 
+        msg.sender, 
+        fractionCount, 
+        block.timestamp + lockPeriod
+    );
+    
+    // Transfer fraction tokens to the creator
+    IERC20(address(newFractionToken)).transfer(msg.sender, fractionCount * 10**18);
+    
+    // Add to user's portfolio
+    userPortfolios[msg.sender].add(address(newFractionToken));
+    userFractionBalances[msg.sender][address(newFractionToken)] = fractionCount * 10**18;
+    
+    // Emit event
+    emit FractionTokenCreated(
+        nftId,
+        address(newFractionToken),
+        msg.sender,
+        fractionCount * 10**18,
+        block.timestamp + lockPeriod
+    );
+    
+    return address(newFractionToken);
 }
 
 /**
- * @title TerraStakeFractionManager
- * @dev Combined contract for fractionalization of TerraStake NFTs and governance
- * with integrated multisig and oracle-based pricing
+ * @dev Helper function to get NFT metadata
+ * @param nftId The NFT ID
+ * @return impactValue The impact value of the NFT
+ * @return projectCategory The project category of the NFT
+ * @return projectDataHash The project data hash of the NFT
  */
-contract TerraStakeFractionManager is 
-    ERC1155HolderUpgradeable, 
-    AccessControlEnumerableUpgradeable, 
-    ReentrancyGuardUpgradeable, 
-    PausableUpgradeable,
-    UUPSUpgradeable,
-    KeeperCompatibleInterface
-{
-    using ECDSA for bytes32;
-    using EnumerableSet for EnumerableSet.AddressSet;
-    using EnumerableSet for EnumerableSet.Bytes32Set;
-
-    // =====================================================
-    // Roles - Clear separation of concerns
-    // =====================================================
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
-    bytes32 public constant FRACTIONALIZER_ROLE = keccak256("FRACTIONALIZER_ROLE");
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
-    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
-    bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
-    bytes32 public constant MULTISIG_MEMBER_ROLE = keccak256("MULTISIG_MEMBER_ROLE");
-    bytes32 public constant ORACLE_MANAGER_ROLE = keccak256("ORACLE_MANAGER_ROLE");
-
-    // =====================================================
-// Immutable state variables for gas optimization
-// =====================================================
-ITerraStakeNFT public immutable terraStakeNFT;
-ITerraStakeToken public immutable tStakeToken;
-
-// Constants
-uint256 public constant MAX_FRACTION_SUPPLY = 1e27;  // 1 billion tokens with 18 decimals
-uint256 public constant MIN_LOCK_PERIOD = 1 days;
-uint256 public constant MAX_LOCK_PERIOD = 365 days;
-uint256 public constant BASIS_POINTS = 10000;        // 100% in basis points
-uint256 public constant DEFAULT_TIMELOCK = 2 days;   // Default timelock period
-uint256 public constant MAX_PRICE_CHANGE_PERCENT = 2000; // 20% in basis points
-
-// =====================================================
-// User Analytics Structs and Mappings
-// =====================================================
-struct UserTradeData {
-    uint256 timestamp;
-    address fractionToken;
-    bool isBuy;
-    uint256 amount;
-    uint256 price;
+function _getNFTMetadata(uint256 nftId) internal view returns (
+    uint256 impactValue,
+    ITerraStakeNFT.ProjectCategory projectCategory,
+    bytes32 projectDataHash
+) {
+    // Get NFT type
+    ITerraStakeNFT.NFTMetadata memory metadata = terraStakeNFT.getTokenMetadata(nftId);
+    projectCategory = metadata.category;
+    
+    // If it's an impact NFT, get the impact certificate details
+    if (metadata.nftType == ITerraStakeNFT.NFTType.IMPACT) {
+        ITerraStakeNFT.ImpactCertificate memory certificate = terraStakeNFT.getImpactCertificate(nftId);
+        impactValue = certificate.impactValue;
+        projectDataHash = certificate.reportHash;
+    } else {
+        // For non-impact NFTs, use default values
+        impactValue = 0;
+        projectDataHash = bytes32(0);
+    }
+    
+    return (impactValue, projectCategory, projectDataHash);
 }
 
-// User portfolio tracking
-mapping(address => EnumerableSet.AddressSet) private userPortfolios;
-mapping(address => mapping(address => uint256)) private userFractionBalances;
-mapping(address => UserTradeData[]) private userTradeHistory;
-mapping(address => uint256) private userTradingVolume;
+/**
+ * @dev Registers a new fractionalization in the system
+ * @param nftId The NFT ID
+ * @param fractionToken The fraction token address
+ * @param creator The creator of the fractionalization
+ * @param fractionCount The number of fractions created
+ * @param unlockTime The time when the NFT can be redeemed
+ */
+function _registerFractionalization(
+    uint256 nftId,
+    address fractionToken,
+    address creator,
+    uint256 fractionCount,
+    uint256 unlockTime
+) internal {
+    // Implementation depends on your existing data structures
+    // This would typically update mappings that track:
+    // - Which NFTs are fractionalized
+    // - The relationship between NFTs and fraction tokens
+    // - Lock periods and other fractionalization details
+    
+    // Example (assuming you have appropriate state variables):
+    nftToFractionToken[nftId] = fractionToken;
+    fractionTokenToNFT[fractionToken] = nftId;
+    fractionTokenCreator[fractionToken] = creator;
+    fractionTokenSupply[fractionToken] = fractionCount * 10**18;
+    fractionTokenUnlockTime[fractionToken] = unlockTime;
+    
+    // Add to active fractionalization list
+    activeFractionTokens.add(fractionToken);
+}
+
+// Event for fraction token creation
+event FractionTokenCreated(
+    uint256 indexed nftId,
+    address indexed fractionToken,
+    address creator,
+    uint256 totalSupply,
+    uint256 unlockTime
+);
 
 // =====================================================
 // Secondary Market Integration
