@@ -79,44 +79,15 @@ contract TerraStakeStaking is
     address private constant BURN_ADDRESS         = 0x000000000000000000000000000000000000dEaD;
 
     // -------------------------------------------
-    //  🔹 Structs
-    // -------------------------------------------
-    struct StakingPosition {
-        uint256 amount;
-        uint256 stakingStart;
-        uint256 lastCheckpoint;
-        uint256 duration;
-        bool isLPStaker;
-        bool hasNFTBoost;
-        bool autoCompounding;
-        uint256 projectId;
-    }
-
-    struct StakingTier {
-        uint256 minDuration;
-        uint256 multiplier;      // e.g. 100 => 1.0x, 200 => 2.0x
-        bool governanceRights;   // if stakers in this tier get governance
-    }
-
-    struct PenaltyEvent {
-        uint256 projectId;
-        uint256 timestamp;
-        uint256 totalPenalty;
-        uint256 redistributed;
-        uint256 burned;
-        uint256 toLiquidity;
-    }
-
-    // -------------------------------------------
     //  🔹 State Variables (Do not change existing mappings)
     // -------------------------------------------
-    IERC1155Upgradeable public nftContract;
-    IERC20Upgradeable    public stakingToken;
+    IERC1155 public nftContract;
+    IERC20 public stakingToken;
     ITerraStakeRewardDistributor public rewardDistributor;
-    ITerraStakeProjects         public projectsContract;
-    ITerraStakeGovernance       public governanceContract;
-    ITerraStakeSlashing         public slashingContract;
-    address                     public liquidityPool;
+    ITerraStakeProjects public projectsContract;
+    ITerraStakeGovernance public governanceContract;
+    ITerraStakeSlashing public slashingContract;
+    address public liquidityPool;
 
     uint256 public liquidityInjectionRate;  // percentage of rewards reinjected
     bool    public autoLiquidityEnabled;
@@ -160,62 +131,10 @@ contract TerraStakeStaking is
     // -------------------------------------------
     //  🔹 Events
     // -------------------------------------------
-    event Staked(
-        address indexed user,
-        uint256 indexed projectId,
-        uint256 amount,
-        uint256 duration,
-        uint256 timestamp,
-        uint256 newTotal
-    );
-    event Unstaked(
-        address indexed user,
-        uint256 indexed projectId,
-        uint256 amount,
-        uint256 penalty,
-        uint256 timestamp
-    );
-    event RewardClaimed(
-        address indexed user,
-        uint256 indexed projectId,
-        uint256 amount,
-        uint256 timestamp
-    );
-    event RewardCompounded(
-        address indexed user,
-        uint256 indexed projectId,
-        uint256 amount,
-        uint256 timestamp
-    );
-    event LiquidityInjected(address indexed destination, uint256 amount, uint256 timestamp);
-    event PenaltyApplied(
-        address indexed user,
-        uint256 indexed projectId,
-        uint256 total,
-        uint256 burned,
-        uint256 redistributed,
-        uint256 toLiquidity
-    );
-    event ValidatorAdded(address indexed validator, uint256 timestamp);
     event ValidatorRemoved(address indexed validator, uint256 timestamp);
-    event ValidatorStatusChanged(address indexed validator, bool isValidator);
-    event ValidatorRewardsAccumulated(uint256 amount, uint256 newTotal);
-    event ValidatorRewardsDistributed(address indexed validator, uint256 amount);
-    event GovernanceProposalCreated(uint256 indexed proposalId, address creator, string description);
-    event ProposalVoted(uint256 indexed proposalId, address indexed voter, uint256 votingPower, bool support);
-    event GovernanceViolatorMarked(address indexed violator, uint256 timestamp);
-    event TiersUpdated(uint256[] minDurations, uint256[] multipliers, bool[] votingRights);
-    event LiquidityInjectionRateUpdated(uint256 newRate);
-    event AutoLiquidityToggled(bool enabled);
-    event ValidatorThresholdUpdated(uint256 newThreshold);
-    event RewardDistributorUpdated(address indexed newDistributor);
-    event LiquidityPoolUpdated(address indexed newPool);
-    event TokenRecovered(address indexed token, uint256 amount, address recipient);
-    event Slashed(address indexed validator, uint256 amount, uint256 timestamp);
     event SlashingContractUpdated(address indexed newContract);
     event ProjectApprovalVoted(uint256 indexed projectId, address voter, bool approved, uint256 votingPower);
     event RewardRateAdjusted(uint256 oldRate, uint256 newRate);
-    event ValidatorCommissionUpdated(address indexed validator, uint256 newCommission);
     event HalvingApplied(
         uint256 indexed epoch,
         uint256 oldBaseAPR,
@@ -261,8 +180,8 @@ contract TerraStakeStaking is
         if (_governanceContract == address(0)) revert InvalidAddress("governanceContract", _governanceContract);
         if (_admin == address(0)) revert InvalidAddress("admin", _admin);
 
-        nftContract      = IERC1155Upgradeable(_nftContract);
-        stakingToken     = IERC20Upgradeable(_stakingToken);
+        nftContract      = IERC1155(_nftContract);
+        stakingToken     = IERC20(_stakingToken);
         rewardDistributor= ITerraStakeRewardDistributor(_rewardDistributor);
         liquidityPool    = _liquidityPool;
         projectsContract = ITerraStakeProjects(_projectsContract);
@@ -1042,12 +961,12 @@ contract TerraStakeStaking is
         onlyRole(EMERGENCY_ROLE)
         returns (bool)
     {
-        uint256 amount = IERC20Upgradeable(token).balanceOf(address(this));
+        uint256 amount = IERC20(token).balanceOf(address(this));
         if (token == address(stakingToken)) {
             // We can only withdraw the portion that is not staked
             amount = amount - _totalStaked; 
         }
-        bool success = IERC20Upgradeable(token).transfer(msg.sender, amount);
+        bool success = IERC20(token).transfer(msg.sender, amount);
         if (!success) {
             revert TransferFailed(token, address(this), msg.sender, amount);
         }

@@ -14,8 +14,6 @@ interface ITerraStakeRewardDistributor {
      */
     function distributeReward(address user, uint256 amount) external;
 
-    function claimRewards(address user) external returns(uint256);
-
     /**
      * @notice Redistribute penalties from slashed validators
      * @param from Address of the slashed validator
@@ -255,4 +253,11 @@ interface ITerraStakeRewardDistributor {
      * @return version Contract version
      */
     function version() external pure returns (string memory);
+
+    /**
+     * @notice Claim rewards from the distributor
+     * @param recipient Address to receive the rewards
+     * @return amount Amount of rewards claimed
+     */
+    function claimRewards(address recipient) external returns (uint256 amount);
 }

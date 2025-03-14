@@ -5,11 +5,18 @@ import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnume
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+
+
 import "../interfaces/ITerraStakeRewardDistributor.sol";
+import "../interfaces/ITerraStakeStaking.sol";
+import "../interfaces/ITerraStakeLiquidityGuard.sol";
+import "../interfaces/ITerraStakeSlashing.sol";
 import "../interfaces/ITerraStakeTreasuryManager.sol";
 
 /**
@@ -17,12 +24,33 @@ import "../interfaces/ITerraStakeTreasuryManager.sol";
  * @notice Manages liquidity for the TerraStake protocol
  * @dev Protects against liquidity attacks, implements anti-whale mechanisms
  */
-contract TerraStakeLiquidityGuard is
+contract TerraStakeLiquidityGuard is 
+    Initializable,
     AccessControlEnumerableUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    VRFConsumerBaseV2
 {
     using SafeERC20 for IERC20;
+
+    // -------------------------------------------
+    //  Core State Variables
+    // -------------------------------------------
+    ITerraStakeTreasuryManager public treasuryManager;
+    ITerraStakeRewardDistributor public rewardDistributor;
+    ISwapRouter public swapRouter;
+    VRFCoordinatorV2Interface public vrfCoordinator;
+    ERC20Upgradeable public tStakeToken;
+    ERC20Upgradeable public usdcToken;
+    INonfungiblePositionManager public positionManager;
+    IUniswapV3Pool public uniswapPool;
+    uint256 public tokenID;
+    uint128 public liquidity;
+    uint256 public amount0;
+    uint256 public amount1;
+    uint256 public tStakeAmount;
+    uint256 public usdcAmount;
+
     // -------------------------------------------
     //  Roles
     // -------------------------------------------
@@ -30,17 +58,22 @@ contract TerraStakeLiquidityGuard is
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+    bytes32 public constant TREASURY_MANAGER_ROLE = keccak256("TREASURY_MANAGER_ROLE");
+    bytes32 public constant REWARD_DISTRIBUTOR_ROLE = keccak256("REWARD_DISTRIBUTOR_ROLE");
+
     // -------------------------------------------
     //  Constants
     // -------------------------------------------
-    uint256 public constant ONE_DAY = 1 days;
-    uint256 public constant ONE_WEEK = 7 days;
-    uint256 public constant PERCENTAGE_DENOMINATOR = 100;
-    uint256 public constant DEFAULT_SLIPPAGE_TOLERANCE = 50; // 0.5%
-    uint24 public constant DEFAULT_POOL_FEE = 3000; // 0.3%
+    uint256 constant ONE_DAY = 1 days;
+    uint256 constant ONE_WEEK = 7 days;
+    uint256 constant PERCENTAGE_DENOMINATOR = 100;
+    uint256 constant DEFAULT_SLIPPAGE_TOLERANCE = 50; // 0.5%
+    uint24 constant DEFAULT_POOL_FEE = 3000; // 0.3%
+
     // -------------------------------------------
     //  Errors
     // -------------------------------------------
+    error InvalidAddress(string param);
     error InvalidZeroAddress(string param);
     error InvalidParameter(string param, uint256 value);
     error InsufficientLiquidity(uint256 requested, uint256 available);
@@ -49,12 +82,13 @@ contract TerraStakeLiquidityGuard is
     error LiquidityCooldownNotMet(uint256 remainingTime);
     error TooEarlyToWithdraw(uint256 available, uint256 requested);
     error TWAPVerificationFailed(uint256 currentPrice, uint256 twapPrice);
-    error PositionNotFound(uint256 tokenId);
+    error PositionNotFound(uint256 _tokenID);
     error OperationFailed(string operation);
     error EmergencyModeActive();
     error EmergencyModeNotActive();
     error InvalidTWAPTimeframe(uint256 timeframe);
     error SlippageExceeded(uint256 expected, uint256 received);
+
     // -------------------------------------------
     //  Events
     // -------------------------------------------
@@ -69,18 +103,18 @@ contract TerraStakeLiquidityGuard is
     event LiquidityInjected(
         uint256 tStakeAmount,
         uint256 usdcAmount,
-        uint256 tokenId,
+        uint256 _tokenID,
         uint128 liquidity
     );
     event PositionLiquidityDecreased(
-        uint256 indexed tokenId,
+        uint256 indexed _tokenID,
         uint128 liquidityReduced,
         uint256 token0Amount,
         uint256 token1Amount
     );
-    event PositionClosed(uint256 indexed tokenId);
+    event PositionClosed(uint256 indexed _tokenID);
     event PositionFeesCollected(
-        uint256 indexed tokenId,
+        uint256 indexed _tokenID,
         uint256 token0Fee,
         uint256 token1Fee
     );
@@ -90,18 +124,7 @@ contract TerraStakeLiquidityGuard is
     event RewardsReinvested(uint256 rewardAmount, uint256 liquidityAdded);
     event TWAPVerificationFailedEvent(uint256 currentPrice, uint256 twapPrice);
     event WhitelistStatusChanged(address user, bool status);
-    // -------------------------------------------
-    //  State Variables
-    // -------------------------------------------
-    
-    // Core protocol tokens and contracts
-    IERC20 public tStakeToken;
-    IERC20 public usdcToken;
-    INonfungiblePositionManager public positionManager;
-    IUniswapV3Pool public uniswapPool;
-    address public treasury;
-    ITerraStakeRewardDistributor public rewardDistributor;
-    
+
     // Anti-whale mechanism parameters
     uint256 public dailyWithdrawalLimit; // % of user's total liquidity
     uint256 public weeklyWithdrawalLimit; // % of user's total liquidity
@@ -141,15 +164,17 @@ contract TerraStakeLiquidityGuard is
     
     // Emergency controls
     bool public emergencyMode;
+
     // -------------------------------------------
     //  Initialization
     // -------------------------------------------
     
+    //  **Constructor for Upgradeable Contracts**
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(address _vrfCoordinator) VRFConsumerBaseV2(_vrfCoordinator) {
         _disableInitializers();
     }
-    
+  
     /**
      * @notice Initialize the liquidity guard contract
      * @param _tStakeToken Address of the TerraStake token
@@ -157,7 +182,7 @@ contract TerraStakeLiquidityGuard is
      * @param _positionManager Address of the Uniswap position manager
      * @param _uniswapPool Address of the Uniswap pool
      * @param _rewardDistributor Address of the reward distributor
-     * @param _treasury Address of the treasury
+     * @param _treasuryManager Address of the treasury manager
      * @param _reinjectionThreshold Minimum amount for liquidity reinjection
      * @param _admin Address of the admin
      */
@@ -167,62 +192,62 @@ contract TerraStakeLiquidityGuard is
         address _positionManager,
         address _uniswapPool,
         address _rewardDistributor,
-        address _treasury,
+        address _treasuryManager,
         uint256 _reinjectionThreshold,
         address _admin
     ) external initializer {
+        // Initialize OpenZeppelin upgradeable modules
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
-        
-        if (_tStakeToken == address(0)) revert InvalidZeroAddress("tStakeToken");
-        if (_usdcToken == address(0)) revert InvalidZeroAddress("usdcToken");
-        if (_positionManager == address(0)) revert InvalidZeroAddress("positionManager");
-        if (_uniswapPool == address(0)) revert InvalidZeroAddress("uniswapPool");
-        if (_admin == address(0)) revert InvalidZeroAddress("admin");
-        
-        tStakeToken = IERC20(_tStakeToken);
-        usdcToken = IERC20(_usdcToken);
+
+        // **Ensure all required addresses are valid**
+        if (_tStakeToken == address(0)) revert InvalidAddress("tStakeToken");
+        if (_usdcToken == address(0)) revert InvalidAddress("usdcToken");
+        if (_positionManager == address(0)) revert InvalidAddress("positionManager");
+        if (_uniswapPool == address(0)) revert InvalidAddress("uniswapPool");
+        if (_rewardDistributor == address(0)) revert InvalidAddress("rewardDistributor");
+        if (_treasuryManager == address(0)) revert InvalidAddress("treasuryManager");
+        if (_admin == address(0)) revert InvalidAddress("admin");
+
+        //  **Assign State Variables**
+        tStakeToken = ERC20Upgradeable(_tStakeToken);
+        usdcToken = ERC20Upgradeable(_usdcToken);
         positionManager = INonfungiblePositionManager(_positionManager);
         uniswapPool = IUniswapV3Pool(_uniswapPool);
-        
-        if (_rewardDistributor != address(0)) {
-            rewardDistributor = ITerraStakeRewardDistributor(_rewardDistributor);
-        }
-        
-        if (_treasury != address(0)) {
-            treasury = _treasury;
-        }
-        
-        // Set default anti-whale parameters
+        rewardDistributor = ITerraStakeRewardDistributor(_rewardDistributor);
+        treasuryManager = ITerraStakeTreasuryManager(_treasuryManager);
+
+        //  **Set default anti-whale parameters**
         dailyWithdrawalLimit = 5;      // 5% per day
         weeklyWithdrawalLimit = 25;    // 25% per week
         vestingUnlockRate = 10;        // 10% unlocks per week
         baseFeePercentage = 2;         // 2% base fee
         largeLiquidityFeeIncrease = 8; // +8% for large withdrawals (>50%)
-        liquidityRemovalCooldown = 7 days; // 7 day cooldown
-        
-        reinjectionThreshold = _reinjectionThreshold;
-        autoLiquidityInjectionRate = 5; // 5% default
-        slippageTolerance = DEFAULT_SLIPPAGE_TOLERANCE;
-        
-        // Set TWAP observation timeframes
+        liquidityRemovalCooldown = 7 days; // 7-day cooldown period
+
+        //  **Set reinjection threshold with a default fallback**
+        reinjectionThreshold = (_reinjectionThreshold != 0) ? _reinjectionThreshold : 1e18; // Default to 1 token if 0
+        autoLiquidityInjectionRate = 5; // Default 5% auto-liquidity injection rate
+        slippageTolerance = DEFAULT_SLIPPAGE_TOLERANCE; // Use predefined default slippage tolerance
+
+        //  **Set TWAP observation timeframes**
         twapObservationTimeframes = [30 minutes, 1 hours, 4 hours, 24 hours];
-        
-        // Grant roles
+
+        //  **Grant Roles**
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(GOVERNANCE_ROLE, _admin);
-        _grantRole(EMERGENCY_ROLE, _admin);
         _grantRole(UPGRADER_ROLE, _admin);
-        _grantRole(OPERATOR_ROLE, _admin);
+        _grantRole(TREASURY_MANAGER_ROLE, _treasuryManager);
+        _grantRole(REWARD_DISTRIBUTOR_ROLE, _rewardDistributor);
     }
-    
+ 
     /**
      * @notice Authorize contract upgrades (restricted to upgrader role)
      * @param newImplementation Address of the new implementation
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-    
+
     // -------------------------------------------
     //  Liquidity Management - Core Functions
     // -------------------------------------------
@@ -239,10 +264,9 @@ contract TerraStakeLiquidityGuard is
             if (userLiquidity[msg.sender] + amount > maxLiquidityPerAddress) {
                 revert InvalidParameter("exceeds max liquidity per address", userLiquidity[msg.sender] + amount);
             }
-        }
-        
+        }        
         // Transfer tokens to the contract
-        tStakeToken.safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(address(tStakeToken)).safeTransferFrom(msg.sender, address(this), amount);
         
         // Update user's liquidity position
         userLiquidity[msg.sender] += amount;
@@ -254,318 +278,6 @@ contract TerraStakeLiquidityGuard is
         
         emit LiquidityDeposited(msg.sender, amount);
     }
-    
-    /**
-     * @notice Remove liquidity from the contract
-     * @param amount Amount of tokens to remove
-     */
-    function removeLiquidity(uint256 amount) external nonReentrant {
-        if (emergencyMode) revert EmergencyModeActive();
-        if (amount == 0) revert InvalidParameter("amount", amount);
-        
-        // Whitelist can bypass restrictions
-        if (!liquidityWhitelist[msg.sender]) {
-            // Validate cooldown period
-            if (lastLiquidityRemoval[msg.sender] + liquidityRemovalCooldown > block.timestamp) {
-                revert LiquidityCooldownNotMet(
-                   lastLiquidityRemoval[msg.sender] + liquidityRemovalCooldown - block.timestamp
-                );
-            }
-            
-            // Validate daily withdrawal limit
-            uint256 userTotalLiquidity = userLiquidity[msg.sender];
-            uint256 maxDailyAmount = (userTotalLiquidity * dailyWithdrawalLimit) / PERCENTAGE_DENOMINATOR;
-            
-            // Reset daily tracking if a day has passed
-            if (lastDailyWithdrawal[msg.sender] + ONE_DAY < block.timestamp) {
-                dailyWithdrawalAmount[msg.sender] = 0;
-                lastDailyWithdrawal[msg.sender] = block.timestamp;
-            }
-            
-            // Check if new withdrawal would exceed daily limit
-            if (dailyWithdrawalAmount[msg.sender] + amount > maxDailyAmount) {
-                revert DailyLiquidityLimitExceeded(
-                    amount, 
-                    maxDailyAmount - dailyWithdrawalAmount[msg.sender]
-                );
-            }
-            
-            // Validate weekly withdrawal limit
-            uint256 maxWeeklyAmount = (userTotalLiquidity * weeklyWithdrawalLimit) / PERCENTAGE_DENOMINATOR;
-            
-            // Reset weekly tracking if a week has passed
-            if (lastWeeklyWithdrawal[msg.sender] + ONE_WEEK < block.timestamp) {
-                weeklyWithdrawalAmount[msg.sender] = 0;
-                lastWeeklyWithdrawal[msg.sender] = block.timestamp;
-            }
-            
-            // Check if new withdrawal would exceed weekly limit
-            if (weeklyWithdrawalAmount[msg.sender] + amount > maxWeeklyAmount) {
-                revert WeeklyLiquidityLimitExceeded(
-                    amount, 
-                    maxWeeklyAmount - weeklyWithdrawalAmount[msg.sender]
-                );
-            }
-            
-            // Validate TWAP price to prevent withdrawals during price crashes
-            if (!validateTWAPPrice()) {
-                (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
-                uint256 price = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
-                uint256 twap = calculateTWAP();
-                emit TWAPVerificationFailedEvent(price, twap);
-                revert TWAPVerificationFailed(price, twap);
-            }
-            
-            // Validate vesting-based unlock
-            uint256 timeSinceVestingStart = block.timestamp - userVestingStart[msg.sender];
-            uint256 weeksVested = timeSinceVestingStart / ONE_WEEK;
-            uint256 unlockedPercentage = (weeksVested * vestingUnlockRate);
-            if (unlockedPercentage > 100) unlockedPercentage = 100;
-            
-            uint256 unlockedAmount = (userTotalLiquidity * unlockedPercentage) / PERCENTAGE_DENOMINATOR;
-            uint256 withdrawnAmount = userTotalLiquidity - userLiquidity[msg.sender];
-            
-            if (withdrawnAmount + amount > unlockedAmount) {
-                revert TooEarlyToWithdraw(unlockedAmount - withdrawnAmount, amount);
-            }
-            
-            // Update daily and weekly tracking
-            dailyWithdrawalAmount[msg.sender] += amount;
-            weeklyWithdrawalAmount[msg.sender] += amount;
-        }
-        
-        // Check if user has enough liquidity
-        if (userLiquidity[msg.sender] < amount) {
-            revert InsufficientLiquidity(amount, userLiquidity[msg.sender]);
-        }
-        
-        // Calculate fee based on withdrawal size
-        uint256 fee = getWithdrawalFee(msg.sender, amount);
-        uint256 amountAfterFee = amount - fee;
-        
-        // Update user's liquidity position
-        userLiquidity[msg.sender] -= amount;
-        lastLiquidityRemoval[msg.sender] = block.timestamp;
-        
-        // Update analytics
-        totalWithdrawalCount++;
-        if (amount > userLiquidity[msg.sender] / 2) {
-            largeWithdrawalCount++;
-        }
-        
-        // Transfer tokens to user after fee
-        tStakeToken.safeTransfer(msg.sender, amountAfterFee);
-        
-        // Send fee to treasury if there is one
-        if (fee > 0 && address(treasury) != address(0)) {
-            tStakeToken.safeTransfer(address(treasury), fee);
-            totalFeesCollected += fee;
-        }
-        
-        emit LiquidityRemoved(
-            msg.sender, 
-            amount, 
-            fee, 
-            userLiquidity[msg.sender],
-            block.timestamp
-        );
-    }
-    
-    /**
-     * @notice Inject liquidity into Uniswap V3 pool
-     * @param tStakeAmount Amount of TStake tokens to inject
-     * @param usdcAmount Amount of USDC tokens to inject
-     * @param tickLower Lower tick boundary for position
-     * @param tickUpper Upper tick boundary for position
-     * @return tokenId ID of the newly created position
-     */
-    function injectLiquidity(
-        uint256 tStakeAmount,
-        uint256 usdcAmount,
-        int24 tickLower,
-        int24 tickUpper
-    ) external nonReentrant onlyRole(OPERATOR_ROLE) returns (uint256 tokenId) {
-        if (emergencyMode) revert EmergencyModeActive();
-        if (tStakeAmount == 0 || usdcAmount == 0) revert InvalidParameter("amounts", 0);
-        
-        // Approve tokens for position manager
-        tStakeToken.approve(address(positionManager), tStakeAmount);
-        usdcToken.approve(address(positionManager), usdcAmount);
-        
-        // Create the position parameters
-        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
-            token0: address(tStakeToken),
-            token1: address(usdcToken),
-            fee: DEFAULT_POOL_FEE,
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            amount0Desired: tStakeAmount,
-            amount1Desired: usdcAmount,
-            amount0Min: tStakeAmount * (10000 - slippageTolerance) / 10000,
-            amount1Min: usdcAmount * (10000 - slippageTolerance) / 10000,
-            recipient: address(this),
-            deadline: block.timestamp + 15 minutes
-        });
-        
-        uint128 liquidity;
-        uint256 amount0;
-        uint256 amount1;
-        // Mint the position - fixed by removing type declarations
-        (tokenId, liquidity, amount0, amount1) = positionManager.mint(params);
-        
-        // Add to active positions
-        if (!isPositionActive[tokenId]) {
-            activePositions.push(tokenId);
-            isPositionActive[tokenId] = true;
-        }
-        
-        // Check for refunds of unused tokens
-        if (amount0 < tStakeAmount) {
-            tStakeToken.approve(address(positionManager), 0);
-        }
-        if (amount1 < usdcAmount) {
-            usdcToken.approve(address(positionManager), 0);
-        }
-        
-        emit LiquidityInjected(amount0, amount1, tokenId, liquidity);
-        
-        return tokenId;
-    }
-    
-    /**
-     * @notice Collect fees from a Uniswap V3 position
-     * @param tokenId The ID of the position
-     * @return amount0 Amount of token0 collected
-     * @return amount1 Amount of token1 collected
-     */
-    function collectPositionFees(uint256 tokenId) 
-        external 
-        nonReentrant 
-        onlyRole(OPERATOR_ROLE) 
-        returns (uint256 amount0, uint256 amount1) 
-    {
-        if (!isPositionActive[tokenId]) revert PositionNotFound(tokenId);
-        
-        // Collect all available fees
-        INonfungiblePositionManager.CollectParams memory params = INonfungiblePositionManager.CollectParams({
-            tokenId: tokenId,
-            recipient: address(this),
-            amount0Max: type(uint128).max,
-            amount1Max: type(uint128).max
-        });
-        
-        (amount0, amount1) = positionManager.collect(params);
-        
-        emit PositionFeesCollected(tokenId, amount0, amount1);
-        
-        return (amount0, amount1);
-    }
-    
-    /**
-     * @notice Decrease liquidity in a position
-     * @param tokenId The ID of the position
-     * @param liquidityPercentage Percentage of liquidity to decrease (1-100)
-     * @return amount0 Amount of token0 received
-     * @return amount1 Amount of token1 received
-     */
-    function decreasePositionLiquidity(uint256 tokenId, uint256 liquidityPercentage)
-        external
-        nonReentrant
-        onlyRole(OPERATOR_ROLE)
-        returns (uint256 amount0, uint256 amount1)
-    {
-        if (!isPositionActive[tokenId]) revert PositionNotFound(tokenId);
-        if (liquidityPercentage == 0 || liquidityPercentage > 100)
-            revert InvalidParameter("liquidityPercentage", liquidityPercentage);
-        
-        // Get position info
-        (, , , , , , , uint128 liquidity, , , , ) = positionManager.positions(tokenId);
-        uint128 liquidityToRemove = uint128((uint256(liquidity) * liquidityPercentage) / 100);
-        
-        if (liquidityToRemove == 0) revert InvalidParameter("liquidityToRemove", 0);
-        
-        // Prepare decrease liquidity params
-        INonfungiblePositionManager.DecreaseLiquidityParams memory params = 
-            INonfungiblePositionManager.DecreaseLiquidityParams({
-                tokenId: tokenId,
-                liquidity: liquidityToRemove,
-                amount0Min: 0, // We'll collect anyway
-                amount1Min: 0, // We'll collect anyway
-                deadline: block.timestamp + 15 minutes
-            });
-        
-        // Decrease liquidity
-        (amount0, amount1) = positionManager.decreaseLiquidity(params);
-        
-        // Collect the tokens
-        INonfungiblePositionManager.CollectParams memory collectParams = 
-            INonfungiblePositionManager.CollectParams({
-                tokenId: tokenId,
-                recipient: address(this),
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
-            });
-        
-        (amount0, amount1) = positionManager.collect(collectParams);
-        
-        emit PositionLiquidityDecreased(tokenId, liquidityToRemove, amount0, amount1);
-        
-        return (amount0, amount1);
-    }
-    
-    /**
-     * @notice Close a position completely
-     * @param tokenId The ID of the position
-     * @return amount0 Amount of token0 received
-     * @return amount1 Amount of token1 received
-     */
-    function closePosition(uint256 tokenId)
-        external
-        nonReentrant
-        onlyRole(OPERATOR_ROLE)
-        returns (uint256 amount0, uint256 amount1)
-    {
-        if (!isPositionActive[tokenId]) revert PositionNotFound(tokenId);
-        
-        // Get position info
-        (, , , , , , , uint128 liquidity, , , , ) = positionManager.positions(tokenId);
-        
-        if (liquidity > 0) {
-            // First decrease all liquidity
-            INonfungiblePositionManager.DecreaseLiquidityParams memory decreaseParams = 
-                INonfungiblePositionManager.DecreaseLiquidityParams({
-                    tokenId: tokenId,
-                    liquidity: liquidity,
-                    amount0Min: 0,
-                    amount1Min: 0,
-                    deadline: block.timestamp + 15 minutes
-                });
-            
-            positionManager.decreaseLiquidity(decreaseParams);
-        }
-        
-        // Collect all tokens
-        INonfungiblePositionManager.CollectParams memory collectParams = 
-            INonfungiblePositionManager.CollectParams({
-                tokenId: tokenId,
-                recipient: address(this),
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
-            });
-        
-        (amount0, amount1) = positionManager.collect(collectParams);
-        
-        // Burn the position
-        positionManager.burn(tokenId);
-        
-        // Remove from active positions
-        removePositionFromActive(tokenId);
-        
-        emit PositionClosed(tokenId);
-        
-        return (amount0, amount1);
-    }
-    
     /**
      * @notice Reinvest rewards into liquidity
      * @param tickLower Lower tick boundary for position
@@ -580,23 +292,23 @@ contract TerraStakeLiquidityGuard is
         if (address(rewardDistributor) == address(0)) revert InvalidZeroAddress("rewardDistributor");
         
         // Claim rewards from distributor
-        uint256 rewardAmount = rewardDistributor.claimRewards(address(this));
+        uint256 _rewardAmount = rewardDistributor.claimRewards(address(this));
         
-        if (rewardAmount < reinjectionThreshold) {
-            revert InvalidParameter("rewardAmount", rewardAmount);
+        if (_rewardAmount < reinjectionThreshold) {
+            revert InvalidParameter("rewardAmount", _rewardAmount);
         }
         
         // Calculate auto-liquidity portion
-        uint256 liquidityPortion = (rewardAmount * autoLiquidityInjectionRate) / 100;
+        uint256 liquidityPortion = (_rewardAmount * autoLiquidityInjectionRate) / 100;
         
-        // Get equivalent USDC from Treasury
-        if (address(treasury) != address(0) && liquidityPortion > 0) {
-            uint256 usdcAmount = treasury.withdrawUSDCEquivalent(liquidityPortion);
+        // Get equivalent USDC from TreasuryManager
+        if (address(treasuryManager) != address(0) && liquidityPortion > 0) {
+            uint256 _usdcAmount = treasuryManager.withdrawUSDCEquivalent(liquidityPortion);
             
-            if (usdcAmount > 0) {
+            if (_usdcAmount > 0) {
                 // Approve tokens
-                tStakeToken.safeApprove(address(positionManager), liquidityPortion);
-                usdcToken.safeApprove(address(positionManager), usdcAmount);
+                IERC20(address(tStakeToken)).approve(address(positionManager), liquidityPortion);
+                IERC20(address(usdcToken)).approve(address(positionManager), _usdcAmount);
                 
                 // Create the position
                 INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
@@ -606,25 +318,23 @@ contract TerraStakeLiquidityGuard is
                     tickLower: tickLower,
                     tickUpper: tickUpper,
                     amount0Desired: liquidityPortion,
-                    amount1Desired: usdcAmount,
+                    amount1Desired: _usdcAmount,
                     amount0Min: liquidityPortion * (10000 - slippageTolerance) / 10000,
-                    amount1Min: usdcAmount * (10000 - slippageTolerance) / 10000,
+                    amount1Min: _usdcAmount * (10000 - slippageTolerance) / 10000,
                     recipient: address(this),
                     deadline: block.timestamp + 15 minutes
                 });
                 
-                uint256 tokenId;
-                uint128 liquidity;
-                // Fixed by removing type declarations
-                (tokenId, liquidity, , ) = positionManager.mint(params);
+                // Using different variable names to avoid shadowing
+                (uint256 _new__tokenID, uint128 _newLiquidity, uint256 _amount0, uint256 _amount1) = positionManager.mint(params);
                 
                 // Add to active positions
-                if (!isPositionActive[tokenId]) {
-                    activePositions.push(tokenId);
-                    isPositionActive[tokenId] = true;
+                if (!isPositionActive[_new__tokenID]) {
+                    activePositions.push(_new__tokenID);
+                    isPositionActive[_new__tokenID] = true;
                 }
                 
-                emit RewardsReinvested(rewardAmount, liquidityPortion);
+                emit RewardsReinvested(_rewardAmount, liquidityPortion);
             }
         }
     }
@@ -657,11 +367,11 @@ contract TerraStakeLiquidityGuard is
     }
 
     /**
-     * @notice Verify TWAP price before withdrawal
-     * @return valid True if TWAP price is valid
+     * @notice
+     * @return 
      */
-    function verifyTWAPForWithdrawal() external view returns (bool) {
-
+    function verifyTWAPForWithdrawal() external view returns (bool success) {
+        return false;
     }
     
     /**
@@ -687,7 +397,7 @@ contract TerraStakeLiquidityGuard is
             try uniswapPool.observe(secondsAgos) returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidity) {
                 // Calculate tick change over time period
                 int56 tickChange = tickCumulatives[1] - tickCumulatives[0];
-                int56 timeChange = int56(secondsAgo);
+                int56 timeChange = int56(uint56(secondsAgo));
                 int24 avgTick = int24(tickChange / timeChange);
                 
                 // Convert tick to price
@@ -716,7 +426,26 @@ contract TerraStakeLiquidityGuard is
      * @return price The calculated price
      */
     function tickToPrice(int24 tick) internal pure returns (uint256 price) {
-        return 1.0001 ** uint256(int256(tick));
+        // Solidity doesn't support floating point, so we need to use a different approach
+        // 1.0001^tick is approximated using a formula based on the tick value
+        uint256 baseValue = 1e12; // Use a fixed-point representation
+        
+        if (tick < 0) {
+            // For negative ticks, we divide by 1.0001^|tick|
+            uint256 absTick = uint256(-int256(tick));
+            uint256 divisor = 1000100000000; // Approximation of 1.0001^1 * 10^12
+            for (uint256 i = 0; i < absTick; i++) {
+                baseValue = (baseValue * 1e12) / divisor;
+            }
+        } else {
+            // For positive ticks, we multiply by 1.0001^tick
+            uint256 multiplier = 1000100000000; // Approximation of 1.0001^1 * 10^12
+            for (uint256 i = 0; i < uint256(int256(tick)); i++) {
+                baseValue = (baseValue * multiplier) / 1e12;
+            }
+        }
+        
+        return baseValue;
     }
     
     // -------------------------------------------
@@ -725,18 +454,18 @@ contract TerraStakeLiquidityGuard is
     
     /**
      * @notice Remove a position from the active positions array
-     * @param tokenId The token ID to remove
+     * @param _tokenID The token ID to remove
      */
-    function removePositionFromActive(uint256 tokenId) internal {
-        if (!isPositionActive[tokenId]) return;
+    function removePositionFromActive(uint256 _tokenID) internal {
+        if (!isPositionActive[_tokenID]) return;
         
         // Find and remove the position from the array
         for (uint256 i = 0; i < activePositions.length; i++) {
-            if (activePositions[i] == tokenId) {
+            if (activePositions[i] == _tokenID) {
                 // Replace with the last element and pop
                 activePositions[i] = activePositions[activePositions.length - 1];
                 activePositions.pop();
-                isPositionActive[tokenId] = false;
+                isPositionActive[_tokenID] = false;
                 break;
             }
         }
@@ -780,14 +509,6 @@ contract TerraStakeLiquidityGuard is
      */
     function getAllActivePositions() external view returns (uint256[] memory positions) {
         return activePositions;
-    }
-
-    /**
-     * @notice Get the address of the Uniswap V3 pool
-     * @return pool Address of the Uniswap V3 pool
-     */
-    function getLiquidityPool() external view returns (address) {
-        return address(uniswapPool);
     }
     
     // -------------------------------------------
@@ -906,62 +627,9 @@ contract TerraStakeLiquidityGuard is
             if (newTimeframes[i] == 0 || newTimeframes[i] > 7 days) {
                 revert InvalidTWAPTimeframe(newTimeframes[i]);
             }
-            twapObservationTimeframes.push(newTimeframes[i]);
+            twapObservationTimeframes.push(uint32(newTimeframes[i]));
         }
     }
-    
-    /**
-     * @notice Update TWAP maximum deviation percentage
-     * @param newDeviation New maximum deviation percentage
-     */
-    function setTWAPDeviationPercentage(uint256 newDeviation) external onlyRole(GOVERNANCE_ROLE) {
-        if (newDeviation > 50) revert InvalidParameter("newDeviation", newDeviation);
-        twapDeviationPercentage = newDeviation;
-        emit ParameterUpdated("twapDeviationPercentage", newDeviation);
-    }
-    
-    /**
-     * @notice Set whitelist status for an address
-     * @param user Address to update
-     * @param status New whitelist status
-     */
-    function setWhitelistStatus(address user, bool status) external onlyRole(GOVERNANCE_ROLE) {
-        liquidityWhitelist[user] = status;
-        emit WhitelistStatusChanged(user, status);
-    }
-    
-    /**
-     * @notice Batch set whitelist status for multiple addresses
-     * @param users Addresses to update
-     * @param statuses New whitelist statuses
-     */
-    function batchSetWhitelistStatus(address[] calldata users, bool[] calldata statuses) external onlyRole(GOVERNANCE_ROLE) {
-        if (users.length != statuses.length) revert InvalidParameter("arrays length mismatch", users.length);
-        
-        for (uint256 i = 0; i < users.length; i++) {
-            liquidityWhitelist[users[i]] = statuses[i];
-            emit WhitelistStatusChanged(users[i], statuses[i]);
-        }
-    }
-    
-    /**
-     * @notice Update reward distributor address
-     * @param newDistributor Address of the new reward distributor
-     */
-    function setRewardDistributor(address newDistributor) external onlyRole(GOVERNANCE_ROLE) {
-        if (newDistributor == address(0)) revert InvalidZeroAddress("newDistributor");
-        rewardDistributor = ITerraStakeRewardDistributor(newDistributor);
-    }
-    
-    /**
-     * @notice Update treasury address
-     * @param newTreasury Address of the new treasury
-     */
-    function setTreasury(address newTreasury) external onlyRole(GOVERNANCE_ROLE) {
-        if (newTreasury == address(0)) revert InvalidZeroAddress("newTreasury");
-        treasury = newTreasury;
-    }
-    
     // -------------------------------------------
     //  Emergency Functions
     // -------------------------------------------
@@ -984,21 +652,21 @@ contract TerraStakeLiquidityGuard is
     
     /**
      * @notice Emergency withdraw all tokens from a specific position
-     * @param tokenId ID of the position to withdraw from
+     * @param ___tokenID ID of the position to withdraw from
      */
-    function emergencyWithdrawPosition(uint256 tokenId) external onlyRole(EMERGENCY_ROLE) {
+    function emergencyWithdrawPosition(uint256 ___tokenID) external onlyRole(EMERGENCY_ROLE) {
         if (!emergencyMode) revert EmergencyModeNotActive();
-        if (!isPositionActive[tokenId]) revert PositionNotFound(tokenId);
+        if (!isPositionActive[___tokenID]) revert PositionNotFound(___tokenID);
         
         // Get position info
-        (, , , , , , , uint128 liquidity, , , , ) = positionManager.positions(tokenId);
+        (, , , , , , , uint128 _liquidity, , , , ) = positionManager.positions(___tokenID);
         
-        if (liquidity > 0) {
+        if (_liquidity > 0) {
             // First decrease all liquidity
             INonfungiblePositionManager.DecreaseLiquidityParams memory decreaseParams = 
                 INonfungiblePositionManager.DecreaseLiquidityParams({
-                    tokenId: tokenId,
-                    liquidity: liquidity,
+                    tokenId: ___tokenID,
+                    liquidity: _liquidity,
                     amount0Min: 0,
                     amount1Min: 0,
                     deadline: block.timestamp + 15 minutes
@@ -1010,7 +678,7 @@ contract TerraStakeLiquidityGuard is
         // Collect all tokens
         INonfungiblePositionManager.CollectParams memory collectParams = 
             INonfungiblePositionManager.CollectParams({
-                tokenId: tokenId,
+                tokenId: ___tokenID,
                 recipient: address(this),
                 amount0Max: type(uint128).max,
                 amount1Max: type(uint128).max
@@ -1019,7 +687,7 @@ contract TerraStakeLiquidityGuard is
         positionManager.collect(collectParams);
         
         // Remove from active positions
-        removePositionFromActive(tokenId);
+        removePositionFromActive(___tokenID);
     }
     
     /**
@@ -1038,5 +706,13 @@ contract TerraStakeLiquidityGuard is
         
         IERC20(token).safeTransfer(recipient, amount);
     }
+
+    /**
+     * @notice Required function for VRF callback
+     * @param requestId The ID of the VRF request
+     * @param randomWords The array of random values
+     */
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        // Implementation for VRF callback - can be used for stochastic mechanisms
+    }
 }
-        

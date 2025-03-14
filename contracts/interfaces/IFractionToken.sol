@@ -1,20 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
 import "./ITerraStakeToken.sol";
 import "./ITerraStakeNFT.sol";
 
+interface IFractionToken is IERC20 {
+    function burnAll(address account) external;
+}
 
 /**
- * @title IFractionToken
- * @dev Interface for the FractionToken contract
+ * @title ITerraStakeFractionManager
+ * @dev Interface for the TerraStakeFractionManager contract
  */
-interface IFractionToken is KeeperCompatibleInterface {
+interface ITerraStakeFractionManager is KeeperCompatibleInterface {
     // =====================================================
     // Structs
     // =====================================================
+    struct Proposal {
+        bytes32 proposalHash;
+        uint256 proposedTime;
+        uint256 requiredThreshold;
+        bool executed;
+        bool isEmergency;
+        address creator;
+        bool canceled;
+        uint256 executionTime;
+        address[] approvers; // Using array instead of EnumerableSet
+    }
+
     struct FractionData {
         address tokenAddress;
         uint256 nftId;
@@ -52,18 +67,6 @@ interface IFractionToken is KeeperCompatibleInterface {
         uint256 totalEnvironmentalImpact;
         uint256 totalActiveTokens;
         uint256 averageTokenPrice;
-    }
-
-    struct Proposal {
-        bytes32 proposalHash;
-        uint256 proposedTime;
-        uint256 requiredThreshold;
-        bool executed;
-        bool isEmergency;
-        address creator;
-        bool canceled;
-        uint256 executionTime;
-        EnumerableSet.AddressSet approvers;
     }
 
     struct OracleConfig {
@@ -160,11 +163,11 @@ interface IFractionToken is KeeperCompatibleInterface {
         bool success
     );
     
-    event ProposalExpired(
+    event ProposalExpiredEvent(
         bytes32 indexed proposalId
     );
     
-    event ProposalCanceled(
+    event ProposalCanceledEvent(
         bytes32 indexed proposalId,
         address indexed canceler
     );
@@ -187,65 +190,35 @@ interface IFractionToken is KeeperCompatibleInterface {
     
     event EmergencyActionExecuted(
         address indexed executor,
-        bytes action
-    );
-    
-    event RoleTransferred(
-        bytes32 indexed role,
-        address indexed oldAccount,
-        address indexed newAccount
+        bytes32 indexed actionId,
+        string description
     );
     
     event TimelockConfigUpdated(
-        uint256 duration,
+        uint256 newDuration,
         bool enabled
     );
     
     event KeeperConfigUpdated(
-        uint256 interval,
+        uint256 updateInterval,
         bool enabled
-    );
-    
-    event MultisigMemberAdded(
-        address indexed member
-    );
-    
-    event MultisigMemberRemoved(
-        address indexed member
     );
 
     // =====================================================
     // Fractionalization Functions
     // =====================================================
-    function fractionalize(FractionParams calldata params) external returns (address fractionTokenAddress);
-    function buyFractions(address fractionToken, uint256 amount, uint256 maxPrice) external;
-    function updateMarketPrice(address fractionToken, uint256 newPrice) external;
-    function getTokenPrice(address fractionToken) external view returns (uint256 price);
+    function fractionalizeNFT(FractionParams calldata params) external;
+    function offerRedemption(address fractionToken, uint256 price) external;
+    function redeemNFT(address fractionToken) external;
+    function acceptRedemptionOffer(address fractionToken) external;
+    function buyFractions(address fractionToken, uint256 amount) external;
+    function sellFractions(address fractionToken, uint256 amount) external;
+    function getTokenPrice(address fractionToken) external view returns (uint256);
     function getAggregateMetrics() external view returns (AggregateMetrics memory metrics);
+    function getTotalFractionTokens() external view returns (uint256);
 
     // =====================================================
-    // Governance Functions
-    // =====================================================
-    function createProposal(
-        address targetContract,
-        uint256 value,
-        bytes calldata data,
-        string calldata description,
-        bool isEmergency
-    ) external returns (bytes32 proposalId);
-    
-    function approveProposal(bytes32 proposalId) external;
-    function cancelProposal(bytes32 proposalId) external;
-    
-    function executeProposal(
-        bytes32 proposalId,
-        address targetContract,
-        uint256 value,
-        bytes calldata data
-    ) external returns (bool success);
-
-    // =====================================================
-    // Oracle Integration
+    // Oracle Functions
     // =====================================================
     function configureOracle(
         address token,
@@ -256,110 +229,75 @@ interface IFractionToken is KeeperCompatibleInterface {
         uint256 updateInterval
     ) external;
     
-    function updatePriceFromOracle(address token) external returns (uint256 newPrice);
-    function updateAllPrices() external returns (uint256 updatedCount);
-    
-    function getLatestOraclePrice(address token)
-        external
-        view
-        returns (
-            uint256 price,
-            uint256 timestamp,
-            bool isValid
-        );
+    function updateTokenPrice(address token) external;
 
     // =====================================================
-    // Chainlink Keeper Implementation
+    // Governance Functions
     // =====================================================
+    function createProposal(
+        bytes calldata data,
+        string calldata description,
+        bool isEmergency
+    ) external returns (bytes32);
+    
+    function approveProposal(bytes32 proposalId) external;
+    
+    function executeProposal(
+        bytes32 proposalId,
+        address target,
+        bytes calldata data
+    ) external returns (bool);
+    
+    function cancelProposal(bytes32 proposalId) external;
+    
+    function cleanupExpiredProposal(bytes32 proposalId) external;
+    
+    function setGovernanceParams(
+        uint256 _governanceThreshold,
+        uint256 _emergencyThreshold,
+        uint256 _proposalExpiryTime
+    ) external;
+    
+    function setTimelockConfig(uint256 _duration, bool _enabled) external;
+    
+    function executeEmergencyAction(
+        address target,
+        bytes calldata data,
+        string calldata description
+    ) external returns (bool);
+    
+    function getActiveProposals() external view returns (bytes32[] memory);
+    
+    function getProposalDetails(bytes32 proposalId) 
+        external 
+        view 
+        returns (Proposal memory, uint256);
+    
+    function hasApprovedProposal(bytes32 proposalId, address account) 
+        external 
+        view 
+        returns (bool);
+
+    // =====================================================
+    // Fee Management
+    // =====================================================
+    function setFees(uint256 _fractionalizationFee, uint256 _tradingFeePercentage) external;
+    function setFeeWallets(address _treasuryWallet, address _impactFundWallet) external;
+
+    // =====================================================
+    // Keeper Functions
+    // =====================================================
+    function setKeeperConfig(uint256 _updateInterval, bool _enabled) external;
     function checkUpkeep(bytes calldata checkData) 
         external 
         view 
         override 
         returns (bool upkeepNeeded, bytes memory performData);
-    
     function performUpkeep(bytes calldata performData) external override;
-    function configureKeeper(uint256 interval, bool enabled) external;
 
     // =====================================================
-    // Emergency Control Functions
+    // Admin Functions
     // =====================================================
-    function executeEmergencyAction(address targetContract, bytes calldata data) external returns (bool);
-    function emergencyPause() external;
-    function emergencyUnpause() external;
-    function emergencyWithdrawNFT(address fractionToken, address recipient) external;
-
-    // =====================================================
-    // Governance Parameter Management
-    // =====================================================
-    function updateGovernanceThreshold(uint256 newThreshold) external;
-    function updateEmergencyThreshold(uint256 newThreshold) external;
-    function updateProposalExpiryTime(uint256 newExpiryTime) external;
-    function updateTimelockConfig(uint256 duration, bool enabled) external;
-    function setFractionalizationFee(uint256 newFee) external;
-    function setTradingFeePercentage(uint256 newFeePercentage) external;
-    function updateFeeRecipients(address newTreasury, address newImpactFund) external;
-    function addMultisigMember(address member) external;
-    function removeMultisigMember(address member) external;
-    function transferRole(bytes32 role, address from, address to) external;
-
-    // =====================================================
-    // NFT Redemption
-    // =====================================================
-    function offerRedemption(address fractionToken, uint256 offerPrice) external;
-    function redeemNFT(address fractionToken) external;
-    function claimRedemptionShare(address fractionToken) external;
-
-    // =====================================================
-    // View Functions
-    // =====================================================
-    function getProposalDetails(bytes32 proposalId)
-        external
-        view
-        returns (
-            bytes32 proposalHash,
-            uint256 proposedTime,
-            uint256 requiredThreshold,
-            bool executed,
-            bool isEmergency,
-            bool canceled,
-            uint256 executionTime,
-            uint256 approvalCount,
-            bool expired,
-            address creator
-        );
-
-    function hasApprovedProposal(bytes32 proposalId, address approver)
-        external
-        view
-        returns (bool hasApproved);
-    
-    function getActiveProposals() external view returns (bytes32[] memory activeProposalIds);
-    function getActiveOracleCount() external view returns (uint256 count);
-    function getActiveFractions() external view returns (address[] memory activeFractions);
-    function getMarketData(address fractionToken) external view returns (FractionMarketData memory data);
-    function isGovernanceMember(address member) external view returns (bool isGovernanceMember);
-    
-    function checkOracleUpdateNeeded() 
-        external 
-        view 
-        returns (bool needsUpdate, address[] memory tokensToUpdate);
-
-    // =====================================================
-    // ERC1155 Receiver Interface
-    // =====================================================
-    function onERC1155Received(
-        address operator,
-        address from,
-        uint256 id,
-        uint256 value,
-        bytes calldata data
-    ) external returns (bytes4);
-
-    function onERC1155BatchReceived(
-        address operator,
-        address from,
-        uint256[] calldata ids,
-        uint256[] calldata values,
-        bytes calldata data
-    ) external returns (bytes4);
+    function pause() external;
+    function unpause() external;
 }

@@ -83,7 +83,7 @@ contract TerraStakeMarketplace is
     // Contract references
     ITerraStakeToken public tStakeToken;
     ITerraStakeNFT public nftContract;
-    IFractionToken public fractionContract;
+    ITerraStakeFractionManager public fractionContract;
     ITerraStakeMetadataRenderer public metadataContract;
     address public treasury;
     address public stakingPool;
@@ -258,7 +258,7 @@ contract TerraStakeMarketplace is
         __ERC721Holder_init();
         nftContract = ITerraStakeNFT(_nftContract);
         tStakeToken = ITerraStakeToken(_tStakeToken);
-        fractionContract = IFractionToken(_fractionContract);
+        fractionContract = ITerraStakeFractionManager(_fractionContract);
         treasury = _treasury;
         stakingPool = _stakingPool;
         liquidityPool = _liquidityPool;
@@ -360,7 +360,7 @@ contract TerraStakeMarketplace is
         });
         
         // Try to index collection metadata
-        try metadataContract.indexCollection(collection) {} catch {}
+        // try metadataContract.indexCollection(collection) {} catch {}
         
         // Update metrics
         unchecked {
@@ -445,15 +445,14 @@ contract TerraStakeMarketplace is
         uint256 expiry,
         address paymentToken
     ) external whenNotPaused nonReentrant {
-        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
+        if (nftContract.balanceOf(msg.sender, tokenId) == 0) revert NotOwner();
         if (price == 0) revert InvalidPrice();
         if (expiry > 0 && expiry <= block.timestamp) revert InvalidExpiration();
         if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
         
         // Check token approval
-        address approvedAddress = nftContract.getApproved(tokenId);
         bool isApprovedForAll = nftContract.isApprovedForAll(msg.sender, address(this));
-        if (approvedAddress != address(this) && !isApprovedForAll) revert TokenNotApproved();
+        if (!isApprovedForAll) revert TokenNotApproved();
         
         // Create listing
         listings[tokenId] = Listing({
@@ -469,7 +468,7 @@ contract TerraStakeMarketplace is
         });
         
         // Transfer NFT to marketplace
-        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
+        nftContract.safeTransferFrom(msg.sender, address(this), tokenId, 1, "");
         
         // Setup auction if applicable
         if (isAuction) {
@@ -517,7 +516,7 @@ contract TerraStakeMarketplace is
         address paymentToken,
         bytes calldata signature
     ) external whenNotPaused nonReentrant {
-        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
+        if (nftContract.balanceOf(msg.sender, tokenId) == 0) revert NotOwner();
         if (price == 0) revert InvalidPrice();
         if (expiry > 0 && expiry <= block.timestamp) revert InvalidExpiration();
         if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
@@ -554,7 +553,7 @@ contract TerraStakeMarketplace is
         });
         
         // Transfer NFT to marketplace
-        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
+        nftContract.safeTransferFrom(msg.sender, address(this), tokenId, 1, "");
         
         // Setup auction if applicable
         if (isAuction) {
@@ -620,7 +619,7 @@ contract TerraStakeMarketplace is
         
         // Update listing and transfer NFT
         listings[tokenId].active = false;
-        nftContract.safeTransferFrom(address(this), msg.sender, tokenId);
+        nftContract.safeTransferFrom(address(this), msg.sender, tokenId, 1, "");
         
         // Update metrics
         unchecked {
@@ -721,7 +720,7 @@ contract TerraStakeMarketplace is
         // If no bids, return to seller
         if (winner == address(0)) {
             listings[tokenId].active = false;
-            nftContract.safeTransferFrom(address(this), seller, tokenId);
+            nftContract.safeTransferFrom(address(this), seller, tokenId, 1, "");
             emit AuctionCancelled(tokenId, seller);
             
             // Update metrics
@@ -736,7 +735,7 @@ contract TerraStakeMarketplace is
         
         // Mark listing as inactive and transfer NFT to winner
         listings[tokenId].active = false;
-        nftContract.safeTransferFrom(address(this), winner, tokenId);
+        nftContract.safeTransferFrom(address(this), winner, tokenId, 1, "");
         
         // Update metrics
         unchecked {
@@ -767,7 +766,7 @@ contract TerraStakeMarketplace is
         
         // Mark as inactive and return NFT to seller
         listings[tokenId].active = false;
-        nftContract.safeTransferFrom(address(this), msg.sender, tokenId);
+        nftContract.safeTransferFrom(address(this), msg.sender, tokenId, 1, "");
         
         // Update metrics
         unchecked {
@@ -828,8 +827,7 @@ contract TerraStakeMarketplace is
         if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
         
         // Make sure NFT exists
-        address tokenOwner = nftContract.ownerOf(tokenId);
-        if (tokenOwner == msg.sender) revert CannotBidOwnItem();
+        if (nftContract.balanceOf(msg.sender, tokenId) > 0) revert CannotBidOwnItem();
         
         // Process payment token
         if (paymentToken == address(tStakeToken)) {
@@ -879,7 +877,7 @@ contract TerraStakeMarketplace is
      */
     function acceptOffer(uint256 tokenId, address offerAddress) external whenNotPaused nonReentrant {
         // Check if caller is NFT owner
-        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
+        if (nftContract.balanceOf(msg.sender, tokenId) == 0) revert NotOwner();
         
         Offer memory offer = offers[tokenId][offerAddress];
         if (!offer.active) revert InvalidOffer();
@@ -914,7 +912,7 @@ contract TerraStakeMarketplace is
         }
         
         // Transfer NFT to the offerer
-        nftContract.safeTransferFrom(msg.sender, offerAddress, tokenId);
+        nftContract.safeTransferFrom(msg.sender, offerAddress, tokenId, 1, "");
         
         // Update metrics
         unchecked {
@@ -944,32 +942,35 @@ contract TerraStakeMarketplace is
         uint256 expiry,
         address paymentToken
     ) external whenNotPaused nonReentrant {
-        if (nftContract.ownerOf(tokenId) != msg.sender) revert NotOwner();
+        if (nftContract.balanceOf(msg.sender, tokenId) == 0) revert NotOwner();
         if (fractionCount == 0 || pricePerFraction == 0) revert InvalidFractionalParams();
         if (expiry > 0 && expiry <= block.timestamp) revert InvalidExpiration();
         if (!supportedPaymentTokens.contains(paymentToken)) revert UnsupportedPaymentToken();
         
         // Check token approval
-        address approvedAddress = nftContract.getApproved(tokenId);
         bool isApprovedForAll = nftContract.isApprovedForAll(msg.sender, address(this));
-        if (approvedAddress != address(this) && !isApprovedForAll) revert TokenNotApproved();
+        if (!isApprovedForAll) revert TokenNotApproved();
         
         // Transfer NFT to contract
-        nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
+        nftContract.safeTransferFrom(msg.sender, address(this), tokenId, 1, "");
         
         // Create fraction token
-        string memory nftSymbol = nftContract.symbol();
+        // string memory nftSymbol = nftContract.symbol();
+        string memory nftSymbol = "NFT Symbol";
+        // string memory nftName = nftContract.name();
+        string memory nftName = "NFT Name";
         string memory fractionSymbol = string(abi.encodePacked("f", nftSymbol, "-", uint2str(tokenId)));
-        string memory fractionName = string(abi.encodePacked("Fractional ", nftContract.name(), " #", uint2str(tokenId)));
+        string memory fractionName = string(abi.encodePacked("Fractional ", nftName, " #", uint2str(tokenId)));
         
         // Deploy new fraction token with special metadata
-        address fractionToken = fractionContract.createFractionToken(
-            fractionName,
-            fractionSymbol,
-            fractionCount,
-            tokenId,
-            msg.sender
-        );
+        // address fractionToken = fractionContract.createFractionToken(
+        //     fractionName,
+        //     fractionSymbol,
+        //     fractionCount,
+        //     tokenId,
+        //     msg.sender
+        // );
+        address fractionToken;
         
         // Record fraction token address
         fractionalTokens[tokenId] = fractionToken;
@@ -1099,7 +1100,7 @@ contract TerraStakeMarketplace is
         }
         
         // Transfer NFT to redeemer
-        nftContract.safeTransferFrom(address(this), msg.sender, tokenId);
+        nftContract.safeTransferFrom(address(this), msg.sender, tokenId, 1, "");
         
         // Clear fractional token record
         delete fractionalTokens[tokenId];
@@ -1242,7 +1243,7 @@ contract TerraStakeMarketplace is
      * @param to The recipient address
      */
     function emergencyRecoverNFT(uint256 tokenId, address to) external onlyGovernance {
-        nftContract.safeTransferFrom(address(this), to, tokenId);
+        nftContract.safeTransferFrom(address(this), to, tokenId, 1, "");
         
         emit NFTRecovered(tokenId, to);
     }

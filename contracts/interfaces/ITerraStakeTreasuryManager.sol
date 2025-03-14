@@ -114,4 +114,11 @@ interface ITerraStakeTreasuryManager {
     function updateFeeUpdateCooldown(uint256 _newCooldown) external;
     
     function processFees(uint256 amount, uint8 feeType) external;
+    
+    /**
+     * @notice Withdraws USDC equivalent of the specified amount
+     * @param amount The amount to convert to USDC
+     * @return The amount of USDC withdrawn
+     */
+    function withdrawUSDCEquivalent(uint256 amount) external returns (uint256);
 }

@@ -29,7 +29,7 @@ contract AntiBot is
     // ================================
 
     error InvalidPriceOracle();
-    error TransactionThrottled(address user, uint256 cooldownEnds);
+    error TransactionThrottled(address user, uint256 blockNumber, uint256 cooldownEnds);
     error TimelockNotExpired(address account, uint256 unlockTime);
     error InvalidLockPeriod();
     error CircuitBreakerActive();
@@ -91,7 +91,6 @@ contract AntiBot is
     event EmergencyCircuitBreakerReset(address indexed admin, bytes32 indexed callerRole); // Log caller's role
     event AddressExempted(address indexed account);
     event ExemptionRevoked(address indexed account, bytes32 indexed callerRole); // Log caller's role
-    event TransactionThrottled(address indexed from, uint256 blockNumber, uint256 cooldownEnds);
     event TrustedContractAdded(address indexed contractAddress);
     event TrustedContractRemoved(address indexed contractAddress, bytes32 indexed callerRole); // Log caller's role
     event PriceImpactThresholdUpdated(uint256 newThreshold);
@@ -154,8 +153,7 @@ contract AntiBot is
 
             if (block.timestamp <= cooldown + (threshold * 12)) { // Use block.timestamp directly
                 uint256 cooldownEnds = cooldown + (threshold * 12);
-                emit TransactionThrottled(from, block.number, cooldownEnds);
-                revert TransactionThrottled(from, cooldownEnds);
+                revert TransactionThrottled(from, block.number, cooldownEnds);
             }
             // Optimized SSTORE: Only write if the value has changed
             if(cooldown != block.timestamp){

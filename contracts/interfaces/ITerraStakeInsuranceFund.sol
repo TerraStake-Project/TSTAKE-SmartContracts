@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 
 /**
  * @title ITerraStakeInsuranceFund
@@ -55,7 +55,7 @@ interface ITerraStakeInsuranceFund {
     // ============================
     // View Functions
     // ============================
-    function tstakeToken() external view returns (IERC20);
+    function tstakeToken() external view returns (ERC20Upgradeable);
     function premiumsPaid(address user) external view returns (uint256);
     function coverageAmount(address user) external view returns (uint256);
     function totalFundValue() external view returns (uint256);

@@ -63,6 +63,11 @@ contract TerraStakeProjects is
     address public stakingContract;
     address public rewardsContract;
     
+    uint256[] private allProjectIds;
+    uint256 private totalFeesCollected;
+    uint256 private totalFeesWithdrawn;
+    mapping(FeeType => uint256) private feesByType;
+
     // NFT Integration
     address public nftContract;
     mapping(ProjectCategory => string) private categoryImageURI;
@@ -96,58 +101,10 @@ contract TerraStakeProjects is
     mapping(uint256 => ImpactReport[]) public projectImpactReports;
     mapping(uint256 => ImpactRequirement) public projectImpactRequirements;
     mapping(uint256 => RECData[]) public projectRECs;
+    mapping(uint256 => ProjectTargets) public projectTargets;
     
     // Category requirements tracking
     mapping(ProjectCategory => ImpactRequirement) public categoryRequirements;
-
-    // Impact report structures
-    struct ImpactRequirements {
-        uint32 minStakingPeriod;
-        uint32 reportingFrequency;
-        uint32 verificationThreshold;
-        uint32 impactDataFormat;
-        bool requiresAudit;
-    }
-
-    // Report statuses
-    enum ReportStatus {
-        Submitted,
-        Validated,
-        Rejected,
-        Pending
-    }
-
-    struct ProjectVerification {
-        uint256 verificationDate;
-        address verifier;
-        bytes32 verificationDataHash;
-        bool isVerified;
-        string verifierNotes;
-        uint256 lastVerificationTime;
-    }
-
-    struct UserStake {
-        uint256 amount;
-        uint256 adjustedAmount;
-        uint256 stakedAt;
-        uint256 lastRewardUpdate;
-        uint256 claimedRewards;
-        bool isStaking;
-    }
-
-    struct ImpactReport {
-        uint256 timestamp;
-        address reporter;
-        bytes32 reportDataHash;
-        string reportURI;
-        string description;
-        uint256 measuredValue;
-        string measurement;
-        ReportStatus status;
-        address validator;
-        string validatorNotes;
-        uint256 validationTime;
-    }
     
     // Granular permission system for project owners and collaborators
     mapping(uint256 => mapping(address => mapping(bytes32 => bool))) public projectPermissions;
@@ -169,6 +126,7 @@ contract TerraStakeProjects is
     mapping(uint256 => mapping(address => UserStake)) public projectStakes;
     mapping(uint256 => address[]) public _projectStakers;
     mapping(address => uint256[]) public userStakedProjects;
+    StakingAction[] public stakingHistory;
     
     // Project report tracking
     mapping(uint256 => mapping(uint256 => ImpactReport)) public projectReports;
@@ -220,7 +178,6 @@ contract TerraStakeProjects is
     event BuybackExecuted(uint256 amount);
     
     // Project events
-    event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
     event ProjectStateChanged(uint256 indexed projectId, ProjectState oldState, ProjectState newState);
     event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
     event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, bool approved, address validator);
@@ -277,6 +234,16 @@ contract TerraStakeProjects is
     error InvalidReportStatus();
     error TransferFailed();
     error InvalidPermissionType();
+    error EmptyProjectName();
+    error EmptyProjectDescription();
+    error EmptyProjectLocation();
+    error EmptyImpactMetrics();
+    error InvalidIpfsHash();
+    error InvalidStakingMultiplier();
+    error InvalidBlockRange();
+    error ProjectInTerminalState();
+    error InvalidStateTransition();
+    error ReportAlreadyValidated();
 
     // ====================================================
     //  Initialization & Upgrades
@@ -613,14 +580,14 @@ contract TerraStakeProjects is
             totalFeesCollected += submissionFee;
             feesByType[FeeType.ProjectSubmission] += submissionFee;
             
-            emit FeeCollected(projectCounter + 1, FeeType.ProjectSubmission, submissionFee);
+            emit FeeCollected(projectCount + 1, FeeType.ProjectSubmission, submissionFee);
         }
         
-        projectCounter++;
-        uint256 projectId = projectCounter;
+        projectCount ++;
+        uint256 projectId = projectCount;
         
         // Store project metadata
-        projectMetadata[projectId] = ProjectMetadata({
+        projectMetadata[projectId] = ProjectMetaData({
             name: name,
             description: description,
             location: location,
@@ -640,7 +607,7 @@ contract TerraStakeProjects is
         });
         
         allProjectIds.push(projectId);
-        projectsByCategory[category].push(projectId);
+        _projectsByCategory[category].push(projectId);
         
         emit ProjectCreated(
             projectId,
@@ -736,8 +703,8 @@ contract TerraStakeProjects is
         
         // Remove from old category array
         uint256 indexInOld = type(uint256).max;
-        for (uint256 i = 0; i < projectsByCategory[oldCategory].length; i++) {
-            if (projectsByCategory[oldCategory][i] == projectId) {
+        for (uint256 i = 0; i < _projectsByCategory[oldCategory].length; i++) {
+            if (_projectsByCategory[oldCategory][i] == projectId) {
                 indexInOld = i;
                 break;
             }
@@ -745,12 +712,12 @@ contract TerraStakeProjects is
         
         if (indexInOld != type(uint256).max) {
             // Replace with the last element and pop
-            projectsByCategory[oldCategory][indexInOld] = projectsByCategory[oldCategory][projectsByCategory[oldCategory].length - 1];
-            projectsByCategory[oldCategory].pop();
+            _projectsByCategory[oldCategory][indexInOld] = _projectsByCategory[oldCategory][_projectsByCategory[oldCategory].length - 1];
+            _projectsByCategory[oldCategory].pop();
         }
         
         // Add to new category array
-        projectsByCategory[newCategory].push(projectId);
+        _projectsByCategory[newCategory].push(projectId);
         
         // Update project state
         project.category = newCategory;
@@ -897,10 +864,7 @@ contract TerraStakeProjects is
         }
         
         // Create impact report
-        impactReportCounter++;
-        uint256 reportId = impactReportCounter;
-        
-        impactReports[reportId] = ImpactReport({
+        ImpactReport memory impactReport = ImpactReport({
             projectId: projectId,
             reporter: msg.sender,
             timestamp: uint48(block.timestamp),
@@ -911,17 +875,20 @@ contract TerraStakeProjects is
             validated: false
         });
         
-        projectImpactReports[projectId].push(reportId);
+        projectImpactReports[projectId].push(impactReport);
         
+        uint256 reportId = projectImpactReports[projectId].length;
+
         emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
     }
     
     function validateImpactReport(
+        uint256 projectId,
         uint256 reportId,
         bool isValid,
         string calldata validationNotes
     ) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
-        ImpactReport storage report = impactReports[reportId];
+        ImpactReport storage report = projectImpactReports[projectId][reportId];
         
         // Check if report exists
         if (report.timestamp == 0) revert InvalidReportId();
@@ -1256,7 +1223,7 @@ contract TerraStakeProjects is
     function getProjectsByCategory(
         ProjectCategory category
     ) external view override returns (uint256[] memory) {
-        return projectsByCategory[category];
+        return _projectsByCategory[category];
     }
     
     function getAllProjectIds() external view override returns (uint256[] memory) {
@@ -1264,7 +1231,7 @@ contract TerraStakeProjects is
     }
     
     function getProjectCount() external view override returns (uint256) {
-        return projectCounter;
+        return projectCount;
     }
     
     function getCategoryInfo(
@@ -1562,7 +1529,7 @@ contract TerraStakeProjects is
         uint256 totalRewards,
         uint256 numberOfStakers
     ) {
-        numberOfProjects = projectCounter;
+        numberOfProjects = projectCount;
         
         // Count active projects
         for (uint256 i = 0; i < allProjectIds.length; i++) {
@@ -1591,6 +1558,15 @@ contract TerraStakeProjects is
             totalRewards,
             numberOfStakers
         );
+    }
+
+    /**
+     * @dev Function to check if a project exists
+     * @param projectId The ID of the project to check
+     * @return bool True if the project exists, false otherwise
+     */
+    function projectExists(uint256 projectId) external view returns (bool) {
+        return projectMetadata[projectId].exists;
     }
     
     // Helper function to efficiently get count of role members

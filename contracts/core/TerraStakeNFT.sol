@@ -183,6 +183,12 @@ contract TerraStakeNFT is
     // Emergency Mode
     bool public emergencyMode = false;
 
+    uint256[] public randomWords;
+    uint256 public requestId;
+
+    event RandomWordsRequested(uint256 requestId);
+    event RandomWordsReceived(uint256[] randomWords);
+    
     // ====================================================
     //  Events
     // ====================================================
@@ -396,6 +402,13 @@ contract TerraStakeNFT is
         override
         onlyRole(UPGRADER_ROLE)
     {}
+
+    // Callback function to receive randomness
+    function fulfillRandomWords(uint256 _requestId, uint256[] memory _randomWords) internal override {
+        require(requestId == _requestId, "Invalid request ID");
+        randomWords = _randomWords;
+        emit RandomWordsReceived(_randomWords);
+    }
 
     // ====================================================
     // Token Minting Functions

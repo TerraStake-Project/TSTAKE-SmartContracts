@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20Burnable
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
@@ -22,6 +23,7 @@ import "../interfaces/ITerraStakeLiquidityGuard.sol";
  * @custom:optimized-by Emiliano Solazzi 2025 as "T-30" for Arbitrum L2 with gas efficiency considerations
  */
 contract TerraStakeToken is
+    Initializable,
     ERC20Upgradeable,
     ERC20PermitUpgradeable,
     ERC20BurnableUpgradeable,

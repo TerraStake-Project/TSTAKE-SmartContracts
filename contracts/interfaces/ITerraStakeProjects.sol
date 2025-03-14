@@ -50,6 +50,18 @@ interface ITerraStakeProjects {
         Pending
     }
 
+    enum FeeType {
+        ProjectSubmission,
+        ImpactReporting,
+        Verification,
+        CategoryChange
+    }
+
+    enum StakingActionType {
+        Stake,
+        Unstake
+    }
+
     // ====================================================
     //  Structs
     // ====================================================
@@ -83,6 +95,11 @@ interface ITerraStakeProjects {
         int256 lastReportedValue;
         uint256 lastRewardUpdate;
         uint256 accumulatedRewards;
+    }
+
+    struct ProjectTargets {
+        uint256 impactTarget;
+        uint256 stakingTarget;
     }
     
     /**
@@ -240,6 +257,14 @@ interface ITerraStakeProjects {
         string verificationStandard;
         uint256 impactWeight;
     }
+
+    struct StakingAction {
+        address user;
+        uint256 projectId;
+        uint256 amount;
+        uint48 timestamp;
+        StakingActionType actionType;
+    }
     
     // ====================================================
     //  Events
@@ -251,9 +276,17 @@ interface ITerraStakeProjects {
     event Initialized(address admin, address tstakeToken);
     
     /**
-     * @notice Emitted when a new project is added
+     * @notice Emitted when a new project is created   
      */
-    event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
+    event ProjectCreated(
+        uint256 indexed projectId,
+        address indexed creator,
+        string name,
+        ProjectCategory category,
+        uint32 stakingMultiplier,
+        uint48 startBlock,
+        uint48 endBlock
+    );
     
     /**
      * @notice Emitted when a project state changes
@@ -364,6 +397,29 @@ interface ITerraStakeProjects {
         bytes32 permission, 
         bool granted
     );
+
+    event ProjectTargetsSet(
+        uint256 indexed projectId,
+        uint256 indexed impactTarget, 
+        uint256 indexed stakingTarget
+    );
+
+    event ProjectUpdated(
+        uint256 indexed projectId,
+        address indexed updater,
+        string name,
+        uint48 startBlock,
+        uint48 endBlock
+    );
+
+    event ProjectCategoryChanged(
+        uint256 indexed projectId,
+        ProjectCategory oldCategory,
+        ProjectCategory newCategory
+    );
+
+    event ProjectStakingFinalized(uint256 indexed projectId);
+    event StakingMultiplierUpdated(uint256 indexed projectId, uint32 oldMultiplier, uint32 newMultiplier);
     
     // ====================================================
     //  Core Functions
@@ -678,6 +734,13 @@ interface ITerraStakeProjects {
         view
         returns (ImpactRequirement memory);
     
+    /**
+     * @notice Function to check if a project exists
+     * @param projectId The ID of the project to check
+     * @return bool True if the project exists, false otherwise
+     */
+    function projectExists(uint256 projectId) external view returns (bool);
+
     /**
      * @notice Calculate impact for a project based on its category
      * @param projectId ID of the project
