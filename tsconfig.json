@@ -3,7 +3,7 @@
     "target": "es2020",
     "module": "commonjs",
     "moduleResolution": "node",
-    "rootDir": "./src",
+    "rootDir": "./",
     "outDir": "./dist",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
@@ -13,5 +13,12 @@
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "resolveJsonModule": true
-  }
+  },
+  "include": [
+    "src/**/*",
+    "scripts/**/*",
+    "test/**/*",
+    "ignition/**/*",
+    "hardhat.config.ts"
+  ]
 }
