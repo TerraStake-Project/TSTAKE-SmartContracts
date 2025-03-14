@@ -8,7 +8,7 @@ pragma solidity 0.8.28;
  */
 interface ITerraStakeValidatorSafety {
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event ValidatorAdded(address indexed validator);
@@ -25,7 +25,7 @@ interface ITerraStakeValidatorSafety {
     event EmergencyValidatorThresholdReduction(uint256 oldThreshold, uint256 newThreshold);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     
     error Unauthorized();
@@ -40,7 +40,7 @@ interface ITerraStakeValidatorSafety {
     error QuorumTooHigh();
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     function GOVERNANCE_ROLE() external view returns (bytes32);
@@ -79,7 +79,7 @@ interface ITerraStakeValidatorSafety {
     function getInactiveValidators() external view returns (address[] memory);
     
     // -------------------------------------------
-    // 🔹 State-Changing Functions
+    //  State-Changing Functions
     // -------------------------------------------
     
     function initialize(address _initialAdmin) external;

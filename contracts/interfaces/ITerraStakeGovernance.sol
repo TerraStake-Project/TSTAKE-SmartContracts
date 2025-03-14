@@ -2,9 +2,9 @@
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "../interfaces/ITerraStakeTreasuryManager.sol";
-import "../interfaces/ITerraStakeValidatorSafety.sol";
-import "../interfaces/ITerraStakeGuardianCouncil.sol";
+import "./ITerraStakeTreasuryManager.sol";
+import "./ITerraStakeValidatorSafety.sol";
+import "./ITerraStakeGuardianCouncil.sol";
 
 /**
  * @title ITerraStakeGovernance
@@ -13,7 +13,7 @@ import "../interfaces/ITerraStakeGuardianCouncil.sol";
  */
 interface ITerraStakeGovernance {
     // -------------------------------------------
-    // 🔹 Enums
+    //  Enums
     // -------------------------------------------
     
     // Proposal states
@@ -44,7 +44,7 @@ interface ITerraStakeGovernance {
     }
     
     // -------------------------------------------
-    // 🔹 Structs
+    //  Structs
     // -------------------------------------------
     
     struct Receipt {
@@ -54,7 +54,7 @@ interface ITerraStakeGovernance {
     }
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event ProposalCreated(
@@ -91,7 +91,7 @@ interface ITerraStakeGovernance {
     event ModuleUpdated(string moduleName, address oldModule, address newModule);
     
     // -------------------------------------------
-    // 🔹 Errors
+    //  Errors
     // -------------------------------------------
     
     error Unauthorized();
@@ -107,7 +107,7 @@ interface ITerraStakeGovernance {
     error InvalidState();
     
     // -------------------------------------------
-    // 🔹 Constants
+    //  Constants
     // -------------------------------------------
     
     function GOVERNANCE_ROLE() external view returns (bytes32);
@@ -116,7 +116,7 @@ interface ITerraStakeGovernance {
     function VALIDATOR_ROLE() external view returns (bytes32);
     
     // -------------------------------------------
-    // 🔹 State Variables
+    //  State Variables
     // -------------------------------------------
     
     function treasuryManager() external view returns (ITerraStakeTreasuryManager);
@@ -154,7 +154,7 @@ interface ITerraStakeGovernance {
     function latestProposalIds(address proposer) external view returns (uint256);
     
     // -------------------------------------------
-    // 🔹 Initialization
+    //  Initialization
     // -------------------------------------------
     
     function initialize(
@@ -166,7 +166,7 @@ interface ITerraStakeGovernance {
     ) external;
     
     // -------------------------------------------
-    // 🔹 Proposal Creation and Management
+    //  Proposal Creation and Management
     // -------------------------------------------
     
     function propose(
@@ -192,7 +192,7 @@ interface ITerraStakeGovernance {
     function cancelProposal(uint256 proposalId) external;
     
     // -------------------------------------------
-    // 🔹 Governance Parameter Management
+    //  Governance Parameter Management
     // -------------------------------------------
     
     function updateProposalThreshold(uint256 newThreshold) external;
@@ -206,7 +206,7 @@ interface ITerraStakeGovernance {
     function updateExecutionPeriod(uint256 newExecutionPeriod) external;
     
     // -------------------------------------------
-    // 🔹 Module Management
+    //  Module Management
     // -------------------------------------------
     
     function updateTreasuryManager(address newTreasuryManager) external;
@@ -216,7 +216,7 @@ interface ITerraStakeGovernance {
     function updateGuardianCouncil(address newGuardianCouncil) external;
     
     // -------------------------------------------
-    // 🔹 Emergency Controls
+    //  Emergency Controls
     // -------------------------------------------
     
     function pause() external;
@@ -224,7 +224,7 @@ interface ITerraStakeGovernance {
     function unpause() external;
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     function getProposalState(uint256 proposalId) external view returns (ProposalState);

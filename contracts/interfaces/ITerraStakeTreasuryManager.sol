@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "../interfaces/ITerraStakeLiquidityGuard.sol";
+import "./ITerraStakeLiquidityGuard.sol";
 
 /**
  * @title ITerraStakeTreasuryManager
@@ -11,7 +11,7 @@ import "../interfaces/ITerraStakeLiquidityGuard.sol";
  */
 interface ITerraStakeTreasuryManager {
     // -------------------------------------------
-    // 🔹 Structs
+    //  Structs
     // -------------------------------------------
     
     struct FeeStructure {
@@ -24,7 +24,7 @@ interface ITerraStakeTreasuryManager {
     }
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event FeeStructureUpdated(
@@ -46,7 +46,7 @@ interface ITerraStakeTreasuryManager {
     event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
     
     // -------------------------------------------
-    // 🔹 View Functions
+    //  View Functions
     // -------------------------------------------
     
     function GOVERNANCE_ROLE() external view returns (bytes32);
@@ -69,7 +69,7 @@ interface ITerraStakeTreasuryManager {
     function estimateTStakeForLiquidity(uint256 usdcAmount) external view returns (uint256);
     
     // -------------------------------------------
-    // 🔹 State-Changing Functions
+    //  State-Changing Functions
     // -------------------------------------------
     
     function initialize(
@@ -114,4 +114,11 @@ interface ITerraStakeTreasuryManager {
     function updateFeeUpdateCooldown(uint256 _newCooldown) external;
     
     function processFees(uint256 amount, uint8 feeType) external;
+    
+    /**
+     * @notice Withdraws USDC equivalent of the specified amount
+     * @param amount The amount to convert to USDC
+     * @return The amount of USDC withdrawn
+     */
+    function withdrawUSDCEquivalent(uint256 amount) external returns (uint256);
 }

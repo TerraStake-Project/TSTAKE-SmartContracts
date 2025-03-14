@@ -2,19 +2,19 @@
 
 pragma solidity 0.8.28; 
 
-import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import {ITerraStakeProjects} from "./interfaces/ITerraStakeProjects.sol";
-import {ITerraStakeNFT} from "./interfaces/ITerraStakeNFT.sol";
-import {ITerraStakeMarketPlace} from "./interfaces/ITerraStakeMarketPlace.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import "../interfaces/ITerraStakeProjects.sol";
+import "../interfaces/ITerraStakeNFT.sol";
+import "../interfaces/ITerraStakeMarketplace.sol";
 
 /**
  * @title TerraStakeProjects 
@@ -32,7 +32,7 @@ contract TerraStakeProjects is
     using SafeERC20 for IERC20;
     
     // ====================================================
-    // 🔑 Roles
+    //  Roles
     // ====================================================
     bytes32 public constant PROJECT_MANAGER_ROLE = keccak256("PROJECT_MANAGER_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
@@ -43,7 +43,7 @@ contract TerraStakeProjects is
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
 
     // ====================================================
-    // 📌 State Variables
+    //  State Variables
     // ====================================================
     IERC20 public tStakeToken;
     uint256 public projectCount;
@@ -63,6 +63,11 @@ contract TerraStakeProjects is
     address public stakingContract;
     address public rewardsContract;
     
+    uint256[] private allProjectIds;
+    uint256 private totalFeesCollected;
+    uint256 private totalFeesWithdrawn;
+    mapping(FeeType => uint256) private feesByType;
+
     // NFT Integration
     address public nftContract;
     mapping(ProjectCategory => string) private categoryImageURI;
@@ -71,27 +76,11 @@ contract TerraStakeProjects is
     mapping(ProjectCategory => CategoryInfo) public categoryInfo;
     
     // Project data storage
-    mapping(uint256 => ProjectData) public projectMetadata;
+    mapping(uint256 => ProjectMetaData) public projectMetadata;
     mapping(uint256 => ProjectStateData) public projectStateData;
-    
-    // Adding struct definitions for data structures used in mappings
-    struct VerificationData {
-        address verifier;
-        uint256 verificationDate;
-        bytes32 verificationDocumentHash;
-        bool isVerified;
-        string verifierNotes;
-    }
-    
-    struct GeneralMetadata {
-        string website;
-        string[] team;
-        string[] partners;
-        string[] socialMedia;
-        uint256 lastUpdated;
-    }
 
     mapping(uint256 => VerificationData) public projectVerifications;
+    mapping(uint256 => ValidationData) public reportValidations;
     mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
     
     // Enhanced storage pattern for comments with pagination
@@ -104,14 +93,6 @@ contract TerraStakeProjects is
     mapping(uint256 => uint256) public projectDocumentPageCount;
     uint256 public constant DOCUMENTS_PER_PAGE = 20;
 
-    // Project document handling
-    struct ProjectDocument {
-        string name;
-        string docType;
-        bytes32 ipfsHash;
-        uint256 timestamp;
-        address uploader;
-    }
     mapping(uint256 => mapping(uint256 => ProjectDocument)) public projectDocuments;
     mapping(uint256 => uint256) public projectDocumentCount;
     mapping(uint256 => uint256[]) private _projectDocumentIndex;
@@ -120,58 +101,10 @@ contract TerraStakeProjects is
     mapping(uint256 => ImpactReport[]) public projectImpactReports;
     mapping(uint256 => ImpactRequirement) public projectImpactRequirements;
     mapping(uint256 => RECData[]) public projectRECs;
+    mapping(uint256 => ProjectTargets) public projectTargets;
     
     // Category requirements tracking
     mapping(ProjectCategory => ImpactRequirement) public categoryRequirements;
-
-    // Impact report structures
-    struct ImpactRequirements {
-        uint32 minStakingPeriod;
-        uint32 reportingFrequency;
-        uint32 verificationThreshold;
-        uint32 impactDataFormat;
-        bool requiresAudit;
-    }
-
-    // Report statuses
-    enum ReportStatus {
-        Submitted,
-        Validated,
-        Rejected,
-        Pending
-    }
-
-    struct ProjectVerification {
-        uint256 verificationDate;
-        address verifier;
-        bytes32 verificationDataHash;
-        bool isVerified;
-        string verifierNotes;
-        uint256 lastVerificationTime;
-    }
-
-    struct UserStake {
-        uint256 amount;
-        uint256 adjustedAmount;
-        uint256 stakedAt;
-        uint256 lastRewardUpdate;
-        uint256 claimedRewards;
-        bool isStaking;
-    }
-
-    struct ImpactReport {
-        uint256 timestamp;
-        address reporter;
-        bytes32 reportDataHash;
-        string reportURI;
-        string description;
-        uint256 measuredValue;
-        string measurement;
-        ReportStatus status;
-        address validator;
-        string validatorNotes;
-        uint256 validationTime;
-    }
     
     // Granular permission system for project owners and collaborators
     mapping(uint256 => mapping(address => mapping(bytes32 => bool))) public projectPermissions;
@@ -193,6 +126,7 @@ contract TerraStakeProjects is
     mapping(uint256 => mapping(address => UserStake)) public projectStakes;
     mapping(uint256 => address[]) public _projectStakers;
     mapping(address => uint256[]) public userStakedProjects;
+    StakingAction[] public stakingHistory;
     
     // Project report tracking
     mapping(uint256 => mapping(uint256 => ImpactReport)) public projectReports;
@@ -204,18 +138,8 @@ contract TerraStakeProjects is
     // Verification comments
     mapping(uint256 => mapping(uint256 => string)) public projectVerificationComments;
 
-    // Custom data structure to store real-world category information
-    struct CategoryInfo {
-        string name;
-        string description;
-        string[] standardBodies;
-        string[] metricUnits;
-        string verificationStandard;
-        uint256 impactWeight;
-    }
-
     // ====================================================
-    // 📣 Enhanced Events
+    //  Enhanced Events
     // ====================================================
     // NFT related events
     event ImpactNFTMinted(uint256 indexed projectId, bytes32 indexed reportHash, address recipient);
@@ -254,7 +178,6 @@ contract TerraStakeProjects is
     event BuybackExecuted(uint256 amount);
     
     // Project events
-    event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
     event ProjectStateChanged(uint256 indexed projectId, ProjectState oldState, ProjectState newState);
     event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
     event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, bool approved, address validator);
@@ -271,7 +194,7 @@ contract TerraStakeProjects is
     event RewardPoolIncreased(uint256 indexed projectId, uint256 amount, address contributor);
 
     // ====================================================
-    // 🚨 Errors
+    //  Errors
     // ====================================================
     error InvalidAddress();
     error NameRequired();
@@ -311,9 +234,19 @@ contract TerraStakeProjects is
     error InvalidReportStatus();
     error TransferFailed();
     error InvalidPermissionType();
+    error EmptyProjectName();
+    error EmptyProjectDescription();
+    error EmptyProjectLocation();
+    error EmptyImpactMetrics();
+    error InvalidIpfsHash();
+    error InvalidStakingMultiplier();
+    error InvalidBlockRange();
+    error ProjectInTerminalState();
+    error InvalidStateTransition();
+    error ReportAlreadyValidated();
 
     // ====================================================
-    // 🚀 Initialization & Upgrades
+    //  Initialization & Upgrades
     // ====================================================
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -508,7 +441,7 @@ contract TerraStakeProjects is
     }
 
     // ====================================================
-    // 🔹 NFT Integration Functions
+    //  NFT Integration Functions
     // ====================================================
     
     function setNFTContract(address _nftContract) external onlyRole(GOVERNANCE_ROLE) {
@@ -615,7 +548,7 @@ contract TerraStakeProjects is
     }
 
     // ====================================================
-    // 🔹 Project Management
+    //  Project Management
     // ====================================================
     
     function addProject(
@@ -647,14 +580,14 @@ contract TerraStakeProjects is
             totalFeesCollected += submissionFee;
             feesByType[FeeType.ProjectSubmission] += submissionFee;
             
-            emit FeeCollected(projectCounter + 1, FeeType.ProjectSubmission, submissionFee);
+            emit FeeCollected(projectCount + 1, FeeType.ProjectSubmission, submissionFee);
         }
         
-        projectCounter++;
-        uint256 projectId = projectCounter;
+        projectCount ++;
+        uint256 projectId = projectCount;
         
         // Store project metadata
-        projectMetadata[projectId] = ProjectMetadata({
+        projectMetadata[projectId] = ProjectMetaData({
             name: name,
             description: description,
             location: location,
@@ -674,7 +607,7 @@ contract TerraStakeProjects is
         });
         
         allProjectIds.push(projectId);
-        projectsByCategory[category].push(projectId);
+        _projectsByCategory[category].push(projectId);
         
         emit ProjectCreated(
             projectId,
@@ -770,8 +703,8 @@ contract TerraStakeProjects is
         
         // Remove from old category array
         uint256 indexInOld = type(uint256).max;
-        for (uint256 i = 0; i < projectsByCategory[oldCategory].length; i++) {
-            if (projectsByCategory[oldCategory][i] == projectId) {
+        for (uint256 i = 0; i < _projectsByCategory[oldCategory].length; i++) {
+            if (_projectsByCategory[oldCategory][i] == projectId) {
                 indexInOld = i;
                 break;
             }
@@ -779,12 +712,12 @@ contract TerraStakeProjects is
         
         if (indexInOld != type(uint256).max) {
             // Replace with the last element and pop
-            projectsByCategory[oldCategory][indexInOld] = projectsByCategory[oldCategory][projectsByCategory[oldCategory].length - 1];
-            projectsByCategory[oldCategory].pop();
+            _projectsByCategory[oldCategory][indexInOld] = _projectsByCategory[oldCategory][_projectsByCategory[oldCategory].length - 1];
+            _projectsByCategory[oldCategory].pop();
         }
         
         // Add to new category array
-        projectsByCategory[newCategory].push(projectId);
+        _projectsByCategory[newCategory].push(projectId);
         
         // Update project state
         project.category = newCategory;
@@ -895,11 +828,11 @@ contract TerraStakeProjects is
         }
         
         // Create or update verification record
-        projectVerifications[projectId] = VerificationRecord({
+        projectVerifications[projectId] = VerificationData({
             verifier: verifier,
             verificationDate: uint48(block.timestamp),
-            verificationDetails: verificationDetails,
-            documentHash: documentHash
+            verificationDocumentHash: documentHash,
+            verifierNotes: verificationDetails
         });
         
         emit ProjectVerified(projectId, verifier, documentHash);
@@ -931,10 +864,7 @@ contract TerraStakeProjects is
         }
         
         // Create impact report
-        impactReportCounter++;
-        uint256 reportId = impactReportCounter;
-        
-        impactReports[reportId] = ImpactReport({
+        ImpactReport memory impactReport = ImpactReport({
             projectId: projectId,
             reporter: msg.sender,
             timestamp: uint48(block.timestamp),
@@ -945,17 +875,20 @@ contract TerraStakeProjects is
             validated: false
         });
         
-        projectImpactReports[projectId].push(reportId);
+        projectImpactReports[projectId].push(impactReport);
         
+        uint256 reportId = projectImpactReports[projectId].length;
+
         emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
     }
     
     function validateImpactReport(
+        uint256 projectId,
         uint256 reportId,
         bool isValid,
         string calldata validationNotes
     ) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
-        ImpactReport storage report = impactReports[reportId];
+        ImpactReport storage report = projectImpactReports[projectId][reportId];
         
         // Check if report exists
         if (report.timestamp == 0) revert InvalidReportId();
@@ -967,7 +900,7 @@ contract TerraStakeProjects is
         report.validated = isValid;
         
         // Store validation
-        reportValidations[reportId] = ReportValidation({
+        reportValidations[reportId] = ValidationData({
             validator: msg.sender,
             validationTime: uint48(block.timestamp),
             validationNotes: validationNotes,
@@ -1247,7 +1180,7 @@ contract TerraStakeProjects is
     
     function getProjectMetadata(
         uint256 projectId
-    ) external view override returns (ProjectMetadata memory) {
+    ) external view override returns (ProjectMetaData memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectMetadata[projectId];
     }
@@ -1261,7 +1194,7 @@ contract TerraStakeProjects is
     
     function getProjectVerification(
         uint256 projectId
-    ) external view override returns (VerificationRecord memory) {
+    ) external view override returns (VerificationData memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectVerifications[projectId];
     }
@@ -1282,7 +1215,7 @@ contract TerraStakeProjects is
     
     function getReportValidation(
         uint256 reportId
-    ) external view override returns (ReportValidation memory) {
+    ) external view override returns (ValidationData memory) {
         if (impactReports[reportId].timestamp == 0) revert InvalidReportId();
         return reportValidations[reportId];
     }
@@ -1290,7 +1223,7 @@ contract TerraStakeProjects is
     function getProjectsByCategory(
         ProjectCategory category
     ) external view override returns (uint256[] memory) {
-        return projectsByCategory[category];
+        return _projectsByCategory[category];
     }
     
     function getAllProjectIds() external view override returns (uint256[] memory) {
@@ -1298,7 +1231,7 @@ contract TerraStakeProjects is
     }
     
     function getProjectCount() external view override returns (uint256) {
-        return projectCounter;
+        return projectCount;
     }
     
     function getCategoryInfo(
@@ -1596,7 +1529,7 @@ contract TerraStakeProjects is
         uint256 totalRewards,
         uint256 numberOfStakers
     ) {
-        numberOfProjects = projectCounter;
+        numberOfProjects = projectCount;
         
         // Count active projects
         for (uint256 i = 0; i < allProjectIds.length; i++) {
@@ -1625,6 +1558,15 @@ contract TerraStakeProjects is
             totalRewards,
             numberOfStakers
         );
+    }
+
+    /**
+     * @dev Function to check if a project exists
+     * @param projectId The ID of the project to check
+     * @return bool True if the project exists, false otherwise
+     */
+    function projectExists(uint256 projectId) external view returns (bool) {
+        return projectMetadata[projectId].exists;
     }
     
     // Helper function to efficiently get count of role members

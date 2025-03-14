@@ -9,7 +9,7 @@ pragma solidity 0.8.28;
  */
 interface ITerraStakeProjects {
     // ====================================================
-    // 📋 Enums
+    //  Enums
     // ====================================================
     
     /**
@@ -42,21 +42,41 @@ interface ITerraStakeProjects {
         Archived,
         Rejected
     }
-    
+    // Report statuses
+    enum ReportStatus {
+        Submitted,
+        Validated,
+        Rejected,
+        Pending
+    }
+
+    enum FeeType {
+        ProjectSubmission,
+        ImpactReporting,
+        Verification,
+        CategoryChange
+    }
+
+    enum StakingActionType {
+        Stake,
+        Unstake
+    }
+
     // ====================================================
-    // 📋 Structs
+    //  Structs
     // ====================================================
     
     /**
      * @notice Core project metadata
      */
-    struct ProjectData {
+    struct ProjectMetaData {
         string name;
         string description;
         string location;
         string impactMetrics;
         bytes32 ipfsHash;
         bool exists;
+        uint48 creationTime;
     }
     
     /**
@@ -76,17 +96,21 @@ interface ITerraStakeProjects {
         uint256 lastRewardUpdate;
         uint256 accumulatedRewards;
     }
+
+    struct ProjectTargets {
+        uint256 impactTarget;
+        uint256 stakingTarget;
+    }
     
     /**
      * @notice Additional project metadata fields
      */
     struct GeneralMetadata {
-        string[] tags;
-        string[] contacts;
-        uint256 establishedDate;
-        uint256 expectedCompletionDate;
-        string iconUri;
-        string imageUri;
+        string website;
+        string[] team;
+        string[] partners;
+        string[] socialMedia;
+        uint256 lastUpdated;
     }
     
     /**
@@ -103,8 +127,9 @@ interface ITerraStakeProjects {
      */
     struct ValidationData {
         address validator;
-        uint256 validationDate;
-        bytes32 validationReportHash;
+        uint48 validationTime;
+        string validationNotes;
+        bool isValid;
     }
     
     /**
@@ -113,7 +138,9 @@ interface ITerraStakeProjects {
     struct VerificationData {
         address verifier;
         uint256 verificationDate;
-        bytes32 verificationReportHash;
+        bytes32 verificationDocumentHash;
+        bool isVerified;
+        string verifierNotes;
     }
     
     /**
@@ -125,15 +152,22 @@ interface ITerraStakeProjects {
         uint256 stakingEfficiency;
         uint256 communityEngagement;
     }
-    
+
     /**
      * @notice Impact report structure
      */
     struct ImpactReport {
-        uint256 periodStart;
-        uint256 periodEnd;
-        uint256[] metrics;
-        bytes32 reportHash;
+        uint256 timestamp;
+        address reporter;
+        bytes32 reportDataHash;
+        string reportURI;
+        string description;
+        uint256 measuredValue;
+        string measurement;
+        ReportStatus status;
+        address validator;
+        string validatorNotes;
+        uint256 validationTime;
     }
     
     /**
@@ -177,9 +211,63 @@ interface ITerraStakeProjects {
         uint256 categoryChangeFee;
         uint256 verificationFee;
     }
+
+    // Project document handling
+    struct ProjectDocument {
+        string name;
+        string docType;
+        bytes32 ipfsHash;
+        uint256 timestamp;
+        address uploader;
+    }
+
+    // Impact report structures
+    struct ImpactRequirements {
+        uint32 minStakingPeriod;
+        uint32 reportingFrequency;
+        uint32 verificationThreshold;
+        uint32 impactDataFormat;
+        bool requiresAudit;
+    }
+
+    struct ProjectVerification {
+        uint256 verificationDate;
+        address verifier;
+        bytes32 verificationDataHash;
+        bool isVerified;
+        string verifierNotes;
+        uint256 lastVerificationTime;
+    }
+
+    struct UserStake {
+        uint256 amount;
+        uint256 adjustedAmount;
+        uint256 stakedAt;
+        uint256 lastRewardUpdate;
+        uint256 claimedRewards;
+        bool isStaking;
+    }
+
+    // Custom data structure to store real-world category information
+    struct CategoryInfo {
+        string name;
+        string description;
+        string[] standardBodies;
+        string[] metricUnits;
+        string verificationStandard;
+        uint256 impactWeight;
+    }
+
+    struct StakingAction {
+        address user;
+        uint256 projectId;
+        uint256 amount;
+        uint48 timestamp;
+        StakingActionType actionType;
+    }
     
     // ====================================================
-    // 📣 Events
+    //  Events
     // ====================================================
     
     /**
@@ -188,9 +276,17 @@ interface ITerraStakeProjects {
     event Initialized(address admin, address tstakeToken);
     
     /**
-     * @notice Emitted when a new project is added
+     * @notice Emitted when a new project is created   
      */
-    event ProjectAdded(uint256 indexed projectId, string name, ProjectCategory category);
+    event ProjectCreated(
+        uint256 indexed projectId,
+        address indexed creator,
+        string name,
+        ProjectCategory category,
+        uint32 stakingMultiplier,
+        uint48 startBlock,
+        uint48 endBlock
+    );
     
     /**
      * @notice Emitted when a project state changes
@@ -301,9 +397,32 @@ interface ITerraStakeProjects {
         bytes32 permission, 
         bool granted
     );
+
+    event ProjectTargetsSet(
+        uint256 indexed projectId,
+        uint256 indexed impactTarget, 
+        uint256 indexed stakingTarget
+    );
+
+    event ProjectUpdated(
+        uint256 indexed projectId,
+        address indexed updater,
+        string name,
+        uint48 startBlock,
+        uint48 endBlock
+    );
+
+    event ProjectCategoryChanged(
+        uint256 indexed projectId,
+        ProjectCategory oldCategory,
+        ProjectCategory newCategory
+    );
+
+    event ProjectStakingFinalized(uint256 indexed projectId);
+    event StakingMultiplierUpdated(uint256 indexed projectId, uint32 oldMultiplier, uint32 newMultiplier);
     
     // ====================================================
-    // 🔹 Core Functions
+    //  Core Functions
     // ====================================================
     
     /**
@@ -616,6 +735,13 @@ interface ITerraStakeProjects {
         returns (ImpactRequirement memory);
     
     /**
+     * @notice Function to check if a project exists
+     * @param projectId The ID of the project to check
+     * @return bool True if the project exists, false otherwise
+     */
+    function projectExists(uint256 projectId) external view returns (bool);
+
+    /**
      * @notice Calculate impact for a project based on its category
      * @param projectId ID of the project
      * @param baseImpact Base impact value
@@ -637,7 +763,7 @@ interface ITerraStakeProjects {
         external 
         view 
         returns (
-            ProjectData[] memory metadata,
+            ProjectMetaData[] memory metadata,
             ProjectStateData[] memory state,
             ProjectAnalytics[] memory analytics
         );

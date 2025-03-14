@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
-
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title AntiBot - TerraStake Security Module v2.2
@@ -17,14 +18,18 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
  * - Optimized gas usage with efficient storage writes
  * - Governance exemptions with timelock and maximum limit
  */
-contract AntiBot is AccessControl, ReentrancyGuard {
-
+contract AntiBot is 
+    Initializable,
+    AccessControlUpgradeable,
+    ReentrancyGuardUpgradeable,
+    UUPSUpgradeable
+{
     // ================================
     //  Custom Errors
     // ================================
 
     error InvalidPriceOracle();
-    error TransactionThrottled(address user, uint256 cooldownEnds);
+    error TransactionThrottled(address user, uint256 blockNumber, uint256 cooldownEnds);
     error TimelockNotExpired(address account, uint256 unlockTime);
     error InvalidLockPeriod();
     error CircuitBreakerActive();
@@ -33,7 +38,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     error ZeroAddressProvided();
     error InvalidThresholdValue();
     error MaxGovernanceExemptionsReached(); // New error for exceeding max exemptions
-
 
     // ================================
     //  Role Management
@@ -44,6 +48,7 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     bytes32 public constant TRANSACTION_MONITOR_ROLE = keccak256("TRANSACTION_MONITOR_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant STAKING_CONTRACT_ROLE = keccak256("STAKING_CONTRACT_ROLE");
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
 
     // ================================
     //  Security Parameters
@@ -52,7 +57,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     bool public isAntibotEnabled = true;
     bool public isBuybackPaused = false;
     bool public isCircuitBreakerTriggered = false;
-
     uint256 public blockThreshold = 1;  // Default: 1 block limit per user
     uint256 public priceImpactThreshold = 5;  // Default: 5% price change pauses buyback
     uint256 public circuitBreakerThreshold = 15;  // Default: 15% drop halts trading
@@ -61,12 +65,10 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     uint256 public constant MAX_GOVERNANCE_EXEMPTIONS = 5; // Maximum number of governance exemptions allowed
     uint256 public governanceExemptionCount; // Keep track of active governance exemptions
 
-
     mapping(address => uint256) private userCooldown;
     mapping(address => bool) private trustedContracts;
     mapping(address => uint256) private liquidityInjectionTimestamp;
-
-    AggregatorV3Interface public immutable priceOracle;
+    AggregatorV3Interface public priceOracle;
     int256 public lastCheckedPrice;
     uint256 public lastPriceCheckTime;
 
@@ -74,6 +76,7 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         address account;
         uint256 unlockTime;
     }
+
     mapping(address => GovernanceRequest) public pendingExemptions;
 
     // ================================
@@ -88,7 +91,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     event EmergencyCircuitBreakerReset(address indexed admin, bytes32 indexed callerRole); // Log caller's role
     event AddressExempted(address indexed account);
     event ExemptionRevoked(address indexed account, bytes32 indexed callerRole); // Log caller's role
-    event TransactionThrottled(address indexed from, uint256 blockNumber, uint256 cooldownEnds);
     event TrustedContractAdded(address indexed contractAddress);
     event TrustedContractRemoved(address indexed contractAddress, bytes32 indexed callerRole); // Log caller's role
     event PriceImpactThresholdUpdated(uint256 newThreshold);
@@ -98,8 +100,24 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     event GovernanceExemptionApproved(address indexed account, bytes32 indexed callerRole); // Log caller's role
     event PriceMonitoringUpdated(uint256 timestamp, int256 oldPrice, int256 newPrice);
     event PriceCheckCooldownUpdated(uint256 newCooldown);
+    
+    // -------------------------------------------
+    //  Constructor & Initializer
+    // -------------------------------------------
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
 
-    constructor(address governanceContract, address stakingContract, address _priceOracle) {
+    function initialize(
+        address governanceContract,
+        address stakingContract,
+        address _priceOracle
+    ) external initializer {
+        __AccessControl_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
+
         if (_priceOracle == address(0)) revert InvalidPriceOracle();
         if (governanceContract == address(0)) revert ZeroAddressProvided();
         if (stakingContract == address(0)) revert ZeroAddressProvided();
@@ -108,6 +126,7 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         _grantRole(GOVERNANCE_ROLE, governanceContract);
         _grantRole(STAKING_CONTRACT_ROLE, stakingContract);
         _grantRole(CONFIG_MANAGER_ROLE, msg.sender);
+        _grantRole(UPGRADER_ROLE, msg.sender);
 
         priceOracle = AggregatorV3Interface(_priceOracle);
         lastCheckedPrice = _getLatestPrice();
@@ -123,7 +142,7 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     }
 
     // ================================
-    // 🔹 Transaction Throttling
+    //  Transaction Throttling
     // ================================
 
     modifier checkThrottle(address from) {
@@ -134,14 +153,12 @@ contract AntiBot is AccessControl, ReentrancyGuard {
 
             if (block.timestamp <= cooldown + (threshold * 12)) { // Use block.timestamp directly
                 uint256 cooldownEnds = cooldown + (threshold * 12);
-                emit TransactionThrottled(from, block.number, cooldownEnds);
-                revert TransactionThrottled(from, cooldownEnds);
+                revert TransactionThrottled(from, block.number, cooldownEnds);
             }
             // Optimized SSTORE: Only write if the value has changed
             if(cooldown != block.timestamp){
                 userCooldown[from] = block.timestamp;
             }
-
         }
         _;
     }
@@ -150,6 +167,12 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         if (isCircuitBreakerTriggered) revert CircuitBreakerActive();
         _;
     }
+
+    /**
+     * @notice Authorize upgrade for UUPS pattern
+     * @param newImplementation Address of new implementation
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     /**
      * @notice Updates the block threshold.
@@ -188,7 +211,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     // ================================
     //  Price-Based Buyback Protection
     // ================================
-
     /**
      * @notice Gets the latest price.
      * @return Latest price.
@@ -215,12 +237,13 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         if(lastCheckedPrice != currentPrice){
             lastCheckedPrice = currentPrice;
         }
+        
         if(lastPriceCheckTime != currentTime){
             lastPriceCheckTime = currentTime;
         }
-
+        
         emit PriceMonitoringUpdated(currentTime, oldPrice, currentPrice);
-
+        
         // Use a single if-else-if construct for efficiency
         if (priceChange < -int256(priceImpactThreshold)) {
             if (!isBuybackPaused) { // Optimized SSTORE: Only write if changed
@@ -266,13 +289,15 @@ contract AntiBot is AccessControl, ReentrancyGuard {
      */
     function emergencyResetCircuitBreaker() external {
         bytes32 callerRole = hasRole(GOVERNANCE_ROLE, msg.sender) ? GOVERNANCE_ROLE : DEFAULT_ADMIN_ROLE;
+        
         if (callerRole != GOVERNANCE_ROLE && callerRole != DEFAULT_ADMIN_ROLE) {
             revert OnlyRoleCanAccess(GOVERNANCE_ROLE);
         }
+        
         if (!isCircuitBreakerTriggered) {
             revert CircuitBreakerNotActive();
         }
-
+        
         isCircuitBreakerTriggered = false; // No need to check, always change if reached here
         emit EmergencyCircuitBreakerReset(msg.sender, callerRole);
     }
@@ -308,7 +333,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     // ================================
     //  Liquidity Lock Mechanism
     // ================================
-
     /**
      * @notice Locks liquidity.
      * @param user User address.
@@ -344,7 +368,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     // ================================
     //  Governance Exemptions (Timelocked)
     // ================================
-
     /**
      * @notice Requests governance exemption.
      * @param account Account address.
@@ -355,7 +378,7 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         if (governanceExemptionCount >= MAX_GOVERNANCE_EXEMPTIONS) {
             revert MaxGovernanceExemptionsReached();
         }
-
+        
         uint256 unlockTime = block.timestamp + 24 hours; // Use block.timestamp directly
         pendingExemptions[account] = GovernanceRequest(account, unlockTime);
         emit GovernanceExemptionRequested(account, unlockTime);
@@ -368,14 +391,14 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     function approveGovernanceExemption(address account) external onlyRole(GOVERNANCE_ROLE) {
         GovernanceRequest memory request = pendingExemptions[account];
         if (block.timestamp < request.unlockTime) revert TimelockNotExpired(account, request.unlockTime); // Use block.timestamp
-
+        
         // Check if the account is already exempt
         if(!hasRole(BOT_ROLE, account)){
             _grantRole(BOT_ROLE, account);
             // Increment exemption count only if granting a new exemption
             governanceExemptionCount++;
         }
-
+        
         delete pendingExemptions[account]; // Clear the pending request
         emit GovernanceExemptionApproved(account, GOVERNANCE_ROLE);
     }
@@ -390,6 +413,7 @@ contract AntiBot is AccessControl, ReentrancyGuard {
             _revokeRole(BOT_ROLE, account);
             governanceExemptionCount--; // Decrement only when revoking an active exemption
         }
+        
         emit ExemptionRevoked(account, GOVERNANCE_ROLE);
     }
 
@@ -408,7 +432,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     // ================================
     //  Helper Functions
     // ================================
-
     /**
      * @notice Checks if an address is exempt.
      * @param account Address to check.
@@ -445,7 +468,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         blockNum = userCooldown[user];
         threshold = blockNum > 0 ? userCooldown[user] : blockThreshold;
         canTransact = block.timestamp > userCooldown[user] + (threshold * 12) || _isExempt(user); // Use block.timestamp
-
         return (blockNum, threshold, canTransact);
     }
 
@@ -469,7 +491,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         timeSinceLastCheck = block.timestamp - lastPriceCheckTime; // Use block.timestamp
         buybackPaused = isBuybackPaused;
         circuitBroken = isCircuitBreakerTriggered;
-
         return (lastPrice, currentPrice, timeSinceLastCheck, buybackPaused, circuitBroken);
     }
 
@@ -488,7 +509,6 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         lockUntil = liquidityInjectionTimestamp[user];
         isLocked = block.timestamp < lockUntil; // Use block.timestamp
         remainingTime = isLocked ? lockUntil - block.timestamp : 0; // Use block.timestamp
-
         return (lockUntil, isLocked, remainingTime);
     }
 
@@ -502,13 +522,12 @@ contract AntiBot is AccessControl, ReentrancyGuard {
         if (!isAntibotEnabled || _isExempt(from)) {
             return (false, 0);
         }
-
+        
         // Use local variable to reduce SLOADs
         uint256 cooldown = userCooldown[from];
         uint256 threshold = cooldown > 0 ? cooldown : blockThreshold;
         wouldThrottle = block.timestamp <= cooldown + (threshold * 12); // Use block.timestamp
         cooldownEnds = cooldown + (threshold * 12);
-
         return (wouldThrottle, cooldownEnds);
     }
 
@@ -558,19 +577,19 @@ contract AntiBot is AccessControl, ReentrancyGuard {
     function forceCheckCircuitBreaker() external onlyRole(TRANSACTION_MONITOR_ROLE) {
         int256 currentPrice = _getLatestPrice();
         int256 priceChange = ((currentPrice - lastCheckedPrice) * 100) / lastCheckedPrice;
-
         int256 oldPrice = lastCheckedPrice;
+        
         // Optimized SSTOREs
         uint256 currentTime = block.timestamp;
         if(lastCheckedPrice != currentPrice){
             lastCheckedPrice = currentPrice;
         }
+        
         if(lastPriceCheckTime != currentTime){
             lastPriceCheckTime = currentTime;
         }
-
+        
         emit PriceMonitoringUpdated(currentTime, oldPrice, currentPrice);
-
         _checkCircuitBreaker(currentPrice, priceChange);
     }
 }

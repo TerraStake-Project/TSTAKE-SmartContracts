@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/IERC1155Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
+import "@openzeppelin/contracts/interfaces/IERC1155.sol";
+import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 
 /**
  * @title ITerraStakeNFT
  * @dev Interface for the TerraStakeNFT contract
  */
-interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
+interface ITerraStakeNFT is IERC1155, IERC2981 {
     // ====================================================
-    // 📝 Structs
+    //  Structs
     // ====================================================
     
     enum NFTType { STANDARD, IMPACT, GOVERNANCE }
@@ -38,7 +38,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     }
     
     struct FractionInfo {
-        uint256 originalTokenId;
+        uint256 original__tokenID;
         uint256 fractionCount;
         address fractionalizer;
         bool isActive;
@@ -61,7 +61,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     }
     
     // ====================================================
-    // 🏭 Token Minting Functions
+    //  Token Minting Functions
     // ====================================================
     
     function mintStandardNFT(
@@ -79,52 +79,52 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     ) external returns (uint256);
     
     function verifyImpactCertificate(
-        uint256 tokenId,
+        uint256 _tokenID,
         uint256 impactValue,
         string calldata impactType,
         string calldata location
     ) external;
     
     // ====================================================
-    // 🔄 Fractionalization Functions
+    //  Fractionalization Functions
     // ====================================================
     
-    function fractionalizeToken(uint256 tokenId, uint256 fractionCount) 
+    function fractionalizeToken(uint256 _tokenID, uint256 fractionCount) 
         external 
         returns (uint256[] memory);
     
-    function reassembleToken(uint256 originalTokenId) external;
+    function reassembleToken(uint256 original__tokenID) external;
     
     // ====================================================
-    // 🖼️ URI Management
+    //  URI Management
     // ====================================================
     
-    function setTokenURI(uint256 tokenId, string calldata newUri) external;
+    function setTokenURI(uint256 _tokenID, string calldata newUri) external;
     
-    function lockTokenURI(uint256 tokenId) external;
+    function lockTokenURI(uint256 _tokenID) external;
     
-    function uri(uint256 tokenId) external view returns (string memory);
+    function uri(uint256 _tokenID) external view returns (string memory);
     
     // ====================================================
-    // 📊 Metadata & Query Functions
+    //  Metadata & Query Functions
     // ====================================================
     
     function getTokensByCategory(ProjectCategory category) external view returns (uint256[] memory);
     
-    function getTokenMetadata(uint256 tokenId) external view returns (NFTMetadata memory);
+    function getTokenMetadata(uint256 _tokenID) external view returns (NFTMetadata memory);
     
-    function getImpactCertificate(uint256 tokenId) external view returns (ImpactCertificate memory);
+    function getImpactCertificate(uint256 _tokenID) external view returns (ImpactCertificate memory);
     
-    function getFractionInfo(uint256 tokenId) external view returns (FractionInfo memory);
+    function getFractionInfo(uint256 _tokenID) external view returns (FractionInfo memory);
     
-    function getFractionTokens(uint256 originalTokenId) external view returns (uint256[] memory);
+    function getFractionTokens(uint256 original__tokenID) external view returns (uint256[] memory);
     
-    function getOriginalTokenId(uint256 fractionTokenId) external view returns (uint256);
+    function getOriginal__tokenID(uint256 fraction__tokenID) external view returns (uint256);
     
-    function exists(uint256 tokenId) external view returns (bool);
+    function exists(uint256 _tokenID) external view returns (bool);
     
     // ====================================================
-    // 💰 Fee Management
+    //  Fee Management
     // ====================================================
     
     function updateFeePercentages(
@@ -152,24 +152,24 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function adjustFeesBasedOnUsage() external;
     
     // ====================================================
-    // 🏆 Royalties Implementation
+    //  Royalties Implementation
     // ====================================================
     
     function setDefaultRoyalty(address receiver, uint96 feeNumerator) external;
     
     function setTokenRoyalty(
-        uint256 tokenId,
+        uint256 _tokenID,
         address receiver,
         uint96 feeNumerator
     ) external;
     
-    function royaltyInfo(uint256 tokenId, uint256 salePrice)
+    function royaltyInfo(uint256 _tokenID, uint256 salePrice)
         external
         view
         returns (address receiver, uint256 royaltyAmount);
     
     // ====================================================
-    // 🛠️ Utility Functions
+    //  Utility Functions
     // ====================================================
     
     function requestRandomSeed() external returns (uint256 requestId);
@@ -189,19 +189,19 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     ) external;
     
     // ====================================================
-    // 🔒 Locking Mechanism Implementation
+    //  Locking Mechanism Implementation
     // ====================================================
     
-    function lockToken(uint256 tokenId, uint256 duration) external;
+    function lockToken(uint256 _tokenID, uint256 duration) external;
     
-    function unlockToken(uint256 tokenId) external;
+    function unlockToken(uint256 _tokenID) external;
     
-    function isLocked(uint256 tokenId) external view returns (bool);
+    function isLocked(uint256 _tokenID) external view returns (bool);
     
-    function getLockInfo(uint256 tokenId) external view returns (TokenLock memory);
+    function getLockInfo(uint256 _tokenID) external view returns (TokenLock memory);
     
     // ====================================================
-    // 💵 Token Recovery
+    //  Token Recovery
     // ====================================================
     
     function recoverERC20(address tokenAddress, uint256 amount) external;
@@ -209,16 +209,16 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     function executeBuyback(uint256 amount) external;
     
     // ====================================================
-    // 📣 Events
+    //  Events
     // ====================================================
     
-    event TokenMinted(uint256 indexed tokenId, address indexed recipient, NFTType nftType, ProjectCategory category);
-    event ImpactCertificateCreated(uint256 indexed tokenId, uint256 indexed projectId, bytes32 reportHash);
-    event ImpactVerified(uint256 indexed tokenId, bytes32 reportHash, address verifier);
-    event TokenFractionalized(uint256 indexed originalTokenId, uint256[] fractionIds, uint256 fractionCount);
-    event TokensReassembled(uint256 indexed originalTokenId, address collector);
-    event TokenURIUpdated(uint256 indexed tokenId, string newUri);
-    event TokenURILocked(uint256 indexed tokenId);
+    event TokenMinted(uint256 indexed _tokenID, address indexed recipient, NFTType nftType, ProjectCategory category);
+    event ImpactCertificateCreated(uint256 indexed _tokenID, uint256 indexed projectId, bytes32 reportHash);
+    event ImpactVerified(uint256 indexed _tokenID, bytes32 reportHash, address verifier);
+    event TokenFractionalized(uint256 indexed original__tokenID, uint256[] fractionIds, uint256 fractionCount);
+    event TokensReassembled(uint256 indexed original__tokenID, address collector);
+    event TokenURIUpdated(uint256 indexed _tokenID, string newUri);
+    event TokenURILocked(uint256 indexed _tokenID);
     event FeePercentagesUpdated(uint8 burnPercent, uint8 treasuryPercent, uint8 buybackPercent);
     event TreasuryWalletUpdated(address treasuryWallet);
     event FeeConfigured(uint256 mintFee, uint256 fractionalizationFee, uint256 verificationFee, uint256 transferFee);
@@ -226,14 +226,14 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
     event FeeMultiplierUpdated(uint256 newMultiplier);
     event FeeCollected(address from, uint256 feeAmount, uint256 burnAmount, uint256 treasuryAmount, uint256 buybackAmount);
     event DefaultRoyaltySet(address receiver, uint96 feeNumerator);
-    event TokenRoyaltySet(uint256 indexed tokenId, address receiver, uint96 feeNumerator);
+    event TokenRoyaltySet(uint256 indexed _tokenID, address receiver, uint96 feeNumerator);
     event RandomSeedRequested(uint256 indexed requestId, address requester);
     event RandomSeedReceived(uint256 indexed requestId, uint256 randomValue);
     event EmergencyModeActivated(address activator);
     event EmergencyModeDeactivated(address deactivator);
     event VRFConfigured(address coordinator, bytes32 keyHash, uint64 subscriptionId, uint32 callbackGasLimit, uint16 requestConfirmations);
-    event TokenLocked(uint256 indexed tokenId, address locker, uint256 unlockTime);
-    event TokenUnlocked(uint256 indexed tokenId, address unlocker);
+    event TokenLocked(uint256 indexed _tokenID, address locker, uint256 unlockTime);
+    event TokenUnlocked(uint256 indexed _tokenID, address unlocker);
     event TokensRecovered(address tokenAddress, uint256 amount, address recipient);
     event BuybackExecuted(uint256 amount, address executor);
 }
@@ -243,7 +243,7 @@ interface ITerraStakeNFT is IERC1155Upgradeable, IERC2981Upgradeable {
  * @dev Interface for token locking functionality
  */
 interface ILockable {
-    function lockToken(uint256 tokenId, uint256 duration) external;
-    function unlockToken(uint256 tokenId) external;
-    function isLocked(uint256 tokenId) external view returns (bool);
+    function lockToken(uint256 _tokenID, uint256 duration) external;
+    function unlockToken(uint256 _tokenID) external;
+    function isLocked(uint256 _tokenID) external view returns (bool);
 }

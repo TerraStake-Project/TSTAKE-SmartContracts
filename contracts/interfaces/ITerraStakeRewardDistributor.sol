@@ -253,4 +253,11 @@ interface ITerraStakeRewardDistributor {
      * @return version Contract version
      */
     function version() external pure returns (string memory);
+
+    /**
+     * @notice Claim rewards from the distributor
+     * @param recipient Address to receive the rewards
+     * @return amount Amount of rewards claimed
+     */
+    function claimRewards(address recipient) external returns (uint256 amount);
 }

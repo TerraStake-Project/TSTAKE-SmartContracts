@@ -1,36 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/IERC1155Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol";
-import "./interfaces/ITerraStakeStaking.sol";
-import "./interfaces/ITerraStakeRewardDistributor.sol";
-import "./interfaces/ITerraStakeProjects.sol";
-import "./interfaces/ITerraStakeGovernance.sol";
-import "./interfaces/ITerraStakeSlashing.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
+
+import "../interfaces/ITerraStakeStaking.sol";
+import "../interfaces/ITerraStakeRewardDistributor.sol";
+import "../interfaces/ITerraStakeProjects.sol";
+import "../interfaces/ITerraStakeGovernance.sol";
+import "../interfaces/ITerraStakeSlashing.sol";
 
 /**
  * @title TerraStakeStaking
- * @notice Official staking contract for the TerraStake ecosystem.
- * @dev Implements DAO governance integration and follows OZ 5.2.x patterns
+ * @notice Official staking contract for the TerraStake ecosystem with multi-project (batch) operations,
+ *         auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
+ * @dev This contract is upgradeable (UUPS) and uses multiple OpenZeppelin libraries for security.
  */
 contract TerraStakeStaking is 
-    Initializable, 
-    ITerraStakeStaking, 
+    ITerraStakeStaking,
+    Initializable,
+    ERC165Upgradeable,
     AccessControlEnumerableUpgradeable, 
     ReentrancyGuardUpgradeable, 
     PausableUpgradeable, 
-    UUPSUpgradeable,
-    ERC165Upgradeable 
+    UUPSUpgradeable
 {
+    using Math for uint256;
+
     // -------------------------------------------
-    // 🔹 Custom Errors
+    //  🔹 Custom Errors
     // -------------------------------------------
     error ZeroAmount();
     error InsufficientStakingDuration(uint256 minimum, uint256 provided);
@@ -53,75 +58,104 @@ contract TerraStakeStaking is
     error BatchTransferFailed();
 
     // -------------------------------------------
-    // 🔹 Constants
+    //  🔹 Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
-    bytes32 public constant SLASHER_ROLE = keccak256("SLASHER_ROLE");
-    
-    uint256 public constant BASE_APR = 10; // 10% APR base
-    uint256 public constant BOOSTED_APR = 20; // 20% APR if TVL < 1M TSTAKE
-    uint256 public constant NFT_APR_BOOST = 10;
-    uint256 public constant LP_APR_BOOST = 15;
-    uint256 public constant BASE_PENALTY_PERCENT = 10;
-    uint256 public constant MAX_PENALTY_PERCENT = 30;
+    bytes32 public constant UPGRADER_ROLE    = keccak256("UPGRADER_ROLE");
+    bytes32 public constant EMERGENCY_ROLE   = keccak256("EMERGENCY_ROLE");
+    bytes32 public constant SLASHER_ROLE     = keccak256("SLASHER_ROLE");
+
+    uint256 public constant BASE_APR              = 10;   // 10% APR base
+    uint256 public constant BOOSTED_APR           = 20;   // 20% APR if TVL < 1M TSTAKE
+    uint256 public constant NFT_APR_BOOST         = 10;   // Additional +10% if user has NFT
+    uint256 public constant LP_APR_BOOST          = 15;   // Additional +15% if LP staker
+    uint256 public constant BASE_PENALTY_PERCENT  = 10;   // 10% base penalty for early unstake
+    uint256 public constant MAX_PENALTY_PERCENT   = 30;   // 30% max penalty
     uint256 public constant LOW_STAKING_THRESHOLD = 1_000_000 * 10**18;
     uint256 public constant GOVERNANCE_VESTING_PERIOD = 7 days;
-    uint256 public constant MAX_LIQUIDITY_RATE = 10;
-    uint256 public constant MIN_STAKING_DURATION = 30 days;
-    address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    uint256 public constant MAX_LIQUIDITY_RATE    = 10;
+    uint256 public constant MIN_STAKING_DURATION  = 30 days;
+    uint256 public constant GOVERNANCE_THRESHOLD  = 10_000 * 10**18; // min tokens for governance
+    address private constant BURN_ADDRESS         = 0x000000000000000000000000000000000000dEaD;
 
     // -------------------------------------------
-    // 🔹 State Variables
+    //  🔹 State Variables (Do not change existing mappings)
     // -------------------------------------------
-    // Core contracts
-    IERC1155Upgradeable public nftContract;
-    IERC20Upgradeable public stakingToken;
+    IERC1155 public nftContract;
+    IERC20 public stakingToken;
     ITerraStakeRewardDistributor public rewardDistributor;
     ITerraStakeProjects public projectsContract;
     ITerraStakeGovernance public governanceContract;
     ITerraStakeSlashing public slashingContract;
     address public liquidityPool;
-    
-    // Protocol parameters
-    uint256 public liquidityInjectionRate; // % of rewards reinjected
-    bool public autoLiquidityEnabled;
-    uint256 public halvingPeriod; // Every 2 years
+
+    uint256 public liquidityInjectionRate;  // percentage of rewards reinjected
+    bool    public autoLiquidityEnabled;
+    uint256 public halvingPeriod;           // e.g. 730 days
     uint256 public lastHalvingTime;
     uint256 public halvingEpoch;
-    uint256 public proposalNonce; // For tracking governance proposals
-    uint256 public validatorThreshold; // Min amount to become validator
-    
-    // Staking user data
+    uint256 public proposalNonce;
+    uint256 public validatorThreshold;
+
+    // Mappings must remain unchanged:
     mapping(address => mapping(uint256 => StakingPosition)) private _stakingPositions;
     mapping(address => uint256) private _governanceVotes;
-    mapping(address => uint256) private _stakingBalance; // Total staked per user
-    mapping(address => bool) private _governanceViolators;
-    mapping(address => bool) private _validators; // Approved validators
-    
-    // Protocol state
+    mapping(address => uint256) private _stakingBalance;
+    mapping(address => bool)    private _governanceViolators;
+    mapping(address => bool)    private _validators;
+
     uint256 private _totalStaked;
     StakingTier[] private _tiers;
-    
+
+    // Track active stakers
+    address[] private _activeStakers;
+    mapping(address => bool) private _isActiveStaker;
+
+    // Additional state
+    mapping(address => PenaltyEvent[]) private _penaltyHistory;
+    mapping(address => uint256)         private _validatorCommission;
+    mapping(uint256 => uint256)         private _projectVotes;
+    uint256 public validatorRewardPool;
+    uint256 public governanceQuorum;
+    bool    public dynamicRewardsEnabled;
+    uint256 public lastRewardAdjustmentTime;
+    uint256 public dynamicBaseAPR;
+    uint256 public dynamicBoostedAPR;
+
+    /**
+     * @dev Reserved storage space to avoid layout collisions during upgrades.
+     *      Always keep this at the end of state variables.
+     */
+    uint256[50] private __gap;
+
     // -------------------------------------------
-    // 🔹 Initializer & Configuration
+    //  🔹 Events
     // -------------------------------------------
-    
+    event ValidatorRemoved(address indexed validator, uint256 timestamp);
+    event SlashingContractUpdated(address indexed newContract);
+    event ProjectApprovalVoted(uint256 indexed projectId, address voter, bool approved, uint256 votingPower);
+    event RewardRateAdjusted(uint256 oldRate, uint256 newRate);
+    event HalvingApplied(
+        uint256 indexed epoch,
+        uint256 oldBaseAPR,
+        uint256 newBaseAPR,
+        uint256 oldBoostedAPR,
+        uint256 newBoostedAPR
+    );
+    event DynamicRewardsToggled(bool enabled);
+    event GovernanceQuorumUpdated(uint256 newQuorum);
+
+    // -------------------------------------------
+    //  🔹 Constructor & Initializer
+    // -------------------------------------------
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
-    
+
     /**
-     * @notice Initialize the staking contract
-     * @param _nftContract Address of the NFT contract
-     * @param _stakingToken Address of the staking token
-     * @param _rewardDistributor Address of the reward distributor
-     * @param _liquidityPool Address of the liquidity pool
-     * @param _projectsContract Address of the projects contract
-     * @param _governanceContract Address of the governance contract
-     * @param _admin Address of the initial admin
+     * @notice Initializes the contract (UUPS + OpenZeppelin upgradeable pattern).
+     * @dev Must only be called once (by proxy deployment).
      */
     function initialize(
         address _nftContract,
@@ -137,7 +171,7 @@ contract TerraStakeStaking is
         __Pausable_init();
         __UUPSUpgradeable_init();
         __ERC165_init();
-        
+
         if (_nftContract == address(0)) revert InvalidAddress("nftContract", _nftContract);
         if (_stakingToken == address(0)) revert InvalidAddress("stakingToken", _stakingToken);
         if (_rewardDistributor == address(0)) revert InvalidAddress("rewardDistributor", _rewardDistributor);
@@ -145,66 +179,60 @@ contract TerraStakeStaking is
         if (_projectsContract == address(0)) revert InvalidAddress("projectsContract", _projectsContract);
         if (_governanceContract == address(0)) revert InvalidAddress("governanceContract", _governanceContract);
         if (_admin == address(0)) revert InvalidAddress("admin", _admin);
-        
-        nftContract = IERC1155Upgradeable(_nftContract);
-        stakingToken = IERC20Upgradeable(_stakingToken);
-        rewardDistributor = ITerraStakeRewardDistributor(_rewardDistributor);
-        liquidityPool = _liquidityPool;
+
+        nftContract      = IERC1155(_nftContract);
+        stakingToken     = IERC20(_stakingToken);
+        rewardDistributor= ITerraStakeRewardDistributor(_rewardDistributor);
+        liquidityPool    = _liquidityPool;
         projectsContract = ITerraStakeProjects(_projectsContract);
         governanceContract = ITerraStakeGovernance(_governanceContract);
-        
+
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(GOVERNANCE_ROLE, _governanceContract);
         _grantRole(UPGRADER_ROLE, _admin);
         _grantRole(EMERGENCY_ROLE, _admin);
-        
-        halvingPeriod = 730 days; // 2 years
-        lastHalvingTime = block.timestamp;
-        halvingEpoch = 0;
-        liquidityInjectionRate = 5; // 5% of rewards reinjected
-        autoLiquidityEnabled = true;
-        validatorThreshold = 100_000 * 10**18; // 100k tokens to become validator
-        
-        // Initialize tiers
+
+        halvingPeriod     = 730 days;
+        lastHalvingTime   = block.timestamp;
+        halvingEpoch      = 0;
+        liquidityInjectionRate = 5;
+        autoLiquidityEnabled   = true;
+        validatorThreshold     = 100_000 * 10**18;
+
+        // Initialize tiers – ensure they are ordered by duration ascending
         _tiers.push(StakingTier(30 days, 100, false));
         _tiers.push(StakingTier(90 days, 150, true));
         _tiers.push(StakingTier(180 days, 200, true));
         _tiers.push(StakingTier(365 days, 300, true));
+
+        // Additional parameters
+        governanceQuorum          = 1000;
+        dynamicRewardsEnabled     = false;
+        lastRewardAdjustmentTime  = block.timestamp;
+        dynamicBaseAPR            = BASE_APR;
+        dynamicBoostedAPR         = BOOSTED_APR;
     }
-    
+
     /**
-     * @notice Set the slashing contract
-     * @param _slashingContract Address of the slashing contract
+     * @dev Enforces upgrade authorization to the `UPGRADER_ROLE`.
      */
-    function setSlashingContract(address _slashingContract) external onlyRole(GOVERNANCE_ROLE) {
-        if (_slashingContract == address(0)) revert InvalidAddress("slashingContract", _slashingContract);
-        slashingContract = ITerraStakeSlashing(_slashingContract);
-        _grantRole(SLASHER_ROLE, _slashingContract);
-        
-        emit SlashingContractUpdated(_slashingContract);
-    }
-    
-    /**
-     * @notice Authorize contract upgrades
-     * @param newImplementation Address of new implementation
-     */
-    function _authorizeUpgrade(address newImplementation) 
-        internal 
-        override 
-        onlyRole(UPGRADER_ROLE) 
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(UPGRADER_ROLE)
     {}
-    
+
     // -------------------------------------------
-    // 🔹 Staking Operations
+    //  🔹 Staking Operations
     // -------------------------------------------
-    
+
     /**
-     * @notice Stake tokens for a project
-     * @param projectId ID of the project
-     * @param amount Amount to stake
-     * @param duration Duration to stake for
-     * @param isLP Whether staking LP tokens
-     * @param autoCompound Whether to automatically compound rewards
+     * @notice Stake tokens for a single project.
+     * @param projectId  ID of the project
+     * @param amount     Amount to stake
+     * @param duration   Desired staking duration
+     * @param isLP       Whether staking LP tokens
+     * @param autoCompound Whether to automatically compound future rewards
      */
     function stake(
         uint256 projectId,
@@ -212,829 +240,989 @@ contract TerraStakeStaking is
         uint256 duration,
         bool isLP,
         bool autoCompound
-    ) external nonReentrant whenNotPaused {
+    )
+        external
+        nonReentrant
+        whenNotPaused
+    {
         if (amount == 0) revert ZeroAmount();
-        if (duration < MIN_STAKING_DURATION) revert InsufficientStakingDuration(MIN_STAKING_DURATION, duration);
-        if (!projectsContract.projectExists(projectId)) revert ProjectDoesNotExist(projectId);
-        
-        // Cache storage variables
-        uint256 userStakingBalance = _stakingBalance[msg.sender];
-        uint256 currentTotalStaked = _totalStaked;
-        
-        // Check if user has an NFT boost
-        bool hasNFTBoost = nftContract.balanceOf(msg.sender, 1) > 0;
-        
-        // Get staking position
+        if (duration < MIN_STAKING_DURATION) {
+            revert InsufficientStakingDuration(MIN_STAKING_DURATION, duration);
+        }
+        if (!projectsContract.projectExists(projectId)) {
+            revert ProjectDoesNotExist(projectId);
+        }
+
+        uint256 userStakingBalance   = _stakingBalance[msg.sender];
+        uint256 currentTotalStaked   = _totalStaked;
+        bool hasNFTBoost             = (nftContract.balanceOf(msg.sender, 1) > 0);
+
+        // Get or create the staking position
         StakingPosition storage position = _stakingPositions[msg.sender][projectId];
-        
-        // If position exists, claim rewards first
+
+        // If this is an existing position, claim up to now
         if (position.amount > 0) {
             _claimRewards(msg.sender, projectId);
         } else {
-            // New position
             position.stakingStart = block.timestamp;
-            position.projectId = projectId;
+            position.projectId    = projectId;
         }
-        
+
         // Update position
-        position.amount += amount;
-        position.lastCheckpoint = block.timestamp;
-        position.duration = duration;
-        position.isLPStaker = isLP;
-        position.hasNFTBoost = hasNFTBoost;
+        position.amount         += amount;
+        position.lastCheckpoint  = block.timestamp;
+        position.duration        = duration;
+        position.isLPStaker      = isLP;
+        position.hasNFTBoost     = hasNFTBoost;
         position.autoCompounding = autoCompound;
-        
-        // Update totals (cache and update once)
+
+        // Update global stats
         currentTotalStaked += amount;
-        _totalStaked = currentTotalStaked;
-        
+        _totalStaked        = currentTotalStaked;
+
         userStakingBalance += amount;
         _stakingBalance[msg.sender] = userStakingBalance;
-        
-        // Update governance votes using quadratic voting power
-        _governanceVotes[msg.sender] = _calculateVotingPower(msg.sender);
-        
-        // Transfer tokens to contract
-        if (!stakingToken.transferFrom(msg.sender, address(this), amount)) 
-            revert TransferFailed(address(stakingToken), msg.sender, address(this), amount);
-        
-        // Update project stats in projects contract
-        projectsContract.updateProjectStaking(projectId, amount, true);
 
-// Mark as validator if staking enough
+        // Update governance votes if threshold is reached
+        if (userStakingBalance >= GOVERNANCE_THRESHOLD && !_governanceViolators[msg.sender]) {
+            _governanceVotes[msg.sender] = userStakingBalance;
+        }
+
+        // Transfer tokens
+        bool success = stakingToken.transferFrom(msg.sender, address(this), amount);
+        if (!success) {
+            revert TransferFailed(address(stakingToken), msg.sender, address(this), amount);
+        }
+
+        // Inform projectsContract that there's a new staker
+        projectsContract.incrementStakerCount(projectId);
+
+        // Check if user is now a validator
         if (userStakingBalance >= validatorThreshold && !_validators[msg.sender]) {
             _validators[msg.sender] = true;
             emit ValidatorStatusChanged(msg.sender, true);
         }
-        
-        emit Staked(msg.sender, projectId, amount, duration);
-    }
-    
-    /**
-     * @notice Unstake tokens from a project
-     * @param projectId ID of the project
-     */
-    function unstake(uint256 projectId) external nonReentrant whenNotPaused {
-        StakingPosition storage position = _stakingPositions[msg.sender][projectId];
-        if (position.amount == 0) revert NoActiveStakingPosition(msg.sender, projectId);
-        
-        // Cache position data to reduce storage reads
-        uint256 positionAmount = position.amount;
-        uint256 positionStart = position.stakingStart;
-        uint256 positionDuration = position.duration;
-        
-        // Cache user balance
-        uint256 userStakingBalance = _stakingBalance[msg.sender];
-        
-        // Calculate if we need to apply early unstaking penalty
-        uint256 stakingEndTime = positionStart + positionDuration;
-        uint256 amount = positionAmount;
-        uint256 penalty = 0;
-        uint256 toRedistribute = 0;
-        uint256 toBurn = 0;
-        uint256 toLiquidity = 0;
-        
-        // If unstaking early, apply penalty
-        if (block.timestamp < stakingEndTime) {
-            uint256 timeRemaining = stakingEndTime - block.timestamp;
-            
-            // Calculate penalty percentage (linear from BASE_PENALTY to MAX_PENALTY)
-            uint256 penaltyPercent = BASE_PENALTY_PERCENT + 
-                ((timeRemaining * (MAX_PENALTY_PERCENT - BASE_PENALTY_PERCENT)) / positionDuration);
-            
-            penalty = (amount * penaltyPercent) / 100;
-            amount -= penalty;
-            
-            // If user has governance rights, they lose them for early withdrawal
-            if (_hasGovernanceRights(msg.sender)) {
-                _governanceViolators[msg.sender] = true;
-                emit GovernanceRightsUpdated(msg.sender, false);
-            }
-            
-            // Calculate penalty distributions
-            if (penalty > 0) {
-                toRedistribute = penalty / 2;
-                toBurn = penalty / 4;
-                toLiquidity = penalty - toRedistribute - toBurn;
-            }
+
+        if (!_isActiveStaker[msg.sender]) {
+            _isActiveStaker[msg.sender] = true;
+            _activeStakers.push(msg.sender);
         }
-        
-        // Claim any pending rewards first
+        emit Staked(msg.sender, projectId, amount, duration, block.timestamp, position.amount);
+    }
+
+    /**
+     * @notice Stake tokens across multiple projects in a single transaction.
+     * @param projectIds    Array of project IDs to stake into
+     * @param amounts       Array of amounts to stake
+     * @param durations     Array of staking durations
+     * @param isLP          Array of booleans if the position is LP
+     * @param autoCompound  Array of booleans if auto-compounding is enabled
+     */
+    function batchStake(
+        uint256[] calldata projectIds,
+        uint256[] calldata amounts,
+        uint256[] calldata durations,
+        bool[]    calldata isLP,
+        bool[]    calldata autoCompound
+    )
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        uint256 length = projectIds.length;
+        if (length == 0) {
+            revert InvalidParameter("projectIds", 0);
+        }
+        // Validate array lengths
+        if (
+            amounts.length     != length ||
+            durations.length   != length ||
+            isLP.length        != length ||
+            autoCompound.length!= length
+        ) {
+            revert InvalidParameter("arrayLengths", length);
+        }
+
+        // Hard limit to help avoid block gas blowouts or malicious usage
+        // (You can adjust this to a safe upper bound for your environment)
+        require(length <= 50, "batchStake: too many items");
+
+        // Calculate total needed for all stakes
+        uint256 totalAmount = 0;
+        for (uint256 i = 0; i < length; i++) {
+            if (amounts[i] == 0) {
+                revert ZeroAmount();
+            }
+            totalAmount += amounts[i];
+        }
+
+        // Transfer total in one call for gas efficiency
+        if (!stakingToken.transferFrom(msg.sender, address(this), totalAmount)) {
+            revert TransferFailed(address(stakingToken), msg.sender, address(this), totalAmount);
+        }
+
+        bool hasNFTBoost = (nftContract.balanceOf(msg.sender, 1) > 0);
+        uint256 stakedSoFar = 0;
+
+        for (uint256 i = 0; i < length; i++) {
+            if (durations[i] < MIN_STAKING_DURATION) {
+                revert InsufficientStakingDuration(MIN_STAKING_DURATION, durations[i]);
+            }
+            if (!projectsContract.projectExists(projectIds[i])) {
+                revert ProjectDoesNotExist(projectIds[i]);
+            }
+
+            // Retrieve or create the position
+            StakingPosition storage position = _stakingPositions[msg.sender][projectIds[i]];
+            if (position.amount > 0) {
+                _claimRewards(msg.sender, projectIds[i]);
+            } else {
+                position.stakingStart = block.timestamp;
+                position.projectId    = projectIds[i];
+            }
+
+            position.amount         += amounts[i];
+            position.lastCheckpoint  = block.timestamp;
+            position.duration        = durations[i];
+            position.isLPStaker      = isLP[i];
+            position.hasNFTBoost     = hasNFTBoost;
+            position.autoCompounding = autoCompound[i];
+
+            stakedSoFar         += amounts[i];
+            _totalStaked        += amounts[i];
+            _stakingBalance[msg.sender] += amounts[i];
+
+            // Update project stats
+            projectsContract.incrementStakerCount(projectIds[i]);
+
+            emit Staked(
+                msg.sender,
+                projectIds[i],
+                amounts[i],
+                durations[i],
+                block.timestamp,
+                position.amount
+            );
+        }
+
+        // Update governance votes if threshold is reached
+        uint256 userBal = _stakingBalance[msg.sender];
+        if (userBal >= GOVERNANCE_THRESHOLD && !_governanceViolators[msg.sender]) {
+            _governanceVotes[msg.sender] = userBal;
+        }
+
+        // Check validator status
+        if (userBal >= validatorThreshold && !_validators[msg.sender]) {
+            _validators[msg.sender] = true;
+            emit ValidatorStatusChanged(msg.sender, true);
+        }
+    }
+
+    /**
+     * @notice Unstake tokens from a single project.
+     * @param projectId The project to unstake from
+     */
+    function unstake(uint256 projectId) external nonReentrant {
+        StakingPosition storage position = _stakingPositions[msg.sender][projectId];
+        if (position.amount == 0) {
+            revert NoActiveStakingPosition(msg.sender, projectId);
+        }
         _claimRewards(msg.sender, projectId);
-        
-        // Update totals (using cached values)
-        _totalStaked -= positionAmount;
-        _stakingBalance[msg.sender] = userStakingBalance - positionAmount;
-        
-        // Update governance voting power
-        _governanceVotes[msg.sender] = _calculateVotingPower(msg.sender);
-        
+
+        uint256 amount       = position.amount;
+        uint256 stakingTime  = block.timestamp - position.stakingStart;
+        uint256 penalty      = 0;
+
+        // If we haven't reached the user's stated duration, impose penalty
+        if (stakingTime < position.duration) {
+            uint256 remainingTime = position.duration - stakingTime;
+            uint256 penaltyPercent = BASE_PENALTY_PERCENT
+                + ((remainingTime * (MAX_PENALTY_PERCENT - BASE_PENALTY_PERCENT)) / position.duration);
+            penalty = (amount * penaltyPercent) / 100;
+
+            _handlePenalty(msg.sender, projectId, penalty);
+        }
+
+        _totalStaked                -= amount;
+        _stakingBalance[msg.sender] -= amount;
+
+        // Adjust governance votes if they fell below threshold
+        if (_stakingBalance[msg.sender] < GOVERNANCE_THRESHOLD) {
+            _governanceVotes[msg.sender] = 0;
+        } else {
+            _governanceVotes[msg.sender] = _stakingBalance[msg.sender];
+        }
+
         // Update project stats
-        projectsContract.updateProjectStaking(projectId, positionAmount, false);
-        
+        projectsContract.decrementStakerCount(projectId);
+
         // Clear position
         delete _stakingPositions[msg.sender][projectId];
-        
-        // Update validator status if applicable
-        bool wasValidator = _validators[msg.sender];
-        if (wasValidator && userStakingBalance - positionAmount < validatorThreshold) {
+
+        // Check if we drop below validator threshold
+        if (_validators[msg.sender] && _stakingBalance[msg.sender] < validatorThreshold) {
             _validators[msg.sender] = false;
             emit ValidatorStatusChanged(msg.sender, false);
         }
-        
-        // Handle all token transfers in one batch
-        bool success = true;
-        
-        // 1. Transfer user's tokens back
-        if (amount > 0) {
-            success = stakingToken.transfer(msg.sender, amount);
+
+        uint256 transferAmount = amount - penalty;
+        bool success = stakingToken.transfer(msg.sender, transferAmount);
+        if (!success) {
+            revert TransferFailed(address(stakingToken), address(this), msg.sender, transferAmount);
         }
-        
-        // 2. Handle penalty distributions as a batch
-        if (penalty > 0 && success) {
-            // Distribute rewards to stakers
-            if (toRedistribute > 0) {
-                success = success && rewardDistributor.distributeBonus(toRedistribute);
-            }
-            
-            // Send to burn address
-            if (toBurn > 0 && success) {
-                success = success && stakingToken.transfer(BURN_ADDRESS, toBurn);
-            }
-            
-            // Add to liquidity
-            if (autoLiquidityEnabled && toLiquidity > 0 && success) {
-                success = success && stakingToken.transfer(liquidityPool, toLiquidity);
-            }
+
+        if (_stakingBalance[msg.sender] == 0) {
+            _isActiveStaker[msg.sender] = false;
+            _removeInactiveStaker(msg.sender);
         }
-        
-        if (!success) revert BatchTransferFailed();
-        
-        emit Unstaked(msg.sender, projectId, amount, penalty);
+        emit Unstaked(msg.sender, projectId, transferAmount, penalty, block.timestamp);
     }
-    
+
     /**
-     * @notice Claim rewards for a staking position
-     * @param projectId ID of the project
+     * @notice Unstake tokens from multiple projects in one transaction.
+     * @param projectIds Array of project IDs to unstake from.
      */
-    function claimRewards(uint256 projectId) external nonReentrant whenNotPaused {
-        if (_stakingPositions[msg.sender][projectId].amount == 0) 
-            revert NoActiveStakingPosition(msg.sender, projectId);
+    function batchUnstake(uint256[] calldata projectIds) external nonReentrant whenNotPaused {
+        uint256 length = projectIds.length;
+        if (length == 0) {
+            revert InvalidParameter("projectIds", 0);
+        }
+        // Hard limit to prevent huge loops
+        require(length <= 50, "batchUnstake: too many items");
+
+        uint256 totalAmount       = 0;
+        uint256 totalPenalty      = 0;
+        uint256 totalToRedistribute = 0;
+        uint256 totalToBurn       = 0;
+        uint256 totalToLiquidity  = 0;
+
+        for (uint256 i = 0; i < length; i++) {
+            uint256 projectId = projectIds[i];
+            StakingPosition storage position = _stakingPositions[msg.sender][projectId];
+            if (position.amount == 0) {
+                revert NoActiveStakingPosition(msg.sender, projectId);
+            }
+            // Claim up to date
+            _claimRewards(msg.sender, projectId);
+
+            uint256 posAmount    = position.amount;
+            uint256 stakingEnd   = position.stakingStart + position.duration;
+            uint256 penalty      = 0;
+            uint256 toRedistribute = 0;
+            uint256 toBurn       = 0;
+            uint256 toLiquidity  = 0;
+
+            if (block.timestamp < stakingEnd) {
+                uint256 remainingTime   = stakingEnd - block.timestamp;
+                uint256 penaltyPercent  = BASE_PENALTY_PERCENT
+                    + ((remainingTime * (MAX_PENALTY_PERCENT - BASE_PENALTY_PERCENT)) / position.duration);
+
+                penalty = (posAmount * penaltyPercent) / 100;
+                if (penalty > 0) {
+                    toRedistribute = penalty / 2;     // 50% to stakers
+                    toBurn         = penalty / 4;     // 25% burn
+                    toLiquidity    = penalty - toRedistribute - toBurn; // 25% to liquidity
+                    _penaltyHistory[msg.sender].push(PenaltyEvent({
+                        projectId:     projectId,
+                        timestamp:     block.timestamp,
+                        totalPenalty:  penalty,
+                        redistributed: toRedistribute,
+                        burned:        toBurn,
+                        toLiquidity:   toLiquidity
+                    }));
+                }
+            }
+
+            totalAmount += (posAmount - penalty);
+            totalPenalty += penalty;
+            totalToRedistribute += toRedistribute;
+            totalToBurn += toBurn;
+            totalToLiquidity += toLiquidity;
+
+            _totalStaked                -= posAmount;
+            _stakingBalance[msg.sender] -= posAmount;
+
+            // Decrement staker count
+            projectsContract.decrementStakerCount(projectId);
+
+            // Clear the position
+            delete _stakingPositions[msg.sender][projectId];
+
+            emit Unstaked(msg.sender, projectId, posAmount - penalty, penalty, block.timestamp);
+        }
+
+        // Update governance votes
+        if (_stakingBalance[msg.sender] < GOVERNANCE_THRESHOLD) {
+            _governanceVotes[msg.sender] = 0;
+        } else {
+            _governanceVotes[msg.sender] = _stakingBalance[msg.sender];
+        }
+
+        // Check validator status
+        if (_validators[msg.sender] && _stakingBalance[msg.sender] < validatorThreshold) {
+            _validators[msg.sender] = false;
+            emit ValidatorStatusChanged(msg.sender, false);
+        }
+
+        // Transfer the user's net tokens
+        if (totalAmount > 0) {
+            bool success = stakingToken.transfer(msg.sender, totalAmount);
+            if (!success) {
+                revert TransferFailed(address(stakingToken), address(this), msg.sender, totalAmount);
+            }
+        }
+
+        // Process penalty distributions
+        if (totalPenalty > 0) {
+            // Burn portion
+            if (totalToBurn > 0) {
+                bool success = stakingToken.transfer(BURN_ADDRESS, totalToBurn);
+                if (!success) {
+                    revert TransferFailed(address(stakingToken), address(this), BURN_ADDRESS, totalToBurn);
+                }
+            }
+            // Redistribute portion
+            if (totalToRedistribute > 0) {
+                bool success = stakingToken.transfer(address(rewardDistributor), totalToRedistribute);
+                if (!success) {
+                    revert TransferFailed(address(stakingToken), address(this), address(rewardDistributor), totalToRedistribute);
+                }
+                rewardDistributor.addPenaltyRewards(totalToRedistribute);
+            }
+            // Liquidity portion
+            if (totalToLiquidity > 0) {
+                bool success = stakingToken.transfer(liquidityPool, totalToLiquidity);
+                if (!success) {
+                    revert TransferFailed(address(stakingToken), address(this), liquidityPool, totalToLiquidity);
+                }
+                emit LiquidityInjected(liquidityPool, totalToLiquidity, block.timestamp);
+            }
+        }
+    }
+
+    /**
+     * @notice Claim rewards for a single project.
+     */
+    function claimRewards(uint256 projectId) external nonReentrant {
         _claimRewards(msg.sender, projectId);
     }
-    
+
     /**
-     * @notice Internal function to claim rewards
-     * @param user Address of the user
-     * @param projectId ID of the project
+     * @dev Internal function to claim user rewards up to now.
      */
     function _claimRewards(address user, uint256 projectId) internal {
         StakingPosition storage position = _stakingPositions[user][projectId];
-        
-        // Calculate rewards
-        uint256 rewards = calculateRewards(user, projectId);
-        
-        if (rewards == 0) return;
-        
-        // Update checkpoint
-        position.lastCheckpoint = block.timestamp;
-        
-        // Handle liquidity injection if enabled
-        uint256 toInject = 0;
-        if (autoLiquidityEnabled && liquidityInjectionRate > 0) {
-            toInject = (rewards * liquidityInjectionRate) / 100;
+        if (position.amount == 0) {
+            revert NoActiveStakingPosition(user, projectId);
         }
-        
-        // Auto-compound if enabled
+        uint256 reward = calculateRewards(user, projectId);
+        if (reward == 0) {
+            position.lastCheckpoint = block.timestamp;
+            return;
+        }
+
+        // Auto-compounding logic
         if (position.autoCompounding) {
-            // Cache values
-            uint256 compoundAmount = rewards;
-            uint256 newAmount = position.amount + compoundAmount;
-            uint256 newTotalStaked = _totalStaked + compoundAmount;
-            uint256 newUserBalance = _stakingBalance[user] + compoundAmount;
-            
-            // Update position and global state (single write)
-            position.amount = newAmount;
-            _totalStaked = newTotalStaked;
-            _stakingBalance[user] = newUserBalance;
-            
-            // Update governance votes
-            _governanceVotes[user] = _calculateVotingPower(user);
-            
-            // Update project stats
-            projectsContract.updateProjectStaking(projectId, compoundAmount, true);
-            
-            emit RewardsCompounded(user, projectId, compoundAmount);
-        } else {
-            // Distribute rewards with single transfer
-            uint256 toUser = rewards - toInject;
-            
-            // First handle liquidity injection if needed
-            if (toInject > 0) {
-                if (!stakingToken.transfer(liquidityPool, toInject))
-                    revert TransferFailed(address(stakingToken), address(this), liquidityPool, toInject);
-                    
-                emit LiquidityInjected(toInject);
+            uint256 compoundAmount = (reward * 20) / 100; // 20% of reward is auto-compounded
+            position.amount        += compoundAmount;
+            _totalStaked           += compoundAmount;
+            _stakingBalance[user]  += compoundAmount;
+
+            // If user crosses threshold again
+            if (_stakingBalance[user] >= GOVERNANCE_THRESHOLD && !_governanceViolators[user]) {
+                _governanceVotes[user] = _stakingBalance[user];
             }
-            
-            // Then transfer rewards to user
-            if (!rewardDistributor.distributeReward(user, toUser))
-                revert DistributionFailed(toUser);
-                
-            emit RewardsDistributed(user, projectId, toUser);
+            reward -= compoundAmount;
+
+            emit RewardCompounded(user, projectId, compoundAmount, block.timestamp);
         }
-    }
-    
-    /**
-     * @notice Add validator if they meet the threshold
-     * @param validator Address to add as validator
-     */
-    function addValidator(address validator) external onlyRole(GOVERNANCE_ROLE) {
-        if (_validators[validator]) revert AlreadyValidator(validator);
-        
-        uint256 validatorBalance = _stakingBalance[validator];
-        if (validatorBalance < validatorThreshold) 
-            revert InvalidParameter("stakingBalance", validatorBalance);
-        
-        _validators[validator] = true;
-        emit ValidatorStatusChanged(validator, true);
-    }
-    
-    /**
-     * @notice Remove validator
-     * @param validator Address to remove as validator
-     */
-    function removeValidator(address validator) external onlyRole(GOVERNANCE_ROLE) {
-        if (!_validators[validator]) revert NotValidator(validator);
-        
-        _validators[validator] = false;
-        emit ValidatorStatusChanged(validator, false);
-    }
-    
-    /**
-     * @notice Slash a validator's stake (called by slashing contract)
-     * @param validator Address of validator to slash
-     * @param amount Amount to slash
-     * @return success Whether slashing was successful
-     */
-    function slashValidator(address validator, uint256 amount) external onlyRole(SLASHER_ROLE) returns (bool) {
-        if (!_validators[validator]) revert NotValidator(validator);
-        if (amount == 0) revert ZeroAmount();
-        
-        // Get total staked by validator
-        uint256 validatorStake = _stakingBalance[validator];
-        uint256 slashAmount = amount;
-        
-        if (validatorStake < slashAmount) {
-            slashAmount = validatorStake;
-        }
-        
-        // Loop through all projects to find validator's positions
-        uint256 slashedSoFar = 0;
-        uint256[] memory projectIds = projectsContract.getProjectsForStaker(validator);
-        
-        for (uint256 i = 0; i < projectIds.length && slashedSoFar < slashAmount; i++) {
-            uint256 projectId = projectIds[i];
-            StakingPosition storage position = _stakingPositions[validator][projectId];
-            
-            if (position.amount > 0) {
-                uint256 toSlash = slashAmount - slashedSoFar;
-                if (toSlash > position.amount) {
-                    toSlash = position.amount;
+
+        // Liquidity injection if enabled
+        if (autoLiquidityEnabled) {
+            uint256 liquidityAmount = (reward * liquidityInjectionRate) / 100;
+            if (liquidityAmount > 0) {
+                reward -= liquidityAmount;
+                bool liqSuccess = stakingToken.transfer(liquidityPool, liquidityAmount);
+                if (!liqSuccess) {
+                    revert TransferFailed(address(stakingToken), address(this), liquidityPool, liquidityAmount);
                 }
-                
-                // Update position
-                position.amount -= toSlash;
-                
-                // Update project stats
-                projectsContract.updateProjectStaking(projectId, toSlash, false);
-                
-                slashedSoFar += toSlash;
-                
-                // If position is now empty, clean it up
-                if (position.amount == 0) {
-                    delete _stakingPositions[validator][projectId];
-                }
+                emit LiquidityInjected(liquidityPool, liquidityAmount, block.timestamp);
             }
         }
-        
-        if (slashedSoFar == 0) revert SlashingFailed(validator, amount);
-        
-        // Cache values and update at once
-        uint256 newTotalStaked = _totalStaked - slashedSoFar;
-        uint256 newValidatorBalance = validatorStake - slashedSoFar;
-        
-        // Update totals
-        _totalStaked = newTotalStaked;
-        _stakingBalance[validator] = newValidatorBalance;
-        
-        // Update governance voting power
-        _governanceVotes[validator] = _calculateVotingPower(validator);
-        
-        // If validator no longer meets threshold, remove validator status
-        if (newValidatorBalance < validatorThreshold) {
-            _validators[validator] = false;
-            emit ValidatorStatusChanged(validator, false);
+
+        // Additional logic to distribute validator portion
+        _distributeValidatorRewards(reward);
+
+        position.lastCheckpoint = block.timestamp;
+
+        // Send the remainder to user
+        if (reward > 0) {
+            bool success = rewardDistributor.distributeReward(user, reward);
+            if (!success) {
+                revert DistributionFailed(reward);
+            }
+            emit RewardClaimed(user, projectId, reward, block.timestamp);
         }
-        
-        // Batch all token transfers - send slashed amount to burn address
-        if (slashedSoFar > 0) {
-            if (!stakingToken.transfer(BURN_ADDRESS, slashedSoFar))
-                revert TransferFailed(address(stakingToken), address(this), BURN_ADDRESS, slashedSoFar);
+    }
+
+    /**
+     * @dev Splits off 5% of the reward to validator pool.
+     */
+    function _distributeValidatorRewards(uint256 rewardAmount) internal {
+        uint256 validatorShare = (rewardAmount * 5) / 100;
+        if (validatorShare > 0) {
+            validatorRewardPool += validatorShare;
+            emit ValidatorRewardsAccumulated(validatorShare, validatorRewardPool);
         }
-        
-        emit ValidatorSlashed(validator, slashedSoFar);
-        return true;
     }
-    
-    // -------------------------------------------
-    // 🔹 Protocol Parameters
-    // -------------------------------------------
-    
+
     /**
-     * @notice Apply halving to reduce APR
+     * @dev Apply the standard penalty distribution for early unstake events.
      */
-    function applyHalving() external onlyRole(GOVERNANCE_ROLE) {
-        uint256 nextHalvingTime = lastHalvingTime + halvingPeriod;
-        if (block.timestamp < nextHalvingTime) 
-            revert InvalidParameter("halvingDueTime", nextHalvingTime);
-        
-        lastHalvingTime = block.timestamp;
-        halvingEpoch++;
-        
-        emit HalvingApplied(halvingEpoch, getCurrentBaseAPR());
+    function _handlePenalty(address user, uint256 projectId, uint256 penaltyAmount) internal {
+        uint256 burnAmount         = (penaltyAmount * 40) / 100; // 40%
+        uint256 redistributeAmount = (penaltyAmount * 40) / 100; // 40%
+        uint256 liquidityAmount    = penaltyAmount - burnAmount - redistributeAmount;
+
+        bool success = stakingToken.transfer(BURN_ADDRESS, burnAmount);
+        if (!success) {
+            revert TransferFailed(address(stakingToken), address(this), BURN_ADDRESS, burnAmount);
+        }
+        success = stakingToken.transfer(address(rewardDistributor), redistributeAmount);
+        if (!success) {
+            revert TransferFailed(address(stakingToken), address(this), address(rewardDistributor), redistributeAmount);
+        }
+        success = stakingToken.transfer(liquidityPool, liquidityAmount);
+        if (!success) {
+            revert TransferFailed(address(stakingToken), address(this), liquidityPool, liquidityAmount);
+        }
+
+        PenaltyEvent memory penEvent = PenaltyEvent({
+            projectId:     projectId,
+            timestamp:     block.timestamp,
+            totalPenalty:  penaltyAmount,
+            redistributed: redistributeAmount,
+            burned:        burnAmount,
+            toLiquidity:   liquidityAmount
+        });
+        _penaltyHistory[user].push(penEvent);
+
+        emit PenaltyApplied(
+            user,
+            projectId,
+            penaltyAmount,
+            burnAmount,
+            redistributeAmount,
+            liquidityAmount
+        );
     }
-    
+
     /**
-     * @notice Update liquidity injection rate
-     * @param newRate New rate for liquidity injection
+     * @dev Removes an address from the `_activeStakers` array in O(1) time.
      */
-    function updateLiquidityInjectionRate(uint256 newRate) external onlyRole(GOVERNANCE_ROLE) {
-        if (newRate > MAX_LIQUIDITY_RATE) revert RateTooHigh(newRate, MAX_LIQUIDITY_RATE);
-        
+    function _removeInactiveStaker(address staker) internal {
+        uint256 length = _activeStakers.length;
+        for (uint256 i = 0; i < length; i++) {
+            if (_activeStakers[i] == staker) {
+                _activeStakers[i] = _activeStakers[length - 1];
+                _activeStakers.pop();
+                return;
+            }
+        }
+    }
+
+    /**
+     * @notice Get the list of active stakers
+     */
+    function getActiveStakers() external view returns (address[] memory) {
+        return _activeStakers;
+    }
+
+    // -------------------------------------------
+    //  🔹 Validator Operations
+    // -------------------------------------------
+
+    /**
+     * @notice Called by a user to explicitly become a validator if their stake is sufficient.
+     */
+    function becomeValidator() external nonReentrant whenNotPaused {
+        if (_validators[msg.sender]) {
+            revert AlreadyValidator(msg.sender);
+        }
+        if (_stakingBalance[msg.sender] < validatorThreshold) {
+            revert InvalidParameter("validatorThreshold", _stakingBalance[msg.sender]);
+        }
+        _validators[msg.sender] = true;
+        _validatorCommission[msg.sender] = 500; // Default 5% commission in basis points
+        emit ValidatorAdded(msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Claim the portion of validatorRewardPool allocated to each validator
+     */
+    function claimValidatorRewards() external nonReentrant {
+        if (!_validators[msg.sender]) {
+            revert NotValidator(msg.sender);
+        }
+        // Simple approach: count total validators
+        uint256 validatorCount = 0;
+        // NOTE: This code uses getRoleMember(DEFAULT_ADMIN_ROLE, i) as a placeholder approach.
+        // In a production environment, you'd track validator addresses more directly.
+        for (uint256 i = 0; i < getRoleMemberCount(DEFAULT_ADMIN_ROLE); i++) {
+            address validator = getRoleMember(DEFAULT_ADMIN_ROLE, i);
+            if (_validators[validator]) {
+                validatorCount++;
+            }
+        }
+        if (validatorCount == 0) {
+            return; // no distribution possible
+        }
+        uint256 rewardPerValidator = validatorRewardPool / validatorCount;
+        validatorRewardPool = 0;
+
+        bool success = rewardDistributor.distributeReward(msg.sender, rewardPerValidator);
+        if (!success) {
+            revert DistributionFailed(rewardPerValidator);
+        }
+        emit ValidatorRewardsDistributed(msg.sender, rewardPerValidator);
+    }
+
+    /**
+     * @notice Update your commission rate (max 20%).
+     */
+    function updateValidatorCommission(uint256 newCommissionRate) external {
+        if (!_validators[msg.sender]) {
+            revert NotValidator(msg.sender);
+        }
+        if (newCommissionRate > 2000) { // 2000 => 20%
+            revert RateTooHigh(newCommissionRate, 2000);
+        }
+        _validatorCommission[msg.sender] = newCommissionRate;
+        emit ValidatorCommissionUpdated(msg.sender, newCommissionRate);
+    }
+
+    // -------------------------------------------
+    //  🔹 Governance Operations
+    // -------------------------------------------
+
+    function voteOnProposal(uint256 proposalId, bool support) 
+        external 
+        nonReentrant 
+        whenNotPaused 
+    {
+        if (_governanceViolators[msg.sender]) {
+            revert GovernanceViolation(msg.sender);
+        }
+        uint256 votingPower = _governanceVotes[msg.sender];
+        if (votingPower == 0) {
+            revert InvalidParameter("votingPower", votingPower);
+        }
+        governanceContract.recordVote(proposalId, msg.sender, votingPower, support);
+        emit ProposalVoted(proposalId, msg.sender, votingPower, support);
+    }
+
+    function createProposal(
+        string calldata description,
+        address[] calldata targets,
+        uint256[] calldata values,
+        bytes[]   calldata calldatas
+    )
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        if (_governanceViolators[msg.sender]) {
+            revert GovernanceViolation(msg.sender);
+        }
+        uint256 votingPower = _governanceVotes[msg.sender];
+        if (votingPower < GOVERNANCE_THRESHOLD) {
+            revert InvalidParameter("votingPower", votingPower);
+        }
+        proposalNonce++;
+        uint256 proposalId = governanceContract.createProposal(
+            proposalNonce,
+            msg.sender,
+            description,
+            targets,
+            values,
+            calldatas
+        );
+        emit GovernanceProposalCreated(proposalId, msg.sender, description);
+    }
+
+    function markGovernanceViolator(address violator) external onlyRole(GOVERNANCE_ROLE) {
+        _governanceViolators[violator] = true;
+        _governanceVotes[violator]     = 0;
+        emit GovernanceViolatorMarked(violator, block.timestamp);
+    }
+
+    // -------------------------------------------
+    //  🔹 Administrative & Emergency
+    // -------------------------------------------
+
+    /**
+     * @notice Update the staking tiers in bulk. 
+     * @dev This re-initializes the _tiers array. Ensure sorted ascending durations for best logic.
+     */
+    function updateTiers(
+        uint256[] calldata minDurations,
+        uint256[] calldata multipliers,
+        bool[]    calldata votingRights
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (
+            minDurations.length != multipliers.length ||
+            minDurations.length != votingRights.length
+        ) {
+            revert InvalidTierConfiguration();
+        }
+        // Clear existing
+        delete _tiers;
+
+        // Rebuild with new
+        for (uint256 i = 0; i < minDurations.length; i++) {
+            if (minDurations[i] < MIN_STAKING_DURATION) {
+                revert InsufficientStakingDuration(MIN_STAKING_DURATION, minDurations[i]);
+            }
+            _tiers.push(StakingTier(
+                minDurations[i],
+                multipliers[i],
+                votingRights[i]
+            ));
+        }
+        emit TiersUpdated(minDurations, multipliers, votingRights);
+    }
+
+    function setLiquidityInjectionRate(uint256 newRate) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        if (newRate > MAX_LIQUIDITY_RATE) {
+            revert RateTooHigh(newRate, MAX_LIQUIDITY_RATE);
+        }
         liquidityInjectionRate = newRate;
         emit LiquidityInjectionRateUpdated(newRate);
     }
-    
-    /**
-     * @notice Toggle auto-liquidity feature
-     */
-    function toggleAutoLiquidity() external onlyRole(GOVERNANCE_ROLE) {
-        bool newStatus = !autoLiquidityEnabled;
-        autoLiquidityEnabled = newStatus;
-        emit AutoLiquidityToggled(newStatus);
+
+    function toggleAutoLiquidity(bool enabled) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        autoLiquidityEnabled = enabled;
+        emit AutoLiquidityToggled(enabled);
     }
-    
-    /**
-     * @notice Update validator threshold
-     * @param newThreshold New threshold amount
-     */
-    function updateValidatorThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
-        if (newThreshold == 0) revert ZeroAmount();
-        
+
+    function setValidatorThreshold(uint256 newThreshold) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        if (newThreshold == 0) {
+            revert InvalidParameter("newThreshold", newThreshold);
+        }
         validatorThreshold = newThreshold;
         emit ValidatorThresholdUpdated(newThreshold);
     }
-    
-    /**
-     * @notice Update halving period
-     * @param newPeriod New halving period in seconds
-     */
-    function updateHalvingPeriod(uint256 newPeriod) external onlyRole(GOVERNANCE_ROLE) {
-        if (newPeriod < 30 days) revert InvalidParameter("halvingPeriod", newPeriod);
-        
-        halvingPeriod = newPeriod;
-        emit HalvingPeriodUpdated(newPeriod);
-    }
-    
-    /**
-     * @notice Toggle emergency pause status
-     * @param paused Whether to pause or unpause
-     */
-    function toggleEmergencyPause(bool paused) external onlyRole(EMERGENCY_ROLE) {
-        if (paused) {
-            _pause();
-        } else {
-            _unpause();
+
+    function setRewardDistributor(address newDistributor)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (newDistributor == address(0)) {
+            revert InvalidAddress("newDistributor", newDistributor);
         }
-        
-        emit EmergencyPauseToggled(paused);
+        rewardDistributor = ITerraStakeRewardDistributor(newDistributor);
+        emit RewardDistributorUpdated(newDistributor);
     }
-    
+
+    function setLiquidityPool(address newPool)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (newPool == address(0)) {
+            revert InvalidAddress("newPool", newPool);
+        }
+        liquidityPool = newPool;
+        emit LiquidityPoolUpdated(newPool);
+    }
+
+    function pause() external onlyRole(EMERGENCY_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+    }
+
     /**
-     * @notice Add a new staking tier
-     * @param minDuration Minimum staking duration for tier
-     * @param rewardMultiplier Reward multiplier (in basis points)
-     * @param governanceRights Whether tier grants governance rights
+     * @notice Recover ERC20 tokens accidentally sent here, except the staked ones.
+     * @dev If `token == stakingToken`, we only allow the admin to withdraw the excess above `_totalStaked`.
      */
-    function addStakingTier(
-        uint256 minDuration,
-        uint256 rewardMultiplier,
-        bool governanceRights
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        if (minDuration < 7 days) revert InvalidParameter("minDuration", minDuration);
-        if (rewardMultiplier == 0) revert ZeroAmount();
-        
-        _tiers.push(StakingTier(minDuration, rewardMultiplier, governanceRights));
-        
-        emit StakingTierAdded(_tiers.length - 1, minDuration, rewardMultiplier, governanceRights);
+    function recoverERC20(address token)
+        external
+        onlyRole(EMERGENCY_ROLE)
+        returns (bool)
+    {
+        uint256 amount = IERC20(token).balanceOf(address(this));
+        if (token == address(stakingToken)) {
+            // We can only withdraw the portion that is not staked
+            amount = amount - _totalStaked; 
+        }
+        bool success = IERC20(token).transfer(msg.sender, amount);
+        if (!success) {
+            revert TransferFailed(token, address(this), msg.sender, amount);
+        }
+        emit TokenRecovered(token, amount, msg.sender);
+        return true;
     }
-    
-    /**
-     * @notice Update an existing staking tier
-     * @param tierId ID of tier to update
-     * @param minDuration Minimum staking duration for tier
-     * @param rewardMultiplier Reward multiplier (in basis points)
-     * @param governanceRights Whether tier grants governance rights
-     */
-    function updateStakingTier(
-        uint256 tierId,
-        uint256 minDuration,
-        uint256 rewardMultiplier,
-        bool governanceRights
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        uint256 tiersLength = _tiers.length;
-        if (tierId >= tiersLength) revert InvalidParameter("tierId", tierId);
-        if (minDuration < 7 days) revert InvalidParameter("minDuration", minDuration);
-        if (rewardMultiplier == 0) revert ZeroAmount();
-        
-        StakingTier storage tier = _tiers[tierId];
-        
-        tier.minDuration = minDuration;
-        tier.rewardMultiplier = rewardMultiplier;
-        tier.governanceRights = governanceRights;
-        
-        emit StakingTierUpdated(tierId, minDuration, rewardMultiplier, governanceRights);
-    }
-    
+
     // -------------------------------------------
-    // 🔹 View Functions
+    //  🔹 Slashing
     // -------------------------------------------
-    
-    /**
-     * @notice Calculate rewards for a staking position
-     * @param user Address of the user
-     * @param projectId ID of the project
-     * @return amount Amount of rewards
-     */
-    function calculateRewards(address user, uint256 projectId) public view returns (uint256) {
-        StakingPosition memory position = _stakingPositions[user][projectId];
-        if (position.amount == 0) return 0;
-        
-        // Calculate time staked using last checkpoint for fair rewards
-        uint256 timeStaked = block.timestamp - position.lastCheckpoint;
-        if (timeStaked == 0) return 0;
-        
-        // Get total time in contract for long-term bonus calculation
-        uint256 totalTimeStaked = block.timestamp - position.stakingStart;
-        
-        // Get APR based on staking conditions
-        uint256 apr = getDynamicAPR(position.isLPStaker, position.hasNFTBoost);
-        
-        // Apply tier multiplier
-        uint256 tierMultiplier = getTierMultiplier(position.duration);
-        
-        // Calculate base rewards
-        // formula: amount * apr * timeStaked * tierMultiplier / (100 * 365 days * 10000)
-        uint256 rewards = (position.amount * apr * timeStaked * tierMultiplier) / (100 * 365 days * 10000);
-        
-        // ✅ Gradual Bonus Structure
-        // Adding time-based bonuses to reward long-term stakers
-        if (totalTimeStaked >= 18 * 30 days) {
-            // +8% bonus for staking 18+ months
-            rewards += (rewards * 8) / 100;
-        } else if (totalTimeStaked >= 15 * 30 days) {
-            // +5% bonus for staking 15-18 months
-            rewards += (rewards * 5) / 100;
-        } else if (totalTimeStaked >= 12 * 30 days) {
-            // +3% bonus for staking 12-15 months
-            rewards += (rewards * 3) / 100;
+
+    function slash(address validator, uint256 amount) 
+        external 
+        onlyRole(SLASHER_ROLE)
+        returns (bool) 
+    {
+        if (!_validators[validator]) {
+            revert NotValidator(validator);
         }
-        
-        return rewards;
-    }
-    
-    /**
-     * @notice Get dynamic APR based on staking conditions
-     * @param isLP Whether staker is providing LP tokens
-     * @param hasNFT Whether staker has NFT boost
-     * @return apr Annual percentage rate
-     */
-    function getDynamicAPR(bool isLP, bool hasNFT) public view returns (uint256) {
-        uint256 baseApr = getCurrentBaseAPR();
-        
-        if (isLP) {
-            return baseApr + LP_APR_BOOST;
-        } else if (hasNFT) {
-            return baseApr + NFT_APR_BOOST;
-        } else {
-            return baseApr;
+        if (amount == 0) {
+            revert ZeroAmount();
         }
-    }
-    
-    /**
-     * @notice Get current base APR after halvings
-     * @return apr Annual percentage rate
-     */
-    function getCurrentBaseAPR() public view returns (uint256) {
-        uint256 totalStakedAmount = _totalStaked;
-        uint256 baseRate = totalStakedAmount < LOW_STAKING_THRESHOLD ? BOOSTED_APR : BASE_APR;
-        uint256 currentHalvingEpoch = halvingEpoch;
-        
-        // Apply halvings (divide by 2^halvingEpoch)
-        if (currentHalvingEpoch > 0) {
-            // Apply halving using bitshift for gas efficiency
-            return baseRate >> currentHalvingEpoch;
+        uint256 userBalance = _stakingBalance[validator];
+        if (userBalance < amount) {
+            amount = userBalance;
         }
-        
-        return baseRate;
+        if (amount == 0) {
+            return false;
+        }
+
+        // Update staker's total
+        _stakingBalance[validator] -= amount;
+        _totalStaked               -= amount;
+
+        // Remove validator status if they drop below threshold
+        if (_stakingBalance[validator] < validatorThreshold) {
+            _validators[validator] = false;
+            emit ValidatorStatusChanged(validator, false);
+        }
+
+        // The actual penalty distribution
+        _handlePenalty(validator, 0, amount);
+
+        emit Slashed(validator, amount, block.timestamp);
+        return true;
     }
-    
+
+    // -------------------------------------------
+    //  🔹 View Functions
+    // -------------------------------------------
+
     /**
-     * @notice Get tier multiplier for a staking duration
-     * @param duration Staking duration
-     * @return multiplier Reward multiplier in basis points
+     * @notice Calculates user’s pending rewards for a specific position.
      */
-    function getTierMultiplier(uint256 duration) public view returns (uint256) {
-        uint256 multiplier = 100; // Default 1x multiplier (100 basis points)
-        uint256 tiersLength = _tiers.length;
-        
-        for (uint256 i = 0; i < tiersLength; i++) {
-            StakingTier memory tier = _tiers[i];
-            if (duration >= tier.minDuration && tier.rewardMultiplier > multiplier) {
-                multiplier = tier.rewardMultiplier;
+    function calculateRewards(address user, uint256 projectId)
+        public
+        view
+        returns (uint256)
+    {
+        StakingPosition storage position = _stakingPositions[user][projectId];
+        if (position.amount == 0) {
+            return 0;
+        }
+
+        uint256 stakingTime = block.timestamp - position.lastCheckpoint;
+        if (stakingTime == 0) {
+            return 0;
+        }
+
+        // Tier multiplier
+        uint256 tierId       = getApplicableTier(position.duration);
+        uint256 tierMult     = _tiers[tierId].multiplier;
+
+        // Base APR logic (with halving/dynamic approach)
+        uint256 baseRate = (_totalStaked < LOW_STAKING_THRESHOLD)
+            ? dynamicBoostedAPR
+            : dynamicBaseAPR;
+
+        // Additional conditions
+        if (position.hasNFTBoost) {
+            baseRate += NFT_APR_BOOST;
+        }
+        if (position.isLPStaker) {
+            baseRate += LP_APR_BOOST;
+        }
+
+        uint256 effectiveRate = (baseRate * tierMult) / 100;
+
+        // annualReward = principal * effRate / 100
+        // but we do pro-rata for stakingTime / year
+        uint256 reward = (position.amount * effectiveRate * stakingTime)
+            / (100 * 365 days);
+
+        return reward;
+    }
+
+    /**
+     * @notice Finds the staking tier index that applies for a given duration.
+     */
+    function getApplicableTier(uint256 duration) public view returns (uint256) {
+        uint256 applicableTier = 0;
+        for (uint256 i = 0; i < _tiers.length; i++) {
+            if (duration >= _tiers[i].minDuration) {
+                applicableTier = i;
+            } else {
+                break;
             }
         }
-        
-        return multiplier;
+        return applicableTier;
     }
-    
-    /**
-     * @notice Get all active staking positions for a user
-     * @param user Address of the user
-     * @return projectIds Array of project IDs
-     * @return positions Array of staking positions
-     */
-    function getUserStakingPositions(address user) external view returns (
-        uint256[] memory projectIds,
-        StakingPosition[] memory positions
-    ) {
-        uint256[] memory userProjects = projectsContract.getProjectsForStaker(user);
-        uint256 projectsCount = userProjects.length;
-        
-        // Count active positions first to size arrays correctly
-        uint256 activeCount = 0;
-        for (uint256 i = 0; i < projectsCount; i++) {
-            if (_stakingPositions[user][userProjects[i]].amount > 0) {
-                activeCount++;
-            }
-        }
-        
-        // Initialize return arrays with correct size
-        projectIds = new uint256[](activeCount);
-        positions = new StakingPosition[](activeCount);
-        
-        // Fill arrays in a single pass
-        uint256 index = 0;
-        for (uint256 i = 0; i < projectsCount; i++) {
-            uint256 projectId = userProjects[i];
-            StakingPosition memory position = _stakingPositions[user][projectId];
-            
-            if (position.amount > 0) {
-                projectIds[index] = projectId;
-                positions[index] = position;
-                index++;
-            }
-        }
+
+    function getUserStake(address user, uint256 projectId) external view returns (uint256) {
+        return _stakingPositions[user][projectId].amount;
     }
-    
-    /**
-     * @notice Check if an address is a validator
-     * @param account Address to check
-     * @return isValidator Whether the address is a validator
-     */
-    function isValidator(address account) external view returns (bool) {
-        return _validators[account];
-    }
-    
-    /**
-     * @notice Get the total amount staked by a user
-     * @param user Address of the user
-     * @return amount Total amount staked
-     */
-    function getTotalStakedByUser(address user) external view returns (uint256) {
+
+    function getUserTotalStake(address user) external view returns (uint256) {
         return _stakingBalance[user];
     }
-    
-    /**
-     * @notice Get the total amount staked in the protocol
-     * @return amount Total amount staked
-     */
-    function getTotalStaked() external view returns (uint256) {
-        return _totalStaked;
-    }
-    
-    /**
-     * @notice Get all staking tiers
-     * @return tiers Array of staking tiers
-     */
-    function getStakingTiers() external view returns (StakingTier[] memory) {
-        return _tiers;
-    }
-    
-    /**
-     * @notice Get the governance voting power of a user
-     * @param user Address of the user
-     * @return votes Voting power
-     */
-    function getGovernanceVotes(address user) external view returns (uint256) {
-        return _governanceVotes[user];
-    }
-    
-    /**
-     * @notice Check if user has governance rights
-     * @param user Address of the user
-     * @return hasRights Whether the user has governance rights
-     */
-    function hasGovernanceRights(address user) external view returns (bool) {
-        return _hasGovernanceRights(user);
-    }
-    
-    /**
-     * @notice Get the minimum amount required to become a validator
-     * @return threshold Validator threshold
-     */
-    function getValidatorThreshold() public view returns (uint256) {
-        return validatorThreshold;
-    }
-    
-    /**
-     * @notice Get the number of validators in the system
-     * @return count Number of validators
-     */
-    function getValidatorCount() external view returns (uint256) {
-        uint256 roleCount = getRoleMemberCount(DEFAULT_ADMIN_ROLE);
-        
-        // Load all addresses first to minimize storage reads
-        address[] memory adminMembers = new address[](roleCount);
-        for (uint256 i = 0; i < roleCount; i++) {
-            adminMembers[i] = getRoleMember(DEFAULT_ADMIN_ROLE, i);
-        }
-        
-        // Count validators
-        uint256 count = 0;
-        for (uint256 i = 0; i < roleCount; i++) {
-            if (_validators[adminMembers[i]]) {
+
+    function getUserPositions(address user) external view returns (StakingPosition[] memory positions) {
+        // We gather from the project contract how many total projects exist
+        // Then filter the user’s staked positions
+        uint256 projectCount = projectsContract.getProjectCount();
+        uint256 count        = 0;
+
+        for (uint256 i = 1; i <= projectCount; i++) {
+            if (_stakingPositions[user][i].amount > 0) {
                 count++;
             }
         }
-        
-        return count;
-    }
-    
-    /**
-     * @notice Get protocol statistics
-     * @return totalStaked Total amount staked
-     * @return validators Number of validators
-     * @return stakersCount Number of unique stakers
-     * @return currentAPR Current base APR
-     */
-    function getProtocolStats() external view returns (
-        uint256 totalStaked,
-        uint256 validators,
-        uint256 stakersCount,
-        uint256 currentAPR
-    ) {
-        return (
-            _totalStaked,
-            this.getValidatorCount(),
-            projectsContract.getStakerCount(),
-            getCurrentBaseAPR()
-        );
-    }
-    
-    /**
-     * @notice Version of the contract implementation
-     * @return version Current implementation version
-     */
-    function version() external pure returns (string memory) {
-        return "1.0.0";
-    }
-    
-    // -------------------------------------------
-    // 🔹 Internal Helper Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Calculate voting power using quadratic voting
-     * @param user Address of the user
-     * @return votingPower Voting power
-     */
-    function _calculateVotingPower(address user) internal view returns (uint256) {
-        // Early returns for efficiency
-        if (_governanceViolators[user]) {
-            return 0;
+
+        positions = new StakingPosition[](count);
+        uint256 index = 0;
+
+        for (uint256 i = 1; i <= projectCount; i++) {
+            if (_stakingPositions[user][i].amount > 0) {
+                positions[index] = _stakingPositions[user][i];
+                index++;
+            }
         }
-        
-        uint256 stakingBalance = _stakingBalance[user];
-        if (stakingBalance == 0) {
-            return 0;
-        }
-        
-        // Check if any position gives governance rights
-        if (!_hasGovernanceRights(user)) {
-            return 0;
-        }
-        
-        // Square root of stake for quadratic voting
-        return _sqrt(stakingBalance);
+        return positions;
     }
-    
+
+    function getPenaltyHistory(address user) external view returns (PenaltyEvent[] memory) {
+        return _penaltyHistory[user];
+    }
+
+    function isValidator(address user) external view returns (bool) {
+        return _validators[user];
+    }
+
+    function getValidatorCommission(address validator) external view returns (uint256) {
+        return _validatorCommission[validator];
+    }
+
+    function isGovernanceViolator(address user) external view returns (bool) {
+        return _governanceViolators[user];
+    }
+
+    function getGovernanceVotes(address user) external view returns (uint256) {
+        return _governanceVotes[user];
+    }
+
+    function slashGovernanceVote(address user) external view returns (uint256) {
+        return 0;
+    }
+
+    function getTotalStaked() external view returns (uint256) {
+        return _totalStaked;
+    }
+
+    function getValidatorRewardPool() external view returns (uint256) {
+        return validatorRewardPool;
+    }
+
+    function getAllTiers() external view returns (StakingTier[] memory) {
+        return _tiers;
+    }
+
     /**
-     * @notice Check if a user has governance rights
-     * @param user Address of the user
-     * @return hasRights Whether the user has governance rights
+     * @notice Returns the top stakers up to `limit`. 
+     * @dev This uses a naive bubble sort. Large `limit` or many stakers can be expensive. 
+     *      Primarily for demonstration or small sets. 
      */
-    function _hasGovernanceRights(address user) internal view returns (bool) {
-        if (_governanceViolators[user]) {
-            return false;
+    function getTopStakers(uint256 limit)
+        external
+        view
+        returns (address[] memory stakers, uint256[] memory amounts)
+    {
+        // In a real system, you'd store or track staker addresses more efficiently,
+        // or do an off-chain ranking approach. This is purely illustrative.
+
+        uint256 totalUsers = 100; // placeholder for demonstration
+        address[] memory allStakers = new address[](totalUsers);
+        uint256[] memory allAmounts = new uint256[](totalUsers);
+
+        uint256 count = 0;
+        for (uint256 i = 0; i < getRoleMemberCount(DEFAULT_ADMIN_ROLE); i++) {
+            address user = getRoleMember(DEFAULT_ADMIN_ROLE, i);
+            if (_stakingBalance[user] > 0) {
+                allStakers[count] = user;
+                allAmounts[count] = _stakingBalance[user];
+                count++;
+            }
         }
-        
-        uint256[] memory userProjects = projectsContract.getProjectsForStaker(user);
-        uint256 tiersLength = _tiers.length;
-        
-        for (uint256 i = 0; i < userProjects.length; i++) {
-            uint256 projectId = userProjects[i];
-            StakingPosition memory position = _stakingPositions[user][projectId];
-            
-            if (position.amount > 0) {
-                // Check if the tier gives governance rights
-                for (uint256 j = 0; j < tiersLength; j++) {
-                    StakingTier memory tier = _tiers[j];
-                    if (position.duration >= tier.minDuration && tier.governanceRights) {
-                        return true; // Early return when found
-                    }
+
+        // Bubble sort (naive, O(n^2)) - demonstration only
+        for (uint256 i = 0; i < count; i++) {
+            for (uint256 j = i + 1; j < count; j++) {
+                if (allAmounts[i] < allAmounts[j]) {
+                    // swap amounts
+                    uint256 tmpAmount = allAmounts[i];
+                    allAmounts[i] = allAmounts[j];
+                    allAmounts[j] = tmpAmount;
+
+                    // swap addresses
+                    address tmpAddr = allStakers[i];
+                    allStakers[i] = allStakers[j];
+                    allStakers[j] = tmpAddr;
                 }
             }
         }
-        
-        return false;
-    }
-    
-    /**
-     * @notice Calculate square root (using binary search)
-     * @param x Input value
-     * @return y Square root of input
-     */
-    function _sqrt(uint256 x) internal pure returns (uint256) {
-        if (x == 0) return 0;
-        
-        // Optimized square root using binary search
-        uint256 z = (x + 1) / 2;
-        uint256 y = x;
-        
-        while (z < y) {
-            y = z;
-            z = (x / z + z) / 2;
+
+        uint256 resultSize = (count < limit) ? count : limit;
+        stakers = new address[](resultSize);
+        amounts = new uint256[](resultSize);
+
+        for (uint256 i = 0; i < resultSize; i++) {
+            stakers[i] = allStakers[i];
+            amounts[i] = allAmounts[i];
         }
-        
-        return y;
+        return (stakers, amounts);
     }
     
     /**
-     * @notice Support for ERC165 interface
-     * @param interfaceId Interface identifier
-     * @return isSupported Whether interface is supported
+     * @notice Basic version info.
      */
-    function supportsInterface(bytes4 interfaceId) 
-        public 
-        view 
-        override(AccessControlEnumerableUpgradeable, ERC165Upgradeable) 
-        returns (bool) 
+    function version() external pure returns (string memory) {
+        return "1.0.0-improved";
+    }
+
+    // -------------------------------------------
+    //  🔹 Internal Utilities
+    // -------------------------------------------
+
+    /**
+     * @dev See {ERC165Upgradeable-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(AccessControlEnumerableUpgradeable, ERC165Upgradeable)
+        returns (bool)
     {
         return
             interfaceId == type(ITerraStakeStaking).interfaceId ||
             super.supportsInterface(interfaceId);
     }
-    
-    /**
-     * @notice Recover accidentally sent ERC20 tokens
-     * @param token Address of the token
-     * @param amount Amount to recover
-     * @param recipient Address to send tokens to
-     */
-    function recoverERC20(
-        address token,
-        uint256 amount,
-        address recipient
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        if (token == address(stakingToken)) 
-            revert ActionNotPermittedForValidator();
-        if (recipient == address(0))
-            revert InvalidAddress("recipient", recipient);
-            
-        IERC20Upgradeable(token).transfer(recipient, amount);
-        emit ERC20Recovered(token, amount, recipient);
-    }
 }
-

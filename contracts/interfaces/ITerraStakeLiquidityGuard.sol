@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "./ITerraStakeRewardDistributor.sol";
-import "./ITerraStakeTreasury.sol";
+import "./ITerraStakeTreasuryManager.sol";
 
 /**
  * @title ITerraStakeLiquidityGuard
@@ -39,21 +39,21 @@ interface ITerraStakeLiquidityGuard {
     event AddressWhitelisted(address indexed user, bool status);
     event SlippageToleranceUpdated(uint256 oldTolerance, uint256 newTolerance);
     event RewardDistributorUpdated(address oldDistributor, address newDistributor);
-    event TreasuryUpdated(address oldTreasury, address newTreasury);
-    event UniswapPositionCreated(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
-    event UniswapPositionIncreased(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
-    event UniswapPositionDecreased(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
-    event UniswapPositionClosed(uint256 tokenId, uint256 amount0, uint256 amount1);
-    event UniswapFeesCollected(uint256 tokenId, uint256 amount0, uint256 amount1);
+    event TreasuryManagerUpdated(address oldTreasury, address newTreasury);
+    event UniswapPositionCreated(uint256 tokenID, uint128 liquidity, uint256 amount0, uint256 amount1);
+    event UniswapPositionIncreased(uint256 tokenID, uint128 liquidity, uint256 amount0, uint256 amount1);
+    event UniswapPositionDecreased(uint256 tokenID, uint128 liquidity, uint256 amount0, uint256 amount1);
+    event UniswapPositionClosed(uint256 tokenID, uint256 amount0, uint256 amount1);
+    event UniswapFeesCollected(uint256 tokenID, uint256 amount0, uint256 amount1);
     event WeeklyLimitBelowRecommended(uint256 actualLimit, uint256 recommendedMinimum);
     
     // State variables access
-    function tStakeToken() external view returns (IERC20Upgradeable);
-    function usdcToken() external view returns (IERC20Upgradeable);
+    function tStakeToken() external view returns (ERC20Upgradeable);
+    function usdcToken() external view returns (ERC20Upgradeable);
     function positionManager() external view returns (INonfungiblePositionManager);
     function uniswapPool() external view returns (IUniswapV3Pool);
     function rewardDistributor() external view returns (ITerraStakeRewardDistributor);
-    function treasury() external view returns (ITerraStakeTreasury);
+    function treasuryManager() external view returns (ITerraStakeTreasuryManager);
     
     function reinjectionThreshold() external view returns (uint256);
     function autoLiquidityInjectionRate() external view returns (uint256);
@@ -78,7 +78,7 @@ interface ITerraStakeLiquidityGuard {
     function liquidityWhitelist(address user) external view returns (bool);
     function emergencyMode() external view returns (bool);
     function twapObservationTimeframes(uint256 index) external view returns (uint32);
-    function managedPositions(uint256 tokenId) external view returns (bool);
+    function managedPositions(uint256 tokenID) external view returns (bool);
     function activePositionIds(uint256 index) external view returns (uint256);
     function lastLiquidityInjectionTime() external view returns (uint256);
     function totalLiquidityInjected() external view returns (uint256);
@@ -116,18 +116,19 @@ interface ITerraStakeLiquidityGuard {
     function depositLiquidity(uint256 amount) external;
     function removeLiquidity(uint256 amount) external;
     function injectLiquidity(uint256 amount) external;
-    function collectPositionFees(uint256 tokenId) external returns (uint256 amount0, uint256 amount1);
+    function collectPositionFees(uint256 tokenID) external returns (uint256 amount0, uint256 amount1);
     function decreasePositionLiquidity(
-        uint256 tokenId,
+        uint256 tokenID,
         uint128 liquidity,
         uint256 amount0Min,
         uint256 amount1Min
     ) external returns (uint256 amount0, uint256 amount1);
-    function closePosition(uint256 tokenId) external returns (uint256 amount0, uint256 amount1);
+    function closePosition(uint256 tokenID) external returns (uint256 amount0, uint256 amount1);
     
     // Calculation functions
     function getWithdrawalFee(address user, uint256 amount) external view returns (uint256);
     function validateTWAPPrice() external view returns (bool);
+    function verifyTWAPForWithdrawal() external view returns (bool);
     function calculateTWAP() external view returns (uint256);
     function calculatePriceFromTick(int24 tick) external pure returns (uint256);
     function findBestPositionToIncrease(int24 currentTick) external view returns (uint256);
@@ -148,7 +149,7 @@ interface ITerraStakeLiquidityGuard {
     function updateTWAPTimeframes(uint32[] calldata newTimeframes) external;
     function updateSlippageTolerance(uint256 newTolerance) external;
     function updateRewardDistributor(address newDistributor) external;
-    function updateTreasury(address newTreasury) external;
+    function updateTreasuryManager(address newTreasuryManager) external;
     
     // Emergency functions
     function setEmergencyMode(bool active) external;
@@ -178,4 +179,5 @@ interface ITerraStakeLiquidityGuard {
         uint256[2] memory withdrawalStats
     );
     function version() external pure returns (string memory);
+    function getLiquidityPool() external view returns (address);
 }

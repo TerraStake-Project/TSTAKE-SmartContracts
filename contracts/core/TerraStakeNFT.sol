@@ -1,24 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/common/ERC2981Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Burnable.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import "../interfaces/IChainlinkDataFeeder.sol";
+import "../interfaces/IFractionToken.sol";
+import "../interfaces/ITerraStakeMarketplace.sol";
+import "../interfaces/ITerraStakeNFT.sol";
+import "../interfaces/ITerraStakeProjects.sol";
+import "../interfaces/ITerraStakeMetadataRenderer.sol";
+import "../interfaces/ITerraStakeToken.sol";
+
+/// @dev Minimal interface extending IERC20 to include burning functionality.
+interface IBurnableERC20 is IERC20 {
+    function burn(uint256 amount) external;
+}
 
 /**
  * @title TerraStakeNFT
@@ -28,7 +38,6 @@ import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
  */
 contract TerraStakeNFT is
     Initializable,
-    ERC1155Upgradeable,
     ERC1155SupplyUpgradeable,
     AccessControlUpgradeable,
     PausableUpgradeable,
@@ -37,7 +46,7 @@ contract TerraStakeNFT is
     ERC2981Upgradeable,
     VRFConsumerBaseV2
 {
-    using SafeERC20 for IERC20;
+    using SafeERC20 for IBurnableERC20;
     using Strings for uint256;
 
     // ====================================================
@@ -122,7 +131,7 @@ contract TerraStakeNFT is
     //  Fee Management
     // ====================================================
 
-    IERC20 public feeToken; // Use a generic fee token
+    IBurnableERC20 public feeToken; // Use a generic fee token
 
     address public treasuryWallet;
     address public buybackAndBurnWallet; // Dedicated wallet for buyback and burn
@@ -174,6 +183,12 @@ contract TerraStakeNFT is
     // Emergency Mode
     bool public emergencyMode = false;
 
+    uint256[] public randomWords;
+    uint256 public requestId;
+
+    event RandomWordsRequested(uint256 requestId);
+    event RandomWordsReceived(uint256[] randomWords);
+    
     // ====================================================
     //  Events
     // ====================================================
@@ -342,7 +357,7 @@ contract TerraStakeNFT is
         _grantRole(EMERGENCY_ROLE, admin);
         _grantRole(VRF_REQUESTER_ROLE, admin);
 
-        feeToken = IERC20(_feeToken);
+        feeToken = IBurnableERC20(_feeToken);
         treasuryWallet = _treasuryWallet;
         buybackAndBurnWallet = _buybackAndBurnWallet;
 
@@ -388,6 +403,13 @@ contract TerraStakeNFT is
         onlyRole(UPGRADER_ROLE)
     {}
 
+    // Callback function to receive randomness
+    function fulfillRandomWords(uint256 _requestId, uint256[] memory _randomWords) internal override {
+        require(requestId == _requestId, "Invalid request ID");
+        randomWords = _randomWords;
+        emit RandomWordsReceived(_randomWords);
+    }
+
     // ====================================================
     // Token Minting Functions
     // ====================================================
@@ -397,14 +419,14 @@ contract TerraStakeNFT is
      * @param to The recipient address
      * @param amount The amount to mint
      * @param category The project category
-     * @param uri The token URI
+     * @param _uri The token URI
      * @return tokenId The newly minted token ID
      */
     function mintStandardNFT(
         address to,
         uint256 amount,
         ProjectCategory category,
-        string calldata uri
+        string calldata _uri
     ) external nonReentrant notEmergencyMode returns (uint256) {
         if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert ZeroAmount();
@@ -430,7 +452,7 @@ contract TerraStakeNFT is
             category: category
         });
 
-        _tokenURIs[tokenId] = uri;
+        _tokenURIs[tokenId] = _uri;
         projectCategories[tokenId] = category;
         _categoryProjects[category].push(tokenId);
 
@@ -444,13 +466,13 @@ contract TerraStakeNFT is
      * @param to The recipient address
      * @param projectId The associated project ID
      * @param reportHash The unique hash of the impact report
-     * @param uri The token URI
+     * @param _uri The token URI
      * @return tokenId The newly minted token ID
      */
     function mintImpactNFT(
         address to,
         uint256 projectId,
-        string calldata uri,
+        string calldata _uri,
         bytes32 reportHash
     ) external nonReentrant whenNotPaused returns (uint256) {
         // Verify caller has MINTER_ROLE or VALIDATOR_ROLE
@@ -501,7 +523,7 @@ contract TerraStakeNFT is
             category: category
         });
 
-        _tokenURIs[tokenId] = uri;
+        _tokenURIs[tokenId] = _uri;
         projectCategories[tokenId] = category;
         _categoryProjects[category].push(tokenId);
         reportToToken[reportHash] = tokenId;
@@ -833,7 +855,7 @@ contract TerraStakeNFT is
      * @param tokenId The token ID to check
      * @return True if token exists
      */
-    function exists(uint256 tokenId) public view returns (bool) {
+    function exists(uint256 tokenId) public view override returns (bool) {
         return totalSupply(tokenId) > 0;
     }
 
@@ -932,7 +954,8 @@ contract TerraStakeNFT is
         feeToken.safeTransferFrom(from, address(this), feeAmount);
 
         // Distribute fee
-        uint256 burnAmount = (feeAmount burnPercent) / 100;
+        uint256 burnAmount = (feeAmount * burnPercent) / 100;
+
         uint256 treasuryAmount = (feeAmount * treasuryPercent) / 100;
         uint256 buybackAmount = (feeAmount * buybackPercent) / 100;
 
@@ -948,51 +971,7 @@ contract TerraStakeNFT is
             feeToken.safeTransfer(buybackAndBurnWallet, buybackAmount);
         }
 
-        emit FeeCollected(from, feeAmount, burnAmount, treasuryAmount, buybackAmount);
-    }
-
-    // ====================================================
-    //  Access Control
-    // ====================================================
-
-    /**
-     * @notice Grants a role to an address
-     * @param role The role to grant
-     * @param account The address to grant the role to
-     */
-    function grantRole(bytes32 role, address account)
-        public
-        override(AccessControl, IERC165)
-        onlyRole(getRoleAdmin(role))
-    {
-        _grantRole(role, account);
-    }
-
-    /**
-     * @notice Revokes a role from an address
-     * @param role The role to revoke
-     * @param account The address to revoke the role from
-     */
-    function revokeRole(bytes32 role, address account)
-        public
-        override(AccessControl, IERC165)
-        onlyRole(getRoleAdmin(role))
-    {
-        _revokeRole(role, account);
-    }
-
-    /**
-     * @notice Renounces a role
-     * @param role The role to renounce
-     * @param account The address renouncing the role
-     */
-    function renounceRole(bytes32 role, address account)
-        public
-        override(AccessControl, IERC165)
-        onlyRole(getRoleAdmin(role))
-    {
-        if (account != msg.sender) revert Unauthorized();
-        _revokeRole(role, account);
+        emit FeesCollected(from, feeAmount, burnAmount, treasuryAmount, buybackAmount);
     }
 
     /**
@@ -1004,26 +983,6 @@ contract TerraStakeNFT is
         _setRoleAdmin(role, adminRole);
     }
 
-    /**
-     * @notice Modifier to check if the caller has a specific role
-     * @param role The role to check
-     */
-    modifier onlyRole(bytes32 role) {
-        if (!hasRole(role, msg.sender)) {
-            revert Unauthorized();
-        }
-        _;
-    }
-
-    /**
-     * @notice Modifier to check if the caller is the owner of a token
-     * @param tokenId The token ID to check
-     */
-    modifier onlyTokenOwner(uint256 tokenId) {
-        if (balanceOf(msg.sender, tokenId) == 0) revert NotTokenOwner();
-        _;
-    }
-
     // ====================================================
     //  Emergency & Pausable
     // ====================================================
@@ -1031,14 +990,14 @@ contract TerraStakeNFT is
     /**
      * @notice Pauses the contract
      */
-    function pause() external onlyRole(PAUSER_ROLE) {
+    function pause() external onlyRole(EMERGENCY_ROLE) {
         _pause();
     }
 
     /**
      * @notice Unpauses the contract
      */
-    function unpause() external onlyRole(PAUSER_ROLE) {
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
@@ -1047,7 +1006,7 @@ contract TerraStakeNFT is
      */
     function triggerEmergencyMode() external onlyRole(EMERGENCY_ROLE) {
         emergencyMode = true;
-        emit EmergencyModeActivated(msg.sender);
+        emit EmergencyModeTriggered(msg.sender);
     }
 
     /**
@@ -1055,15 +1014,7 @@ contract TerraStakeNFT is
      */
     function disableEmergencyMode() external onlyRole(EMERGENCY_ROLE) {
         emergencyMode = false;
-        emit EmergencyModeDeactivated(msg.sender);
-    }
-
-    /**
-     * @notice Modifier to restrict functions during emergency mode
-     */
-    modifier notEmergencyMode() {
-        if (emergencyMode) revert EmergencyModeActive();
-        _;
+        emit EmergencyModeDisabled(msg.sender);
     }
 
     // ====================================================
@@ -1079,18 +1030,14 @@ contract TerraStakeNFT is
     }
 
     /**
-     * @notice Overrides the beforeTokenTransfer hook to handle fees and fractionalization logic
+     * @notice Overrides the _update hook to handle fees and fractionalization logic
      */
-    function _beforeTokenTransfer(
-        address operator,
+    function _update(
         address from,
         address to,
         uint256[] memory ids,
-        uint256[] memory amounts,
-        bytes memory data
+        uint256[] memory values
     ) internal override whenNotPaused {
-        super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
-
         // Skip fee logic for minting and burning
         if (from == address(0) || to == address(0)) {
             return;
@@ -1115,7 +1062,7 @@ contract TerraStakeNFT is
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(AccessControl, ERC1155, IERC165)
+        override(AccessControlUpgradeable, ERC1155Upgradeable, ERC2981Upgradeable)
         returns (bool)
     {
         return super.supportsInterface(interfaceId);

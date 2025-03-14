@@ -2,13 +2,13 @@
 
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
- * @title ITerraStakeMarketplace
+ * @title ITerraStakeMarketPlace
  * @notice Interface for the TerraStake NFT marketplace with fractionalization, bidding and analytics
  */
-interface ITerraStakeMarketplace {
+interface ITerraStakeMarketPlace {
     // Custom errors
     error NotAuthorized();
     error NotOwner();
