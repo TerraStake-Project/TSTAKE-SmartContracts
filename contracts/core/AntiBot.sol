@@ -6,28 +6,30 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import "./IAntiBot.sol";
 
 /**
- * @title AntiBot - TerraStake Security Module v2.2
+ * @title AntiBot - TerraStake Security Module v3.0
  * @notice Protects against front-running, flash crashes, sandwich attacks, and excessive transactions.
  * - Managed via TerraStake Governance DAO
  * - Dynamic Buyback Pause on Major Price Swings
- * - Flash Crash Prevention & Circuit Breaker for Price Drops
- * - Front-Running & Adaptive Multi-TX Throttling
+ * - Flash Crash & Price Surge Prevention with Circuit Breakers
+ * - Dynamic Front-Running & Adaptive Multi-TX Throttling
  * - Liquidity Locking Mechanism to Prevent Flash Loan Drains
  * - Optimized gas usage with efficient storage writes
  * - Governance exemptions with timelock and maximum limit
+ * - Failsafe admin mechanism for governance continuity
  */
 contract AntiBot is 
     Initializable,
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    IAntiBot
 {
     // ================================
     //  Custom Errors
     // ================================
-
     error InvalidPriceOracle();
     error TransactionThrottled(address user, uint256 blockNumber, uint256 cooldownEnds);
     error TimelockNotExpired(address account, uint256 unlockTime);
@@ -37,12 +39,15 @@ contract AntiBot is
     error OnlyRoleCanAccess(bytes32 requiredRole);
     error ZeroAddressProvided();
     error InvalidThresholdValue();
-    error MaxGovernanceExemptionsReached(); // New error for exceeding max exemptions
+    error MaxGovernanceExemptionsReached();
+    error NotAuthorized();
+    error GovernanceStillActive();
+    error FailsafeModeInactive();
+    error FailsafeModeAlreadyActive();
 
     // ================================
     //  Role Management
     // ================================
-
     bytes32 public constant BOT_ROLE = keccak256("BOT_ROLE");
     bytes32 public constant CONFIG_MANAGER_ROLE = keccak256("CONFIG_MANAGER_ROLE");
     bytes32 public constant TRANSACTION_MONITOR_ROLE = keccak256("TRANSACTION_MONITOR_ROLE");
@@ -53,7 +58,6 @@ contract AntiBot is
     // ================================
     //  Security Parameters
     // ================================
-
     bool public isAntibotEnabled = true;
     bool public isBuybackPaused = false;
     bool public isCircuitBreakerTriggered = false;
@@ -65,7 +69,36 @@ contract AntiBot is
     uint256 public constant MAX_GOVERNANCE_EXEMPTIONS = 5; // Maximum number of governance exemptions allowed
     uint256 public governanceExemptionCount; // Keep track of active governance exemptions
 
+    // ================================
+    //  Dynamic Throttling Parameters
+    // ================================
+    uint256 public baseMultiplier = 12; // Base multiplier for cooldown periods
+    uint256 public rapidTransactionThreshold = 5; // Number of transactions in short period to trigger multiplier increase
+    uint256 public rapidTransactionWindow = 5 minutes; // Time window for rapid transaction detection
+    uint256 public maxMultiplier = 60; // Maximum multiplier (5 minutes at 12 seconds per block)
+
+    // ================================
+    //  Price Surge Parameters
+    // ================================
+    uint256 public priceSurgeThreshold = 10; // 10% sudden price increase
+    bool public isPriceSurgeActive = false;
+    uint256 public surgeCooldownPeriod = 30 minutes;
+    uint256 public lastSurgeTime;
+
+    // ================================
+    //  Failsafe Admin Parameters
+    // ================================
+    uint256 public governanceInactivityThreshold = 30 days;
+    uint256 public lastGovernanceActivity;
+    address public failsafeAdmin;
+    bool public failsafeMode = false;
+
+    // ================================
+    //  Mappings
+    // ================================
     mapping(address => uint256) private userCooldown;
+    mapping(address => uint256) private userTransactionCount;
+    mapping(address => uint256) private lastTransactionTime;
     mapping(address => bool) private trustedContracts;
     mapping(address => uint256) private liquidityInjectionTimestamp;
     AggregatorV3Interface public priceOracle;
@@ -76,31 +109,38 @@ contract AntiBot is
         address account;
         uint256 unlockTime;
     }
-
     mapping(address => GovernanceRequest) public pendingExemptions;
 
     // ================================
     //  Events for Transparency
     // ================================
-
     event AntibotStatusUpdated(bool isEnabled);
     event BlockThresholdUpdated(uint256 newThreshold);
     event BuybackPaused(bool status);
     event CircuitBreakerTriggered(bool status, int256 priceChange);
-    event CircuitBreakerReset(bytes32 indexed callerRole); // Log caller's role
-    event EmergencyCircuitBreakerReset(address indexed admin, bytes32 indexed callerRole); // Log caller's role
+    event CircuitBreakerReset(bytes32 indexed callerRole);
+    event EmergencyCircuitBreakerReset(address indexed admin, bytes32 indexed callerRole);
     event AddressExempted(address indexed account);
-    event ExemptionRevoked(address indexed account, bytes32 indexed callerRole); // Log caller's role
+    event ExemptionRevoked(address indexed account, bytes32 indexed callerRole);
     event TrustedContractAdded(address indexed contractAddress);
-    event TrustedContractRemoved(address indexed contractAddress, bytes32 indexed callerRole); // Log caller's role
+    event TrustedContractRemoved(address indexed contractAddress, bytes32 indexed callerRole);
     event PriceImpactThresholdUpdated(uint256 newThreshold);
     event CircuitBreakerThresholdUpdated(uint256 newThreshold);
     event LiquidityLockPeriodUpdated(uint256 newPeriod);
     event GovernanceExemptionRequested(address indexed account, uint256 unlockTime);
-    event GovernanceExemptionApproved(address indexed account, bytes32 indexed callerRole); // Log caller's role
+    event GovernanceExemptionApproved(address indexed account, bytes32 indexed callerRole);
     event PriceMonitoringUpdated(uint256 timestamp, int256 oldPrice, int256 newPrice);
     event PriceCheckCooldownUpdated(uint256 newCooldown);
-    
+    event PriceSurgeDetected(bool status, int256 priceChange);
+    event PriceSurgeReset(bytes32 indexed callerRole);
+    event FailsafeAdminUpdated(address indexed admin);
+    event FailsafeModeActivated(address indexed activator);
+    event FailsafeModeDeactivated(address indexed deactivator);
+    event DynamicThrottlingUpdated(uint256 baseMultiplier, uint256 rapidThreshold, uint256 window, uint256 maxMultiplier);
+    event PriceSurgeThresholdUpdated(uint256 newThreshold, uint256 newCooldown);
+    event GovernanceInactivityThresholdUpdated(uint256 newThreshold);
+    event UserThrottled(address indexed user, uint256 multiplier, uint256 cooldownEnds);
+
     // -------------------------------------------
     //  Constructor & Initializer
     // -------------------------------------------
@@ -117,26 +157,23 @@ contract AntiBot is
         __AccessControl_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
-
         if (_priceOracle == address(0)) revert InvalidPriceOracle();
         if (governanceContract == address(0)) revert ZeroAddressProvided();
         if (stakingContract == address(0)) revert ZeroAddressProvided();
-
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(GOVERNANCE_ROLE, governanceContract);
         _grantRole(STAKING_CONTRACT_ROLE, stakingContract);
         _grantRole(CONFIG_MANAGER_ROLE, msg.sender);
         _grantRole(UPGRADER_ROLE, msg.sender);
-
         priceOracle = AggregatorV3Interface(_priceOracle);
         lastCheckedPrice = _getLatestPrice();
         lastPriceCheckTime = block.timestamp;
-
+        lastGovernanceActivity = block.timestamp;
+        
         // Exempt core contracts from antibot measures
         trustedContracts[governanceContract] = true;
         trustedContracts[stakingContract] = true;
         governanceExemptionCount = 2; // Governance and Staking contracts are exempt
-
         emit GovernanceExemptionApproved(governanceContract, GOVERNANCE_ROLE);
         emit GovernanceExemptionApproved(stakingContract, STAKING_CONTRACT_ROLE);
     }
@@ -144,28 +181,62 @@ contract AntiBot is
     // ================================
     //  Transaction Throttling
     // ================================
-
     modifier checkThrottle(address from) {
         if (isAntibotEnabled && !_isExempt(from)) {
             // Use local variable to reduce SLOADs
             uint256 cooldown = userCooldown[from];
-            uint256 threshold = cooldown > 0 ? cooldown : blockThreshold;
-
-            if (block.timestamp <= cooldown + (threshold * 12)) { // Use block.timestamp directly
-                uint256 cooldownEnds = cooldown + (threshold * 12);
+            uint256 threshold = blockThreshold; // Fixed: Always use blockThreshold
+            
+            // Calculate dynamic multiplier based on transaction frequency
+            uint256 multiplier = baseMultiplier;
+            uint256 txCount = userTransactionCount[from];
+            uint256 timeSinceLastTx = block.timestamp - lastTransactionTime[from];
+            
+            // If user is making frequent transactions, increase the multiplier
+            if (txCount > 0 && timeSinceLastTx < rapidTransactionWindow) {
+                txCount++;
+                if (txCount >= rapidTransactionThreshold) {
+                    // Exponential backoff for repeated rapid transactions
+                    // Fixed: Use SafeMath-like approach to prevent overflow
+                    uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
+                    multiplier = baseMultiplier * factor;
+                    if (multiplier > maxMultiplier) multiplier = maxMultiplier;
+                }
+            } else {
+                // Reset counter if sufficient time has passed
+                txCount = 1;
+            }
+            
+            if (block.timestamp <= cooldown + (threshold * multiplier)) {
+                uint256 cooldownEnds = cooldown + (threshold * multiplier);
+                emit UserThrottled(from, multiplier, cooldownEnds);
                 revert TransactionThrottled(from, block.number, cooldownEnds);
             }
-            // Optimized SSTORE: Only write if the value has changed
-            if(cooldown != block.timestamp){
-                userCooldown[from] = block.timestamp;
-            }
+            
+            // Update state variables
+            userCooldown[from] = block.timestamp;
+            userTransactionCount[from] = txCount;
+            lastTransactionTime[from] = block.timestamp;
         }
         _;
     }
 
     modifier circuitBreakerCheck() {
-        if (isCircuitBreakerTriggered) revert CircuitBreakerActive();
+        if (isCircuitBreakerTriggered || isPriceSurgeActive) revert CircuitBreakerActive();
         _;
+    }
+
+    modifier failsafeOrGovernance() {
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender) && 
+            !(failsafeMode && msg.sender == failsafeAdmin)) {
+            revert NotAuthorized();
+        }
+        _;
+        
+        // Update governance activity timestamp if called by governance
+        if (hasRole(GOVERNANCE_ROLE, msg.sender)) {
+            lastGovernanceActivity = block.timestamp;
+        }
     }
 
     /**
@@ -178,16 +249,42 @@ contract AntiBot is
      * @notice Updates the block threshold.
      * @param newThreshold New block threshold.
      */
-    function updateBlockThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+    function updateBlockThreshold(uint256 newThreshold) external failsafeOrGovernance {
         blockThreshold = newThreshold;
         emit BlockThresholdUpdated(newThreshold);
+    }
+
+    /**
+     * @notice Updates dynamic throttling parameters
+     * @param _baseMultiplier Base multiplier for cooldown
+     * @param _rapidThreshold Number of transactions to trigger increased throttling
+     * @param _window Time window for rapid transaction detection (in seconds)
+     * @param _maxMultiplier Maximum throttling multiplier
+     */
+    function updateDynamicThrottling(
+        uint256 _baseMultiplier,
+        uint256 _rapidThreshold,
+        uint256 _window,
+        uint256 _maxMultiplier
+    ) external failsafeOrGovernance {
+        require(_baseMultiplier > 0, "Base multiplier must be positive");
+        require(_rapidThreshold > 1, "Rapid threshold must be > 1");
+        require(_window > 0, "Window must be positive");
+        require(_maxMultiplier >= _baseMultiplier, "Max multiplier must be >= base");
+        
+        baseMultiplier = _baseMultiplier;
+        rapidTransactionThreshold = _rapidThreshold;
+        rapidTransactionWindow = _window;
+        maxMultiplier = _maxMultiplier;
+        
+        emit DynamicThrottlingUpdated(_baseMultiplier, _rapidThreshold, _window, _maxMultiplier);
     }
 
     /**
      * @notice Adds a trusted contract.
      * @param contractAddress Contract address.
      */
-    function addTrustedContract(address contractAddress) external onlyRole(GOVERNANCE_ROLE) {
+    function addTrustedContract(address contractAddress) external failsafeOrGovernance {
         if (contractAddress == address(0)) revert ZeroAddressProvided();
         // Optimized SSTORE: Only write if the value has changed
         if(!trustedContracts[contractAddress]){
@@ -200,7 +297,7 @@ contract AntiBot is
      * @notice Removes a trusted contract.
      * @param contractAddress Contract address.
      */
-    function removeTrustedContract(address contractAddress) external onlyRole(GOVERNANCE_ROLE) {
+    function removeTrustedContract(address contractAddress) external failsafeOrGovernance {
         // Optimized SSTORE: Only write if the value exists
         if(trustedContracts[contractAddress]){
             delete trustedContracts[contractAddress];
@@ -209,7 +306,7 @@ contract AntiBot is
     }
 
     // ================================
-    //  Price-Based Buyback Protection
+    //  Price-Based Protection
     // ================================
     /**
      * @notice Gets the latest price.
@@ -227,12 +324,21 @@ contract AntiBot is
         // Use block.timestamp directly and local variables to reduce gas
         uint256 currentTime = block.timestamp;
         if (currentTime < lastPriceCheckTime + priceCheckCooldown) return;
-
+        
         int256 currentPrice = _getLatestPrice();
+        
+        // Fixed: Add safety check to prevent division by zero
+        if (lastCheckedPrice == 0) {
+            lastCheckedPrice = currentPrice;
+            lastPriceCheckTime = currentTime;
+            emit PriceMonitoringUpdated(currentTime, 0, currentPrice);
+            return;
+        }
+        
         // Calculate price change using integers to avoid floating-point math
         int256 priceChange = ((currentPrice - lastCheckedPrice) * 100) / lastCheckedPrice;
-
         int256 oldPrice = lastCheckedPrice;
+        
         // Optimized SSTOREs
         if(lastCheckedPrice != currentPrice){
             lastCheckedPrice = currentPrice;
@@ -244,7 +350,7 @@ contract AntiBot is
         
         emit PriceMonitoringUpdated(currentTime, oldPrice, currentPrice);
         
-        // Use a single if-else-if construct for efficiency
+        // Check for price drops (negative change)
         if (priceChange < -int256(priceImpactThreshold)) {
             if (!isBuybackPaused) { // Optimized SSTORE: Only write if changed
                 isBuybackPaused = true;
@@ -254,7 +360,20 @@ contract AntiBot is
             isBuybackPaused = false; // No need to check, always change if reached here
             emit BuybackPaused(false);
         }
-
+        
+        // Check for price surges (positive change)
+        if (priceChange > int256(priceSurgeThreshold)) {
+            if (!isPriceSurgeActive) {
+                isPriceSurgeActive = true;
+                lastSurgeTime = currentTime;
+                emit PriceSurgeDetected(true, priceChange);
+            }
+        } else if (isPriceSurgeActive && currentTime > lastSurgeTime + surgeCooldownPeriod) {
+            // Auto-reset after cooldown period
+            isPriceSurgeActive = false;
+            emit PriceSurgeReset(bytes32(0)); // 0 indicates auto-reset
+        }
+        
         _checkCircuitBreaker(currentPrice, priceChange);
     }
 
@@ -276,11 +395,21 @@ contract AntiBot is
     /**
      * @notice Resets the circuit breaker.
      */
-    function resetCircuitBreaker() external onlyRole(GOVERNANCE_ROLE) {
+    function resetCircuitBreaker() external failsafeOrGovernance {
         // Optimized SSTORE: Only write if changed
         if(isCircuitBreakerTriggered){
             isCircuitBreakerTriggered = false;
             emit CircuitBreakerReset(GOVERNANCE_ROLE);
+        }
+    }
+    
+    /**
+     * @notice Resets the price surge circuit breaker.
+     */
+    function resetPriceSurgeBreaker() external failsafeOrGovernance {
+        if (isPriceSurgeActive) {
+            isPriceSurgeActive = false;
+            emit PriceSurgeReset(GOVERNANCE_ROLE);
         }
     }
 
@@ -306,7 +435,7 @@ contract AntiBot is
      * @notice Updates price impact threshold.
      * @param newThreshold New threshold.
      */
-    function updatePriceImpactThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+    function updatePriceImpactThreshold(uint256 newThreshold) external failsafeOrGovernance {
         if (newThreshold == 0 || newThreshold >= 50) revert InvalidThresholdValue();
         priceImpactThreshold = newThreshold;
         emit PriceImpactThresholdUpdated(newThreshold);
@@ -316,16 +445,28 @@ contract AntiBot is
      * @notice Updates circuit breaker threshold.
      * @param newThreshold New threshold.
      */
-    function updateCircuitBreakerThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+    function updateCircuitBreakerThreshold(uint256 newThreshold) external failsafeOrGovernance {
         circuitBreakerThreshold = newThreshold;
         emit CircuitBreakerThresholdUpdated(newThreshold);
+    }
+    
+    /**
+     * @notice Updates price surge threshold and cooldown period.
+     * @param newThreshold New threshold for price surges.
+     * @param newCooldown New cooldown period after a surge.
+     */
+    function updatePriceSurgeParameters(uint256 newThreshold, uint256 newCooldown) external failsafeOrGovernance {
+        if (newThreshold == 0) revert InvalidThresholdValue();
+        priceSurgeThreshold = newThreshold;
+        surgeCooldownPeriod = newCooldown;
+        emit PriceSurgeThresholdUpdated(newThreshold, newCooldown);
     }
 
     /**
      * @notice Updates price check cooldown.
      * @param newCooldown New cooldown.
      */
-    function updatePriceCheckCooldown(uint256 newCooldown) external onlyRole(GOVERNANCE_ROLE) {
+    function updatePriceCheckCooldown(uint256 newCooldown) external failsafeOrGovernance {
         priceCheckCooldown = newCooldown;
         emit PriceCheckCooldownUpdated(newCooldown);
     }
@@ -337,7 +478,7 @@ contract AntiBot is
      * @notice Locks liquidity.
      * @param user User address.
      */
-    function lockLiquidity(address user) external onlyRole(GOVERNANCE_ROLE) {
+    function lockLiquidity(address user) external failsafeOrGovernance {
         if (user == address(0)) revert ZeroAddressProvided();
         // Optimized SSTORE: Only write if changed
         uint256 lockTime = block.timestamp + liquidityLockPeriod;
@@ -359,7 +500,7 @@ contract AntiBot is
      * @notice Updates liquidity lock period.
      * @param newPeriod New period.
      */
-    function updateLiquidityLockPeriod(uint256 newPeriod) external onlyRole(GOVERNANCE_ROLE) {
+    function updateLiquidityLockPeriod(uint256 newPeriod) external failsafeOrGovernance {
         if (newPeriod == 0) revert InvalidLockPeriod();
         liquidityLockPeriod = newPeriod;
         emit LiquidityLockPeriodUpdated(newPeriod);
@@ -372,7 +513,7 @@ contract AntiBot is
      * @notice Requests governance exemption.
      * @param account Account address.
      */
-    function requestGovernanceExemption(address account) external onlyRole(GOVERNANCE_ROLE) {
+    function requestGovernanceExemption(address account) external failsafeOrGovernance {
         if (account == address(0)) revert ZeroAddressProvided();
         // Check if maximum exemptions are reached
         if (governanceExemptionCount >= MAX_GOVERNANCE_EXEMPTIONS) {
@@ -388,7 +529,7 @@ contract AntiBot is
      * @notice Approves governance exemption.
      * @param account Account address.
      */
-    function approveGovernanceExemption(address account) external onlyRole(GOVERNANCE_ROLE) {
+    function approveGovernanceExemption(address account) external failsafeOrGovernance {
         GovernanceRequest memory request = pendingExemptions[account];
         if (block.timestamp < request.unlockTime) revert TimelockNotExpired(account, request.unlockTime); // Use block.timestamp
         
@@ -407,8 +548,8 @@ contract AntiBot is
      * @notice Revokes exemption.
      * @param account Account address.
      */
-    function revokeExemption(address account) external onlyRole(GOVERNANCE_ROLE) {
-        // Check if the account has the BOT_ROLE before revoking and decrementing
+    function revokeExemption(address account) external failsafeOrGovernance {
+        // Fixed: Check if the account has the BOT_ROLE before revoking and decrementing
         if(hasRole(BOT_ROLE, account)){
             _revokeRole(BOT_ROLE, account);
             governanceExemptionCount--; // Decrement only when revoking an active exemption
@@ -421,12 +562,59 @@ contract AntiBot is
      * @notice Toggles antibot.
      * @param enabled Whether antibot is enabled.
      */
-    function setAntibotEnabled(bool enabled) external onlyRole(GOVERNANCE_ROLE) {
+    function setAntibotEnabled(bool enabled) external failsafeOrGovernance {
         // Optimized SSTORE: Only write if changed
         if(isAntibotEnabled != enabled){
             isAntibotEnabled = enabled;
             emit AntibotStatusUpdated(enabled);
         }
+    }
+    
+    // ================================
+    //  Failsafe Admin Mechanism
+    // ================================
+    
+    /**
+     * @notice Sets the failsafe admin address
+     * @param admin The address to set as failsafe admin
+     */
+    function setFailsafeAdmin(address admin) external onlyRole(GOVERNANCE_ROLE) {
+        if (admin == address(0)) revert ZeroAddressProvided();
+        failsafeAdmin = admin;
+        emit FailsafeAdminUpdated(admin);
+    }
+    
+    /**
+     * @notice Updates the governance inactivity threshold
+     * @param newThreshold New threshold in seconds
+     */
+    function updateGovernanceInactivityThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+        if (newThreshold < 1 days) revert InvalidThresholdValue();
+        governanceInactivityThreshold = newThreshold;
+        emit GovernanceInactivityThresholdUpdated(newThreshold);
+    }
+    
+    /**
+     * @notice Activates failsafe mode if governance has been inactive
+     */
+    function activateFailsafeMode() external {
+        if (msg.sender != failsafeAdmin) revert NotAuthorized();
+        if (block.timestamp <= lastGovernanceActivity + governanceInactivityThreshold) revert GovernanceStillActive();
+        if (failsafeMode) revert FailsafeModeAlreadyActive();
+        
+        failsafeMode = true;
+        emit FailsafeModeActivated(msg.sender);
+    }
+    
+    /**
+     * @notice Deactivates failsafe mode (only governance can do this)
+     */
+    function deactivateFailsafeMode() external onlyRole(GOVERNANCE_ROLE) {
+        if (!failsafeMode) revert FailsafeModeInactive();
+        
+        failsafeMode = false;
+        lastGovernanceActivity = block.timestamp;
+        emit FailsafeModeDeactivated(msg.sender);
     }
 
     // ================================
@@ -459,16 +647,33 @@ contract AntiBot is
      * @return blockNum Block cooldown was set.
      * @return threshold Block threshold.
      * @return canTransact Whether user can transact.
+     * @return currentMultiplier Current throttling multiplier for the user
      */
     function getUserCooldownStatus(address user) external view returns (
         uint256 blockNum,
         uint256 threshold,
-        bool canTransact
+        bool canTransact,
+        uint256 currentMultiplier
     ) {
         blockNum = userCooldown[user];
-        threshold = blockNum > 0 ? userCooldown[user] : blockThreshold;
-        canTransact = block.timestamp > userCooldown[user] + (threshold * 12) || _isExempt(user); // Use block.timestamp
-        return (blockNum, threshold, canTransact);
+        // Fixed: Always use blockThreshold instead of userCooldown
+        threshold = blockThreshold;
+        
+        // Calculate current multiplier
+        uint256 multiplier = baseMultiplier;
+        uint256 txCount = userTransactionCount[user];
+        uint256 timeSinceLastTx = block.timestamp - lastTransactionTime[user];
+        if (txCount > 0 && timeSinceLastTx < rapidTransactionWindow) {
+            if (txCount >= rapidTransactionThreshold) {
+                // Fixed: Use safer calculation to prevent overflow
+                uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
+                multiplier = baseMultiplier * factor;
+                if (multiplier > maxMultiplier) multiplier = maxMultiplier;
+            }
+        }
+        
+        canTransact = block.timestamp > userCooldown[user] + (threshold * multiplier) || _isExempt(user);
+        return (blockNum, threshold, canTransact, multiplier);
     }
 
     /**
@@ -478,20 +683,23 @@ contract AntiBot is
      * @return timeSinceLastCheck Time since last check.
      * @return buybackPaused Whether buyback is paused.
      * @return circuitBroken Whether circuit breaker is triggered.
+     * @return surgeBroken Whether price surge breaker is active.
      */
     function getPriceMonitoringStatus() external view returns (
         int256 lastPrice,
         int256 currentPrice,
         uint256 timeSinceLastCheck,
         bool buybackPaused,
-        bool circuitBroken
+        bool circuitBroken,
+        bool surgeBroken
     ) {
         lastPrice = lastCheckedPrice;
         currentPrice = _getLatestPrice();
         timeSinceLastCheck = block.timestamp - lastPriceCheckTime; // Use block.timestamp
         buybackPaused = isBuybackPaused;
         circuitBroken = isCircuitBreakerTriggered;
-        return (lastPrice, currentPrice, timeSinceLastCheck, buybackPaused, circuitBroken);
+        surgeBroken = isPriceSurgeActive;
+        return (lastPrice, currentPrice, timeSinceLastCheck, buybackPaused, circuitBroken, surgeBroken);
     }
 
     /**
@@ -517,18 +725,44 @@ contract AntiBot is
      * @param from Address to check.
      * @return wouldThrottle Whether throttled.
      * @return cooldownEnds Block cooldown ends.
+     * @return appliedMultiplier The multiplier that would be applied
      */
-    function checkWouldThrottle(address from) external view returns (bool wouldThrottle, uint256 cooldownEnds) {
+    function checkWouldThrottle(address from) external view returns (
+        bool wouldThrottle, 
+        uint256 cooldownEnds,
+        uint256 appliedMultiplier
+    ) {
         if (!isAntibotEnabled || _isExempt(from)) {
-            return (false, 0);
+            return (false, 0, 0);
         }
         
         // Use local variable to reduce SLOADs
         uint256 cooldown = userCooldown[from];
-        uint256 threshold = cooldown > 0 ? cooldown : blockThreshold;
-        wouldThrottle = block.timestamp <= cooldown + (threshold * 12); // Use block.timestamp
-        cooldownEnds = cooldown + (threshold * 12);
-        return (wouldThrottle, cooldownEnds);
+        // Fixed: Always use blockThreshold
+        uint256 threshold = blockThreshold;
+        
+        // Calculate dynamic multiplier
+        uint256 multiplier = baseMultiplier;
+        uint256 txCount = userTransactionCount[from];
+        uint256 timeSinceLastTx = block.timestamp - lastTransactionTime[from];
+        
+        if (txCount > 0 && timeSinceLastTx < rapidTransactionWindow) {
+            txCount++;  // Simulate the next transaction
+            if (txCount >= rapidTransactionThreshold) {
+                // Fixed: Use safer calculation to prevent overflow
+                uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
+                multiplier = baseMultiplier * factor;
+                if (multiplier > maxMultiplier) multiplier = maxMultiplier;
+            }
+        } else {
+            txCount = 1;  // Reset for new transaction window
+        }
+        
+        wouldThrottle = block.timestamp <= cooldown + (threshold * multiplier);
+        cooldownEnds = cooldown + (threshold * multiplier);
+        appliedMultiplier = multiplier;
+        
+        return (wouldThrottle, cooldownEnds, appliedMultiplier);
     }
 
     /**
@@ -538,20 +772,76 @@ contract AntiBot is
      * @return circuitBreaker Circuit breaker threshold.
      * @return lockPeriod Liquidity lock period.
      * @return priceCooldown Price check cooldown.
+     * @return surgeThreshold Price surge threshold.
+     * @return surgeCooldown Surge cooldown period.
      */
     function getSecurityThresholds() external view returns (
         uint256 blockLimit,
         uint256 priceImpact,
         uint256 circuitBreaker,
         uint256 lockPeriod,
-        uint256 priceCooldown
+        uint256 priceCooldown,
+        uint256 surgeThreshold,
+        uint256 surgeCooldown
     ) {
         return (
             blockThreshold,
             priceImpactThreshold,
             circuitBreakerThreshold,
             liquidityLockPeriod,
-            priceCheckCooldown
+            priceCheckCooldown,
+            priceSurgeThreshold,
+            surgeCooldownPeriod
+        );
+    }
+    
+    /**
+     * @notice Gets dynamic throttling parameters
+     * @return base Base multiplier
+     * @return rapid Rapid transaction threshold
+     * @return window Time window for rapid transactions
+     * @return maxMult Maximum multiplier
+     */
+    function getDynamicThrottlingParams() external view returns (
+        uint256 base,
+        uint256 rapid,
+        uint256 window,
+        uint256 maxMult
+    ) {
+        return (
+            baseMultiplier,
+            rapidTransactionThreshold,
+            rapidTransactionWindow,
+            maxMultiplier
+        );
+    }
+    
+    /**
+     * @notice Gets failsafe mechanism status
+     * @return admin Failsafe admin address
+     * @return isActive Whether failsafe mode is active
+     * @return inactivityThreshold Governance inactivity threshold
+     * @return lastActivity Last governance activity timestamp
+     * @return timeUntilFailsafe Time until failsafe can be activated
+     */
+    function getFailsafeStatus() external view returns (
+        address admin,
+        bool isActive,
+        uint256 inactivityThreshold,
+        uint256 lastActivity,
+        uint256 timeUntilFailsafe
+    ) {
+        uint256 timeUntil = 0;
+        if (block.timestamp < lastGovernanceActivity + governanceInactivityThreshold) {
+            timeUntil = lastGovernanceActivity + governanceInactivityThreshold - block.timestamp;
+        }
+        
+        return (
+            failsafeAdmin,
+            failsafeMode,
+            governanceInactivityThreshold,
+            lastGovernanceActivity,
+            timeUntil
         );
     }
 
@@ -565,6 +855,7 @@ contract AntiBot is
         external
         checkThrottle(sender)
         circuitBreakerCheck
+        nonReentrant  // Fixed: Added nonReentrant modifier for consistency
         returns (bool isValid)
     {
         // Transaction passed all checks
@@ -574,8 +865,17 @@ contract AntiBot is
     /**
      * @notice Manual force check for circuit breaker.
      */
-    function forceCheckCircuitBreaker() external onlyRole(TRANSACTION_MONITOR_ROLE) {
+    function forceCheckCircuitBreaker() external onlyRole(TRANSACTION_MONITOR_ROLE) nonReentrant {
         int256 currentPrice = _getLatestPrice();
+        
+        // Fixed: Add safety check to prevent division by zero
+        if (lastCheckedPrice == 0) {
+            lastCheckedPrice = currentPrice;
+            lastPriceCheckTime = block.timestamp;
+            emit PriceMonitoringUpdated(block.timestamp, 0, currentPrice);
+            return;
+        }
+        
         int256 priceChange = ((currentPrice - lastCheckedPrice) * 100) / lastCheckedPrice;
         int256 oldPrice = lastCheckedPrice;
         
@@ -591,5 +891,40 @@ contract AntiBot is
         
         emit PriceMonitoringUpdated(currentTime, oldPrice, currentPrice);
         _checkCircuitBreaker(currentPrice, priceChange);
+        
+        // Also check for price surges
+        if (priceChange > int256(priceSurgeThreshold)) {
+            if (!isPriceSurgeActive) {
+                isPriceSurgeActive = true;
+                lastSurgeTime = currentTime;
+                emit PriceSurgeDetected(true, priceChange);
+            }
+        }
+    }
+    
+    /**
+     * @notice Resets a user's transaction count and cooldown
+     * @param user The user address to reset
+     */
+    function resetUserThrottling(address user) external failsafeOrGovernance {
+        if (user == address(0)) revert ZeroAddressProvided();
+        
+        userTransactionCount[user] = 0;
+        userCooldown[user] = 0;
+        lastTransactionTime[user] = 0;
+    }
+    
+    /**
+     * @notice Batch reset user throttling for multiple addresses
+     * @param users Array of user addresses to reset
+     */
+    function batchResetUserThrottling(address[] calldata users) external failsafeOrGovernance {
+        for (uint256 i = 0; i < users.length; i++) {
+            if (users[i] == address(0)) continue;
+            
+            userTransactionCount[users[i]] = 0;
+            userCooldown[users[i]] = 0;
+            lastTransactionTime[users[i]] = 0;
+        }
     }
 }

@@ -19,6 +19,7 @@ import "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInte
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeToken.sol";
 
+
 /**
  * @title ISecondaryMarketCallback
  * @dev Interface for secondary markets to receive notifications about fraction token transfers

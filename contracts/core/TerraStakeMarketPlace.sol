@@ -19,6 +19,7 @@ import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 
+
 // Custom errors
 error NotAuthorized();
 error NotOwner();

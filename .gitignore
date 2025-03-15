@@ -104,3 +104,4 @@ ipfs_cache/
 keys/
 keystore/
 multisig-config.json
+.qodo

@@ -275,26 +275,28 @@ contract TerraStakeGovernance is
     //  Validator Safety Mechanisms
     // -------------------------------------------
     
-    /**
-     * @notice Updates governance tier based on validator count
-     * @return The updated governance tier
-     */
-    function updateGovernanceTier() public returns (uint8) {
+/**
+ * @notice Updates governance tier based on validator count
+ * @return The updated governance tier
+ */
+function updateGovernanceTier() public returns (uint8) {
     uint256 validatorCount = stakingContract.getValidatorCount();
-
-    uint8 newTier;
-    if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
-        newTier = 0; // Emergency tier
-    } else if (validatorCount < OPTIMAL_VALIDATOR_THRESHOLD) {
-        newTier = 1; // Reduced tier
-    } else {
+    
+    // Gas-optimized tier calculation
+    uint8 newTier = 0; // Default to Emergency tier
+    if (validatorCount >= OPTIMAL_VALIDATOR_THRESHOLD) {
         newTier = 2; // Full tier
+    } else if (validatorCount >= CRITICAL_VALIDATOR_THRESHOLD) {
+        newTier = 1; // Reduced tier
     }
-
+    
     if (newTier != governanceTier) {
         governanceTier = newTier;
         emit GovernanceTierUpdated(governanceTier, validatorCount);
     }
+    
+    return governanceTier;
+}
 
     return governanceTier;
 }
@@ -471,56 +473,56 @@ contract TerraStakeGovernance is
      * @param signatures Guardian signatures approving this action
      * @return True if signatures are valid
      */
-    function validateGuardianSignatures(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures
-    ) public view returns (bool) {
-        require(signatures.length >= GUARDIAN_QUORUM, "Insufficient signatures");
+function validateGuardianSignatures(
+    bytes4 operation,
+    address target,
+    bytes calldata data,
+    bytes[] calldata signatures
+) public view returns (bool) {
+    require(signatures.length >= GUARDIAN_QUORUM, "Insufficient signatures");
+    
+    // Hash the operation details with current nonce to prevent replay
+    bytes32 messageHash = keccak256(abi.encodePacked(
+        operation,
+        target,
+        data,
+        currentNonce
+    ));
+    
+    // Prefix the hash according to EIP-191
+    bytes32 prefixedHash = keccak256(abi.encodePacked(
+        "\x19Ethereum Signed Message:\n32",
+        messageHash
+    ));
+    
+    // Track signers to prevent duplicates - using a fixed-size array
+    address[] memory signers = new address[](signatures.length);
+    uint256 validSignatures = 0;
+    
+    // Validate each signature with early exit optimization
+    for (uint256 i = 0; i < signatures.length && validSignatures < GUARDIAN_QUORUM; i++) {
+        address signer = prefixedHash.recover(signatures[i]);
         
-        // Hash the operation details with current nonce to prevent replay
-        bytes32 messageHash = keccak256(abi.encodePacked(
-            operation,
-            target,
-            data,
-            currentNonce
-        ));
-        
-        // Prefix the hash according to EIP-191
-        bytes32 prefixedHash = keccak256(abi.encodePacked(
-            "\x19Ethereum Signed Message:\n32",
-            messageHash
-        ));
-        
-        // Track signers to prevent duplicates
-        address[] memory signers = new address[](signatures.length);
-        uint256 validSignatures = 0;
-        
-        // Validate each signature
-        for (uint256 i = 0; i < signatures.length; i++) {
-            address signer = prefixedHash.recover(signatures[i]);
-            
-            // Check if signer is a guardian
-            if (guardianCouncil[signer]) {
-                // Check for duplicate signers
-                bool isDuplicate = false;
-                for (uint256 j = 0; j < validSignatures; j++) {
-                    if (signers[j] == signer) {
-                        isDuplicate = true;
-                        break;
-                    }
-                }
-                
-                if (!isDuplicate) {
-                    signers[validSignatures] = signer;
-                    validSignatures++;
+        // Check if signer is a guardian
+        if (guardianCouncil[signer]) {
+            // Check for duplicate signers with optimized loop
+            bool isDuplicate = false;
+            for (uint256 j = 0; j < validSignatures; j++) {
+                if (signers[j] == signer) {
+                    isDuplicate = true;
+                    break;
                 }
             }
+            
+            if (!isDuplicate) {
+                signers[validSignatures] = signer;
+                validSignatures++;
+            }
         }
-        
-        return validSignatures >= GUARDIAN_QUORUM;
     }
+    
+    return validSignatures >= GUARDIAN_QUORUM;
+}
     
     /**
      * @notice Override with guardian approval during extreme validator shortage

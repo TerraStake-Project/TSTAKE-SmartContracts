@@ -11,6 +11,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../interfaces/ITerraStakeInsuranceFund.sol";
 
 
+
 /**
  * @title TerraStakeInsuranceFund
  * @notice This contract implements a simple insurance fund for the TerraStake ecosystem.

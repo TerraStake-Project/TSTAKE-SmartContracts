@@ -10,6 +10,9 @@ import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/IQuoter.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeTreasuryManager.sol";
+import "../interfaces/ITerraStakeToken.sol";
+import "../interfaces/ITerraStakeTreasury.sol";
+import "../interfaces/ITerraStakeGovernance.sol";
 
 /**
  * @title TerraStakeTreasuryManager
@@ -59,6 +62,7 @@ contract TerraStakeTreasuryManager is
     IQuoter public uniswapQuoter;
     IERC20 public tStakeToken;
     IERC20 public usdcToken;
+    ITerraStakeTreasury public treasury;
     
     // Fee structure
     FeeStructure public currentFeeStructure;
@@ -92,7 +96,7 @@ contract TerraStakeTreasuryManager is
     }
     
     // -------------------------------------------
-    // 🔹 Events
+    //  Events
     // -------------------------------------------
     
     event FeeStructureUpdated(
@@ -116,6 +120,9 @@ contract TerraStakeTreasuryManager is
     event FallbackPriceUpdated(uint256 tStakePerUsdc, uint256 timestamp);
     event QuoterFailure(string reason, uint256 usdcAmount, uint256 timestamp);
     event SlippageApplied(uint256 originalAmount, uint256 slippageAmount, uint256 finalAmount);
+    event TreasuryContractUpdated(address newTreasury);
+    event RevenueForwardedToTreasury(address token, uint256 amount, string source);
+    event TreasuryAllocationCreated(address token, uint256 amount, uint256 releaseTime);
     
     // -------------------------------------------
     //  Errors
@@ -149,6 +156,7 @@ contract TerraStakeTreasuryManager is
      * @param _uniswapQuoter Address of the Uniswap V3 quoter
      * @param _initialAdmin Initial admin address
      * @param _treasuryWallet Address of the treasury wallet
+     * @param _treasury Address of the treasury contract
      */
     function initialize(
         address _liquidityGuard,
@@ -157,7 +165,8 @@ contract TerraStakeTreasuryManager is
         address _uniswapRouter,
         address _uniswapQuoter,
         address _initialAdmin,
-        address _treasuryWallet
+        address _treasuryWallet,
+        address _treasury
     ) external initializer {
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
@@ -176,6 +185,7 @@ contract TerraStakeTreasuryManager is
         uniswapRouter = ISwapRouter(_uniswapRouter);
         uniswapQuoter = IQuoter(_uniswapQuoter);
         treasuryWallet = _treasuryWallet;
+        treasury = ITerraStakeTreasury(_treasury);
         
         // Initialize fee parameters
         feeUpdateCooldown = 30 days;
@@ -355,6 +365,91 @@ contract TerraStakeTreasuryManager is
         treasuryWallet = newTreasuryWallet;
         
         emit TreasuryWalletUpdated(newTreasuryWallet);
+    }
+    
+    /**
+     * @notice Update treasury contract address
+     * @param _newTreasury Address of the new treasury contract
+     */
+    function updateTreasury(address _newTreasury) external onlyRole(GOVERNANCE_ROLE) {
+        if (_newTreasury == address(0)) revert InvalidParameters();
+        treasury = ITerraStakeTreasury(_newTreasury);
+        emit TreasuryContractUpdated(_newTreasury);
+    }
+    
+    /**
+     * @notice Send collected revenue to the treasury
+     * @param token Token address
+     * @param amount Amount to send
+     * @param source Source description
+     */
+    function sendRevenueToTreasury(address token, uint256 amount, string calldata source) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        nonReentrant 
+    {
+        if (amount == 0) revert InvalidAmount();
+        
+        _safeApprove(token, address(treasury), amount);
+        treasury.receiveRevenue(token, amount, source);
+        
+        emit RevenueForwardedToTreasury(token, amount, source);
+    }
+
+    /**
+     * @notice Request token burn through treasury
+     * @param amount Amount to burn
+     */
+    function requestTokenBurn(uint256 amount) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        nonReentrant 
+    {
+        if (amount == 0) revert InvalidAmount();
+        
+        _safeTransfer(address(tStakeToken), address(treasury), amount);
+        treasury.burnTokens(amount);
+        
+        emit TokensBurned(amount);
+    }
+    
+    /**
+     * @notice Process fees and coordinate with treasury for allocation
+     * @param amount The amount of USDC received as fees
+     * @param feeType 0 for project submission, 1 for impact reporting
+     * @param treasuryPurpose Purpose description for treasury allocation
+     */
+    function processFeesWithTreasuryAllocation(
+        uint256 amount, 
+        uint8 feeType, 
+        string calldata treasuryPurpose
+    ) external nonReentrant {
+        // Verify sender has governance role
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) revert Unauthorized();
+        
+        // Process fees as before
+        processFees(amount, feeType);
+        
+        // Calculate treasury amount
+        uint256 treasuryAmount = amount * currentFeeStructure.treasuryPercentage / 100;
+        
+        // Allocate to treasury if needed
+        if (treasuryAmount > 0) {
+            _safeApprove(address(usdcToken), address(treasury), treasuryAmount);
+            
+            // Use current time + 1 day as release time for example
+            uint256 releaseTime = block.timestamp + 1 days;
+            
+            treasury.allocateFunds(
+                address(usdcToken),
+                treasuryWallet,
+                treasuryAmount,
+                releaseTime,
+                treasuryPurpose
+            );
+            
+            emit TreasuryAllocationCreated(address(usdcToken), treasuryAmount, releaseTime);
+        }
     }
     
     /**
@@ -577,7 +672,6 @@ contract TerraStakeTreasuryManager is
                 quoterFailureCount++;
                 return _applySlippageToFallbackEstimate(usdcAmount, slippagePercentage);
             }
-            
             // Sanity check: make sure quote isn't unreasonably large
             if (expectedTStake > fallbackEstimate * MAX_PRICE_IMPACT_FACTOR) {
                 // Quote is too high compared to fallback, possibly manipulated or extreme market conditions
@@ -862,4 +956,4 @@ contract TerraStakeTreasuryManager is
     function getImpactReportingFee() external view returns (uint256) {
         return currentFeeStructure.impactReportingFee;
     }
-}
+}                    

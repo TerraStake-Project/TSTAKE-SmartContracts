@@ -25,6 +25,7 @@ import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeMetadataRenderer.sol";
 import "../interfaces/ITerraStakeToken.sol";
 
+
 /// @dev Minimal interface extending IERC20 to include burning functionality.
 interface IBurnableERC20 is IERC20 {
     function burn(uint256 amount) external;

@@ -3,6 +3,9 @@ pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./ITerraStakeLiquidityGuard.sol";
+import "./ITerraStakeTreasury.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/IQuoter.sol";
 
 /**
  * @title ITerraStakeTreasuryManager
@@ -44,6 +47,8 @@ interface ITerraStakeTreasuryManager {
     event LiquidityPairingToggled(bool enabled);
     event TStakeReceived(address sender, uint256 amount);
     event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
+    event TreasuryContractUpdated(address newTreasury);
+    event RevenueForwardedToTreasury(address token, uint256 amount, string source);
     
     // -------------------------------------------
     //  View Functions
@@ -55,8 +60,11 @@ interface ITerraStakeTreasuryManager {
     function POOL_FEE() external view returns (uint24);
     
     function liquidityGuard() external view returns (ITerraStakeLiquidityGuard);
+    function uniswapRouter() external view returns (ISwapRouter);
+    function uniswapQuoter() external view returns (IQuoter);
     function tStakeToken() external view returns (IERC20);
     function usdcToken() external view returns (IERC20);
+    function treasury() external view returns (ITerraStakeTreasury);
     function currentFeeStructure() external view returns (FeeStructure memory);
     function lastFeeUpdateTime() external view returns (uint256);
     function feeUpdateCooldown() external view returns (uint256);
@@ -64,9 +72,9 @@ interface ITerraStakeTreasuryManager {
     function liquidityPairingEnabled() external view returns (bool);
     
     function estimateMinimumTStakeOutput(uint256 usdcAmount, uint256 slippagePercentage) 
-        external view returns (uint256);
+        external returns (uint256);
         
-    function estimateTStakeForLiquidity(uint256 usdcAmount) external view returns (uint256);
+    function estimateTStakeForLiquidity(uint256 usdcAmount) external returns (uint256);
     
     // -------------------------------------------
     //  State-Changing Functions
@@ -77,8 +85,10 @@ interface ITerraStakeTreasuryManager {
         address _tStakeToken,
         address _usdcToken,
         address _uniswapRouter,
+        address _uniswapQuoter,
         address _initialAdmin,
-        address _treasuryWallet
+        address _treasuryWallet,
+        address _treasury
     ) external;
     
     function updateFeeStructure(FeeStructure calldata newFeeStructure) external;
@@ -97,6 +107,8 @@ interface ITerraStakeTreasuryManager {
     
     function updateTreasuryWallet(address newTreasuryWallet) external;
     
+    function updateTreasury(address _newTreasury) external;
+    
     function toggleLiquidityPairing(bool enabled) external;
     
     function emergencyRecoverTokens(
@@ -109,16 +121,23 @@ interface ITerraStakeTreasuryManager {
     
     function updateUniswapRouter(address _newRouter) external;
     
+    function updateUniswapQuoter(address _newQuoter) external;
+    
     function updateLiquidityGuard(address _newLiquidityGuard) external;
     
     function updateFeeUpdateCooldown(uint256 _newCooldown) external;
     
     function processFees(uint256 amount, uint8 feeType) external;
     
-    /**
-     * @notice Withdraws USDC equivalent of the specified amount
-     * @param amount The amount to convert to USDC
-     * @return The amount of USDC withdrawn
-     */
+    function sendRevenueToTreasury(address token, uint256 amount, string calldata source) external;
+    
+    function requestTokenBurn(uint256 amount) external;
+    
+    function processFeesWithTreasuryAllocation(
+        uint256 amount, 
+        uint8 feeType, 
+        string calldata treasuryPurpose
+    ) external;
+    
     function withdrawUSDCEquivalent(uint256 amount) external returns (uint256);
 }

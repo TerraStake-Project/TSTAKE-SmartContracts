@@ -60,7 +60,8 @@ contract TerraStakeValidatorSafety is
     // -------------------------------------------
     //  Events
     // -------------------------------------------
-    
+
+    eatorPerformanceRecorded(address indexed validator, bool successful, uint256 newScore);
     event ValidatorAdded(address indexed validator);
     event ValidatorRemoved(address indexed validator);
     event ValidatorThresholdUpdated(uint256 newThreshold);
@@ -331,6 +332,39 @@ contract TerraStakeValidatorSafety is
         
         lastValidatorActivity[validator] = block.timestamp;
     }
+
+    /**
+ * @notice Records validator activity to track engagement
+ * @param validator Validator address
+ */
+function recordValidatorActivity(address validator) external {
+    // Only validators can record their own activity
+    if (!hasRole(VALIDATOR_ROLE, validator)) revert Unauthorized();
+    if (msg.sender != validator) revert Unauthorized();
+    
+    lastValidatorActivity[validator] = block.timestamp;
+}
+
+/**
+ * @notice Records validator performance metrics
+ * @param validator Validator address
+ * @param successful Whether the attestation was successful
+ */
+function recordValidatorPerformance(address validator, bool successful) external onlyRole(VALIDATOR_ROLE) {
+    if (successful) {
+        validatorSuccessfulAttestations[validator]++;
+    } else {
+        validatorMissedAttestations[validator]++;
+    }
+    
+    // Update performance score (e.g., success rate percentage)
+    uint256 total = validatorSuccessfulAttestations[validator] + validatorMissedAttestations[validator];
+    validatorPerformanceScore[validator] = total > 0 
+        ? (validatorSuccessfulAttestations[validator] * 100) / total 
+        : 0;
+        
+    emit ValidatorPerformanceRecorded(validator, successful, validatorPerformanceScore[validator]);
+}
     
     // -------------------------------------------
     //  Emergency Functions
