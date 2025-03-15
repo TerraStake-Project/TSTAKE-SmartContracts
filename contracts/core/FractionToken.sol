@@ -17,6 +17,7 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeToken.sol";
+import "../interfaces/IAntiBot.sol";
 
 /**
  * @title ISecondaryMarketCallback

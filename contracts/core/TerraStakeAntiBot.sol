@@ -22,7 +22,8 @@ contract AntiBot is
     Initializable,
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    IAntiBot
 {
     // ================================
     //  Custom Errors

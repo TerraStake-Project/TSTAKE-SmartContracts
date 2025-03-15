@@ -10,6 +10,7 @@ import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/IQuoter.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeTreasuryManager.sol";
+import "../interfaces/IAntiBot.sol";
 
 /**
  * @title TerraStakeTreasuryManager
