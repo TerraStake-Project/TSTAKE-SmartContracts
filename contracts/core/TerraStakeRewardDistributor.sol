@@ -15,7 +15,6 @@ import "../interfaces/ITerraStakeRewardDistributor.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeSlashing.sol";
-import "../interfaces/IAntiBot.sol";
 
 /**
  * @title TerraStakeRewardDistributor

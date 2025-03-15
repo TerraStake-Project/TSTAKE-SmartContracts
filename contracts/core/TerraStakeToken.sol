@@ -15,7 +15,6 @@ import "@uniswap/v3-core/contracts/libraries/TickMath.sol";
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
-import "../interfaces/IAntiBot.sol";
 
 /**
  * @title TerraStakeToken

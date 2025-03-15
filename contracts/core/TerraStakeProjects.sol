@@ -15,7 +15,7 @@ import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeMarketplace.sol";
-import "../interfaces/IAntiBot.sol";
+
 
 /**
  * @title TerraStakeProjects 

@@ -14,7 +14,6 @@ import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeRewardDistributor.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
-import "../interfaces/IAntiBot.sol";
 
 /**
  * @title TerraStakeGovernance

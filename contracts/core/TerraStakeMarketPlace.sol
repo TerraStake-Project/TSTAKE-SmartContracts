@@ -18,7 +18,7 @@ import "../interfaces/ITerraStakeMetadataRenderer.sol";
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
-import "../interfaces/IAntiBot.sol";
+
 
 // Custom errors
 error NotAuthorized();
