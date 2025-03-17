@@ -275,32 +275,28 @@ contract TerraStakeGovernance is
     //  Validator Safety Mechanisms
     // -------------------------------------------
     
-/**
- * @notice Updates governance tier based on validator count
- * @return The updated governance tier
- */
-function updateGovernanceTier() public returns (uint8) {
-    uint256 validatorCount = stakingContract.getValidatorCount();
-    
-    // Gas-optimized tier calculation
-    uint8 newTier = 0; // Default to Emergency tier
-    if (validatorCount >= OPTIMAL_VALIDATOR_THRESHOLD) {
-        newTier = 2; // Full tier
-    } else if (validatorCount >= CRITICAL_VALIDATOR_THRESHOLD) {
-        newTier = 1; // Reduced tier
+    /**
+     * @notice Updates governance tier based on validator count
+     * @return The updated governance tier
+     */
+    function updateGovernanceTier() public returns (uint8) {
+        uint256 validatorCount = stakingContract.getValidatorCount();
+        
+        // Gas-optimized tier calculation
+        uint8 newTier = 0; // Default to Emergency tier
+        if (validatorCount >= OPTIMAL_VALIDATOR_THRESHOLD) {
+            newTier = 2; // Full tier
+        } else if (validatorCount >= CRITICAL_VALIDATOR_THRESHOLD) {
+            newTier = 1; // Reduced tier
+        }
+        
+        if (newTier != governanceTier) {
+            governanceTier = newTier;
+            emit GovernanceTierUpdated(governanceTier, validatorCount);
+        }
+        
+        return governanceTier;
     }
-    
-    if (newTier != governanceTier) {
-        governanceTier = newTier;
-        emit GovernanceTierUpdated(governanceTier, validatorCount);
-    }
-    
-    return governanceTier;
-}
-
-    return governanceTier;
-}
-
     
     /**
      * @notice Validates if proposal type is allowed in current governance tier
@@ -473,56 +469,56 @@ function updateGovernanceTier() public returns (uint8) {
      * @param signatures Guardian signatures approving this action
      * @return True if signatures are valid
      */
-function validateGuardianSignatures(
-    bytes4 operation,
-    address target,
-    bytes calldata data,
-    bytes[] calldata signatures
-) public view returns (bool) {
-    require(signatures.length >= GUARDIAN_QUORUM, "Insufficient signatures");
-    
-    // Hash the operation details with current nonce to prevent replay
-    bytes32 messageHash = keccak256(abi.encodePacked(
-        operation,
-        target,
-        data,
-        currentNonce
-    ));
-    
-    // Prefix the hash according to EIP-191
-    bytes32 prefixedHash = keccak256(abi.encodePacked(
-        "\x19Ethereum Signed Message:\n32",
-        messageHash
-    ));
-    
-    // Track signers to prevent duplicates - using a fixed-size array
-    address[] memory signers = new address[](signatures.length);
-    uint256 validSignatures = 0;
-    
-    // Validate each signature with early exit optimization
-    for (uint256 i = 0; i < signatures.length && validSignatures < GUARDIAN_QUORUM; i++) {
-        address signer = prefixedHash.recover(signatures[i]);
+    function validateGuardianSignatures(
+        bytes4 operation,
+        address target,
+        bytes calldata data,
+        bytes[] calldata signatures
+    ) public view returns (bool) {
+        require(signatures.length >= GUARDIAN_QUORUM, "Insufficient signatures");
         
-        // Check if signer is a guardian
-        if (guardianCouncil[signer]) {
-            // Check for duplicate signers with optimized loop
-            bool isDuplicate = false;
-            for (uint256 j = 0; j < validSignatures; j++) {
-                if (signers[j] == signer) {
-                    isDuplicate = true;
-                    break;
+        // Hash the operation details with current nonce to prevent replay
+        bytes32 messageHash = keccak256(abi.encodePacked(
+            operation,
+            target,
+            data,
+            currentNonce
+        ));
+        
+        // Prefix the hash according to EIP-191
+        bytes32 prefixedHash = keccak256(abi.encodePacked(
+            "\x19Ethereum Signed Message:\n32",
+            messageHash
+        ));
+        
+        // Track signers to prevent duplicates - using a fixed-size array
+        address[] memory signers = new address[](signatures.length);
+        uint256 validSignatures = 0;
+        
+        // Validate each signature with early exit optimization
+        for (uint256 i = 0; i < signatures.length && validSignatures < GUARDIAN_QUORUM; i++) {
+            address signer = prefixedHash.recover(signatures[i]);
+            
+            // Check if signer is a guardian
+            if (guardianCouncil[signer]) {
+                // Check for duplicate signers with optimized loop
+                bool isDuplicate = false;
+                for (uint256 j = 0; j < validSignatures; j++) {
+                    if (signers[j] == signer) {
+                        isDuplicate = true;
+                        break;
+                    }
+                }
+                
+                if (!isDuplicate) {
+                    signers[validSignatures] = signer;
+                    validSignatures++;
                 }
             }
-            
-            if (!isDuplicate) {
-                signers[validSignatures] = signer;
-                validSignatures++;
-            }
         }
+        
+        return validSignatures >= GUARDIAN_QUORUM;
     }
-    
-    return validSignatures >= GUARDIAN_QUORUM;
-}
     
     /**
      * @notice Override with guardian approval during extreme validator shortage
@@ -1315,46 +1311,46 @@ function validateGuardianSignatures(
     }
     
     /**
- * @notice Emergency recovery of tokens accidentally sent to contract
- * @param token Token address
- * @param amount Amount to recover
- * @param recipient Recipient address
- */
-function emergencyRecoverTokens(
-    address token,
-    uint256 amount,
-    address recipient
-) external onlyRole(GUARDIAN_ROLE) {
-    require(recipient != address(0), "Invalid recipient");
-    
-    IERC20(token).transfer(recipient, amount);
-    
-    emit EmergencyTokenRecovery(token, amount, recipient);
-}
+     * @notice Emergency recovery of tokens accidentally sent to contract
+     * @param token Token address
+     * @param amount Amount to recover
+     * @param recipient Recipient address
+     */
+    function emergencyRecoverTokens(
+        address token,
+        uint256 amount,
+        address recipient
+    ) external onlyRole(GUARDIAN_ROLE) {
+        require(recipient != address(0), "Invalid recipient");
+        
+        IERC20(token).transfer(recipient, amount);
+        
+        emit EmergencyTokenRecovery(token, amount, recipient);
+    }
 
-// -------------------------------------------
-//  TStake Token Reception
-// -------------------------------------------
+    // -------------------------------------------
+    //  TStake Token Reception
+    // -------------------------------------------
 
-/**
- * @notice Handle notification of TSTAKE tokens received
- * @dev Since ERC20 transfers don't trigger contract code, this function must be called after sending tokens
- * @param sender Address that sent the tokens
- * @param amount Amount of TSTAKE tokens received
- */
-function notifyTStakeReceived(address sender, uint256 amount) external {
-    // Verify the transfer occurred by checking current balance
-    uint256 contractBalance = tStakeToken.balanceOf(address(this));
-    require(contractBalance >= amount, "TSTAKE transfer verification failed");
-    
-    emit TStakeReceived(sender, amount);
-}
+    /**
+     * @notice Handle notification of TSTAKE tokens received
+     * @dev Since ERC20 transfers don't trigger contract code, this function must be called after sending tokens
+     * @param sender Address that sent the tokens
+     * @param amount Amount of TSTAKE tokens received
+     */
+    function notifyTStakeReceived(address sender, uint256 amount) external {
+        // Verify the transfer occurred by checking current balance
+        uint256 contractBalance = tStakeToken.balanceOf(address(this));
+        require(contractBalance >= amount, "TSTAKE transfer verification failed");
+        
+        emit TStakeReceived(sender, amount);
+    }
 
-/**
- * @notice Allow contract to receive TSTAKE
- * @dev This is a fallback to maintain compatibility with ETH sends, but TSTAKE should use notifyTStakeReceived
- */
-receive() external payable {
-    emit TStakeReceived(msg.sender, msg.value);
-}
+    /**
+     * @notice Allow contract to receive TSTAKE
+     * @dev This is a fallback to maintain compatibility with ETH sends, but TSTAKE should use notifyTStakeReceived
+     */
+    receive() external payable {
+        emit TStakeReceived(msg.sender, msg.value);
+    }
 }

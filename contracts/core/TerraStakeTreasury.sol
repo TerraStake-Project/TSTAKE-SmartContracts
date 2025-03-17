@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/structs/EnumerableSetUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
 import "../interfaces/IAntiBot.sol";
 import "../interfaces/ITerraStakeITO.sol";
 import "../interfaces/ITerraStakeToken.sol";
+
+/// @dev Minimal interface extending IERC20 to include burning functionality.
+interface IBurnableERC20 is IERC20 {
+    function burn(uint256 amount) external;
+}
 
 /**
  * @title TerraStakeTreasury
@@ -26,8 +31,8 @@ contract TerraStakeTreasury is
     PausableUpgradeable,
     UUPSUpgradeable 
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
-    using EnumerableSetUpgradeable for EnumerableSetUpgradeable.AddressSet;
+    using SafeERC20 for IERC20;
+    using EnumerableSet for EnumerableSet.AddressSet;
 
     // ================================
     //  Constants & Roles
@@ -47,8 +52,8 @@ contract TerraStakeTreasury is
     IBurnableERC20 public tStakeToken;
     ITerraStakeITO public itoContract;
     
-    EnumerableSetUpgradeable.AddressSet private whitelistedTokens;
-    EnumerableSetUpgradeable.AddressSet private whitelistedReceivers;
+    EnumerableSet.AddressSet private whitelistedTokens;
+    EnumerableSet.AddressSet private whitelistedReceivers;
     
     // Withdrawal limits
     mapping(address => uint256) public dailyLimits;
@@ -279,7 +284,7 @@ contract TerraStakeTreasury is
         require(whitelistedReceivers.contains(receiver), "Receiver not whitelisted");
         require(amount > 0, "Amount must be greater than 0");
         require(releaseTime > block.timestamp, "Release time must be in future");
-        require(IERC20Upgradeable(token).balanceOf(address(this)) >= amount, "Insufficient balance");
+        require(IERC20(token).balanceOf(address(this)) >= amount, "Insufficient balance");
         
         // Apply AntiBot protection if configured
         if (address(antiBot) != address(0)) {
@@ -331,7 +336,7 @@ contract TerraStakeTreasury is
         dailyWithdrawn[token] += allocation.amount;
         
         // Transfer funds
-        IERC20Upgradeable(token).safeTransfer(msg.sender, allocation.amount);
+        IERC20(token).safeTransfer(msg.sender, allocation.amount);
         
         emit FundsReleased(token, msg.sender, allocation.amount, allocation.purpose);
     }
@@ -408,7 +413,7 @@ contract TerraStakeTreasury is
         
         // Third pass: transfer funds (one transfer per token type for gas efficiency)
         for (uint256 i = 0; i < uniqueTokenCount; i++) {
-            IERC20Upgradeable(tokensToTransfer[i]).safeTransfer(msg.sender, amountsToTransfer[i]);
+            IERC20(tokensToTransfer[i]).safeTransfer(msg.sender, amountsToTransfer[i]);
         }
     }
     
@@ -426,7 +431,7 @@ contract TerraStakeTreasury is
         require(whitelistedTokens.contains(token), "Token not whitelisted");
         
         // Transfer tokens from sender to treasury
-        IERC20Upgradeable(token).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         
         emit RevenueReceived(token, amount, source);
     }
@@ -469,7 +474,7 @@ contract TerraStakeTreasury is
             whitelistedReceivers.contains(reserveAddress),
             "Receivers not whitelisted"
         );
-        require(IERC20Upgradeable(token).balanceOf(address(this)) >= amount, "Insufficient balance");
+        require(IERC20(token).balanceOf(address(this)) >= amount, "Insufficient balance");
         
         // Calculate amounts based on distribution percentages
         uint256 developmentAmount = (amount * fundDistribution.developmentShare) / 100;
@@ -478,10 +483,10 @@ contract TerraStakeTreasury is
         uint256 reserveAmount = amount - developmentAmount - marketingAmount - communityAmount;
         
         // Transfer funds
-        IERC20Upgradeable(token).safeTransfer(developmentAddress, developmentAmount);
-        IERC20Upgradeable(token).safeTransfer(marketingAddress, marketingAmount);
-        IERC20Upgradeable(token).safeTransfer(communityAddress, communityAmount);
-        IERC20Upgradeable(token).safeTransfer(reserveAddress, reserveAmount);
+        IERC20(token).safeTransfer(developmentAddress, developmentAmount);
+        IERC20(token).safeTransfer(marketingAddress, marketingAmount);
+        IERC20(token).safeTransfer(communityAddress, communityAmount);
+        IERC20(token).safeTransfer(reserveAddress, reserveAmount);
     }
     
     // ================================
@@ -497,9 +502,9 @@ contract TerraStakeTreasury is
     function emergencyWithdraw(address token, address receiver, uint256 amount) external onlyRole(EMERGENCY_ROLE) nonReentrant {
         require(token != address(0) && receiver != address(0), "Invalid addresses");
         require(amount > 0, "Amount must be greater than 0");
-        require(IERC20Upgradeable(token).balanceOf(address(this)) >= amount, "Insufficient balance");
+        require(IERC20(token).balanceOf(address(this)) >= amount, "Insufficient balance");
         
-        IERC20Upgradeable(token).safeTransfer(receiver, amount);
+        IERC20(token).safeTransfer(receiver, amount);
         emit EmergencyWithdrawal(token, receiver, amount);
     }
     

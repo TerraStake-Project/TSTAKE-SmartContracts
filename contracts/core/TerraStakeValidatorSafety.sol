@@ -70,51 +70,6 @@ contract TerraStakeValidatorSafety is
     bool public autoSuspendHighRiskValidators;
     
     // -------------------------------------------
-    //  Events
-    // -------------------------------------------
-    
-    event ValidatorAdded(address indexed validator);
-    event ValidatorRemoved(address indexed validator);
-    event ValidatorThresholdUpdated(uint256 newThreshold);
-    event ValidatorQuorumUpdated(uint256 newQuorum);
-    event GovernanceTierUpdated(uint8 tierId, uint256 newThreshold);
-    event ValidatorCooldownUpdated(uint256 newCooldown);
-    event RiskScoreUpdated(address indexed validator, uint256 newScore);
-    event RiskScoreThresholdUpdated(uint256 newThreshold);
-    event EmergencyModeActivated(address activator);
-    event EmergencyModeDeactivated(address deactivator);
-    event EmergencyCooldownUpdated(uint256 newCooldown);
-    event EmergencyValidatorThresholdReduction(uint256 oldThreshold, uint256 newThreshold);
-    event ValidatorActivityRecorded(address indexed validator, address recorder);
-    event ValidatorInactivityThresholdUpdated(uint256 newThreshold);
-    event OperationScheduled(bytes32 indexed operationId, uint256 executionTime);
-    event OperationExecuted(bytes32 indexed operationId);
-    event OperationCancelled(bytes32 indexed operationId);
-    event ValidatorSuspended(address indexed validator, uint256 riskScore);
-    event AutoSuspendModeUpdated(bool enabled);
-    event TimelockPeriodUpdated(uint256 newPeriod);
-    
-    // -------------------------------------------
-    //  Errors
-    // -------------------------------------------
-    
-    error Unauthorized();
-    error InvalidParameters();
-    error CooldownActive();
-    error ValidatorNotActive();
-    error ValidatorAlreadyActive();
-    error EmergencyModeActive();
-    error EmergencyModeNotActive();
-    error EmergencyCooldownActive();
-    error ThresholdTooLow();
-    error QuorumTooHigh();
-    error ExceedsActiveValidatorCount();
-    error ZeroAddressNotAllowed();
-    error OperationNotScheduled();
-    error TimelockNotExpired();
-    error InsufficientActiveValidators();
-    
-    // -------------------------------------------
     //  Modifiers
     // -------------------------------------------
     
