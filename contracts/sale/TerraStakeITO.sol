@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "../interfaces/IAntiBot.sol";
 
 /// @dev Minimal interface extending IERC20 to include burning functionality.
 interface IBurnableERC20 is IERC20 {
@@ -15,11 +16,16 @@ interface IBurnableERC20 is IERC20 {
 /**
  * @title TerraStakeITO
  * @notice Official TerraStake Initial Token Offering (ITO) contract with structured vesting, liquidity management,
- *         unsold token burning, emergency controls, and transparent reporting.
+ * unsold token burning, emergency controls, transparent reporting, and anti-bot protection.
  * @dev Handles token sales, dynamic pricing, liquidity injection, vesting schedules, blacklist management,
- *      emergency withdrawals, and unsold token burning.
+ * emergency withdrawals, unsold token burning, and transaction validation through AntiBot system.
  */
 contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
+    // ================================
+    //  AntiBot Integration
+    // ================================
+    IAntiBot public antiBot;
+    
     // ================================
     //  Constants & Roles
     // ================================
@@ -130,6 +136,15 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         vestingSchedules[VestingType.Liquidity] = VestingSchedule(0, 0, block.timestamp + 365 days, 730 days, 0, block.timestamp);
     }
 
+    /**
+     * @notice Sets the AntiBot contract address for transaction validation
+     * @param _antiBot Address of the AntiBot contract
+     */
+    function setAntiBot(address _antiBot) external onlyRole(GOVERNANCE_ROLE) {
+        require(_antiBot != address(0), "Invalid AntiBot address");
+        antiBot = IAntiBot(_antiBot);
+    }
+
     // ================================
     //  Administrative Controls
     // ================================
@@ -225,6 +240,12 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         require(!purchasesPaused, "Purchases paused");
         require(!blacklist[msg.sender], "Address blacklisted");
         require(usdcAmount >= minPurchaseUSDC && usdcAmount <= maxPurchaseUSDC, "Invalid purchase amount");
+        
+        // Add AntiBot validation if configured
+        if (address(antiBot) != address(0)) {
+            require(antiBot.validateTransfer(msg.sender, address(this), usdcAmount), "AntiBot: Transfer rejected");
+        }
+        
         uint256 tokenAmount = (usdcAmount * 10**18) / getCurrentPrice();
         require(tokenAmount >= minTokensOut, "Slippage exceeded");
         require(tokensSold + tokenAmount <= MAX_TOKENS_FOR_ITO, "Exceeds allocation");
@@ -334,3 +355,4 @@ contract TerraStakeITO is AccessControlEnumerable, ReentrancyGuard {
         );
     }
 }
+

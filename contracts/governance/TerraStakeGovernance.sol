@@ -280,25 +280,23 @@ contract TerraStakeGovernance is
      * @return The updated governance tier
      */
     function updateGovernanceTier() public returns (uint8) {
-    uint256 validatorCount = stakingContract.getValidatorCount();
-
-    uint8 newTier;
-    if (validatorCount < CRITICAL_VALIDATOR_THRESHOLD) {
-        newTier = 0; // Emergency tier
-    } else if (validatorCount < OPTIMAL_VALIDATOR_THRESHOLD) {
-        newTier = 1; // Reduced tier
-    } else {
-        newTier = 2; // Full tier
+        uint256 validatorCount = stakingContract.getValidatorCount();
+        
+        // Gas-optimized tier calculation
+        uint8 newTier = 0; // Default to Emergency tier
+        if (validatorCount >= OPTIMAL_VALIDATOR_THRESHOLD) {
+            newTier = 2; // Full tier
+        } else if (validatorCount >= CRITICAL_VALIDATOR_THRESHOLD) {
+            newTier = 1; // Reduced tier
+        }
+        
+        if (newTier != governanceTier) {
+            governanceTier = newTier;
+            emit GovernanceTierUpdated(governanceTier, validatorCount);
+        }
+        
+        return governanceTier;
     }
-
-    if (newTier != governanceTier) {
-        governanceTier = newTier;
-        emit GovernanceTierUpdated(governanceTier, validatorCount);
-    }
-
-    return governanceTier;
-}
-
     
     /**
      * @notice Validates if proposal type is allowed in current governance tier
@@ -493,17 +491,17 @@ contract TerraStakeGovernance is
             messageHash
         ));
         
-        // Track signers to prevent duplicates
+        // Track signers to prevent duplicates - using a fixed-size array
         address[] memory signers = new address[](signatures.length);
         uint256 validSignatures = 0;
         
-        // Validate each signature
-        for (uint256 i = 0; i < signatures.length; i++) {
+        // Validate each signature with early exit optimization
+        for (uint256 i = 0; i < signatures.length && validSignatures < GUARDIAN_QUORUM; i++) {
             address signer = prefixedHash.recover(signatures[i]);
             
             // Check if signer is a guardian
             if (guardianCouncil[signer]) {
-                // Check for duplicate signers
+                // Check for duplicate signers with optimized loop
                 bool isDuplicate = false;
                 for (uint256 j = 0; j < validSignatures; j++) {
                     if (signers[j] == signer) {
@@ -1313,46 +1311,46 @@ contract TerraStakeGovernance is
     }
     
     /**
- * @notice Emergency recovery of tokens accidentally sent to contract
- * @param token Token address
- * @param amount Amount to recover
- * @param recipient Recipient address
- */
-function emergencyRecoverTokens(
-    address token,
-    uint256 amount,
-    address recipient
-) external onlyRole(GUARDIAN_ROLE) {
-    require(recipient != address(0), "Invalid recipient");
-    
-    IERC20(token).transfer(recipient, amount);
-    
-    emit EmergencyTokenRecovery(token, amount, recipient);
-}
+     * @notice Emergency recovery of tokens accidentally sent to contract
+     * @param token Token address
+     * @param amount Amount to recover
+     * @param recipient Recipient address
+     */
+    function emergencyRecoverTokens(
+        address token,
+        uint256 amount,
+        address recipient
+    ) external onlyRole(GUARDIAN_ROLE) {
+        require(recipient != address(0), "Invalid recipient");
+        
+        IERC20(token).transfer(recipient, amount);
+        
+        emit EmergencyTokenRecovery(token, amount, recipient);
+    }
 
-// -------------------------------------------
-//  TStake Token Reception
-// -------------------------------------------
+    // -------------------------------------------
+    //  TStake Token Reception
+    // -------------------------------------------
 
-/**
- * @notice Handle notification of TSTAKE tokens received
- * @dev Since ERC20 transfers don't trigger contract code, this function must be called after sending tokens
- * @param sender Address that sent the tokens
- * @param amount Amount of TSTAKE tokens received
- */
-function notifyTStakeReceived(address sender, uint256 amount) external {
-    // Verify the transfer occurred by checking current balance
-    uint256 contractBalance = tStakeToken.balanceOf(address(this));
-    require(contractBalance >= amount, "TSTAKE transfer verification failed");
-    
-    emit TStakeReceived(sender, amount);
-}
+    /**
+     * @notice Handle notification of TSTAKE tokens received
+     * @dev Since ERC20 transfers don't trigger contract code, this function must be called after sending tokens
+     * @param sender Address that sent the tokens
+     * @param amount Amount of TSTAKE tokens received
+     */
+    function notifyTStakeReceived(address sender, uint256 amount) external {
+        // Verify the transfer occurred by checking current balance
+        uint256 contractBalance = tStakeToken.balanceOf(address(this));
+        require(contractBalance >= amount, "TSTAKE transfer verification failed");
+        
+        emit TStakeReceived(sender, amount);
+    }
 
-/**
- * @notice Allow contract to receive TSTAKE
- * @dev This is a fallback to maintain compatibility with ETH sends, but TSTAKE should use notifyTStakeReceived
- */
-receive() external payable {
-    emit TStakeReceived(msg.sender, msg.value);
-}
+    /**
+     * @notice Allow contract to receive TSTAKE
+     * @dev This is a fallback to maintain compatibility with ETH sends, but TSTAKE should use notifyTStakeReceived
+     */
+    receive() external payable {
+        emit TStakeReceived(msg.sender, msg.value);
+    }
 }

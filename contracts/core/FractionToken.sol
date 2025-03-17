@@ -10,6 +10,7 @@ import "@openzeppelin/contracts-upgradeable/token/ERC1155/utils/ERC1155HolderUpg
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
@@ -18,15 +19,36 @@ import "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInte
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeToken.sol";
 
+
+/**
+ * @title ISecondaryMarketCallback
+ * @dev Interface for secondary markets to receive notifications about fraction token transfers
+ */
+interface ISecondaryMarketCallback {
+    /**
+     * @dev Called when a fraction token transfer occurs
+     * @param from The address sending the tokens
+     * @param to The address receiving the tokens
+     * @param fractionToken The address of the fraction token
+     * @param amount The amount of tokens transferred
+     */
+    function onFractionTransfer(
+        address from,
+        address to,
+        address fractionToken,
+        uint256 amount
+    ) external;
+}
+
 /**
  * @title FractionToken
  * @dev ERC20 token representing fractions of a TerraStake NFT
  */
 contract FractionToken is ERC20Upgradeable, ERC20BurnableUpgradeable, ERC20PermitUpgradeable {
+    string public _name;
+    string public _symbol;
     uint256 public immutable nftId;
     address public immutable fractionManager;
-    
-    // Storing impact data directly in the token for transparency
     uint256 public immutable impactValue;
     ITerraStakeNFT.ProjectCategory public immutable projectCategory;
     bytes32 public immutable projectDataHash;
@@ -45,6 +67,8 @@ contract FractionToken is ERC20Upgradeable, ERC20BurnableUpgradeable, ERC20Permi
         __ERC20Burnable_init();
         __ERC20Permit_init(name);
         
+        _name = name;
+        _symbol = symbol;
         nftId = _nftId;
         fractionManager = _fractionManager;
         impactValue = _impactValue;
@@ -60,8 +84,25 @@ contract FractionToken is ERC20Upgradeable, ERC20BurnableUpgradeable, ERC20Permi
     function burnAll(address account) public {
         uint256 balance = balanceOf(account); // Get the caller's balance
         require(balance > 0, "No tokens to burn"); // Ensure the caller has tokens
-
         _burn(account, balance); // Burn all tokens from the caller
+    }
+
+    /**
+     * @dev Updates the token name
+     * @param newName The new token name
+     */
+    function updateName(string memory newName) external {
+        require(msg.sender == fractionManager, "Only fraction manager can update");
+        _name = newName;
+    }
+    
+    /**
+     * @dev Updates the token symbol
+     * @param newSymbol The new token symbol
+     */
+    function updateSymbol(string memory newSymbol) external {
+        require(msg.sender == fractionManager, "Only fraction manager can update");
+        _symbol = newSymbol;
     }
 }
 
@@ -70,7 +111,8 @@ contract FractionToken is ERC20Upgradeable, ERC20BurnableUpgradeable, ERC20Permi
  * @dev Combined contract for fractionalization of TerraStake NFTs and governance
  * with integrated multisig and oracle-based pricing
  */
-contract TerraStakeFractionManager is 
+contract TerraStakeFractionManager is
+    Initializable,
     ERC1155HolderUpgradeable, 
     AccessControlEnumerableUpgradeable, 
     ReentrancyGuardUpgradeable, 
@@ -101,7 +143,7 @@ contract TerraStakeFractionManager is
     // =====================================================
     ITerraStakeNFT public immutable terraStakeNFT;
     ITerraStakeToken public immutable tStakeToken;
-    
+
     // Constants
     uint256 public constant MAX_FRACTION_SUPPLY = 1e27;  // 1 billion tokens with 18 decimals
     uint256 public constant MIN_LOCK_PERIOD = 1 days;
@@ -109,6 +151,30 @@ contract TerraStakeFractionManager is
     uint256 public constant BASIS_POINTS = 10000;        // 100% in basis points
     uint256 public constant DEFAULT_TIMELOCK = 2 days;   // Default timelock period
     uint256 public constant MAX_PRICE_CHANGE_PERCENT = 2000; // 20% in basis points
+
+    // =====================================================
+    // User Analytics Structs and Mappings
+    // =====================================================
+    struct UserTradeData {
+        uint256 timestamp;
+        address fractionToken;
+        bool isBuy;
+        uint256 amount;
+        uint256 price;
+    }
+
+    // User portfolio tracking
+    mapping(address => EnumerableSet.AddressSet) private userPortfolios;
+    mapping(address => mapping(address => uint256)) private userFractionBalances;
+    mapping(address => UserTradeData[]) private userTradeHistory;
+    mapping(address => uint256) private userTradingVolume;
+
+    // =====================================================
+    // Secondary Market Integration
+    // =====================================================
+    mapping(address => bool) public registeredMarkets;
+    EnumerableSet.AddressSet private secondaryMarkets;
+    bool public secondaryMarketIntegrationEnabled = true;
 
     // =====================================================
     // Fractionalization Structs
@@ -165,7 +231,17 @@ contract TerraStakeFractionManager is
         bool canceled;             // Whether the proposal was canceled
         uint256 executionTime;     // When the proposal can be executed (timelock)
         EnumerableSet.AddressSet approvers; // Who has approved
+        uint256 votingPower;       // Total voting power of approvers including delegations
+        bytes32 actionHash;        // Hash of target address and calldata to verify execution
     }
+
+    // =====================================================
+    // Delegation System
+    // =====================================================
+    mapping(address => address) private delegates;
+    mapping(address => mapping(address => uint256)) private delegatedAmounts;
+    mapping(address => uint256) private totalDelegatedToMe;
+    mapping(address => EnumerableSet.AddressSet) private myDelegators;
 
     struct OracleConfig {
         address oracle;           // Chainlink price feed address
@@ -219,7 +295,7 @@ contract TerraStakeFractionManager is
     error InvalidTimelock();
     error OnlyCreatorCanCancel();
     error FractionalizationStillActive();
-
+    error ActionHashMismatch();
     // =====================================================
     // Fractionalization state variables
     // =====================================================
@@ -228,18 +304,34 @@ contract TerraStakeFractionManager is
     uint256 public tradingFeePercentage;   // Percentage fee on fraction trades (basis points)
     address public treasuryWallet;         // Treasury wallet for fees
     address public impactFundWallet;       // Impact fund wallet
-    
+
+    // Automatic fee adjustment system
+    struct FeeAdjustmentConfig {
+        uint256 targetUtilization;     // Target utilization rate (e.g., 80%)
+        uint256 utilizationTolerance;  // Acceptable deviation (e.g., 5%)
+        uint256 adjustmentIncrement;   // Fee adjustment step (e.g., 0.1%)
+        uint256 minFeeRate;            // Minimum fee rate (e.g., 0.5%)
+        uint256 maxFeeRate;            // Maximum fee rate (e.g., 10%)
+        uint256 adjustmentCooldown;    // Time between adjustments (e.g., 24 hours)
+        uint256 lastAdjustmentTime;    // Timestamp of last adjustment
+        bool autoAdjustEnabled;        // Toggle for automatic adjustment
+    }
+
+    FeeAdjustmentConfig public feeAdjustmentConfig;
+
     // Fraction tracking
     mapping(address => FractionData) public fractionData;  // Fraction token address => FractionData
     mapping(uint256 => address) public nftToFractionToken; // NFT ID => Fraction token address
     mapping(address => FractionMarketData) public marketData; // Fraction token address => Market data
-    
+
     // Redemption offers
     mapping(address => uint256) public redemptionOffers; // Fraction token => Redemption price
     mapping(address => address) public redemptionOfferors; // Fraction token => Offeror address
     // Analytics tracking
-    address[] public allFractionTokens; // Array of all fraction tokens ever created
+    // Array of all fraction tokens ever created
+    EnumerableSet.AddressSet private allFractionTokens;
     uint256 public totalVolumeTraded; // Total volume traded across all fraction tokens
+
 
     // =====================================================
     // Governance state variables
@@ -247,22 +339,22 @@ contract TerraStakeFractionManager is
     uint256 public governanceThreshold; // Number of signatures required for governance actions
     uint256 public emergencyThreshold;  // Number of signatures required for emergency actions
     uint256 public proposalExpiryTime;  // Time after which a proposal expires
-    
+
     // Maps proposal IDs to proposals
     mapping(bytes32 => Proposal) private proposals;
-    
+
     // All proposal IDs for enumeration
     EnumerableSet.Bytes32Set private allProposals;
-    
+
     // Maps token addresses to oracle configurations
     mapping(address => OracleConfig) public tokenOracles;
-    
+
     // Tokens with oracle price feeds
     EnumerableSet.AddressSet private tokenWithOracles;
-    
+
     // Timelock configuration
     TimelockConfig public timelockConfig;
-    
+
     // Keeper configuration
     uint256 public lastKeeperUpdate;
     uint256 public keeperUpdateInterval;
@@ -271,7 +363,7 @@ contract TerraStakeFractionManager is
     // =====================================================
     // Events
     // =====================================================
-    // Fractionalization events
+    //  Fractionalization events
     event NFTFractionalized(
         uint256 indexed nftId, 
         address fractionToken, 
@@ -335,29 +427,29 @@ contract TerraStakeFractionManager is
         bytes data,
         uint256 executionTime
     );
-    
+
     event ProposalApproved(
         bytes32 indexed proposalId,
         address indexed approver,
         uint256 approvalCount,
         uint256 threshold
     );
-    
+
     event ProposalExecuted(
         bytes32 indexed proposalId,
         address indexed executor,
         bool success
     );
-    
+
     event ProposalExpiredEvent(
         bytes32 indexed proposalId
     );
-    
+
     event ProposalCanceledEvent(
         bytes32 indexed proposalId,
         address indexed canceler
     );
-    
+
     event OracleConfigured(
         address indexed token,
         address indexed oracle,
@@ -366,7 +458,7 @@ contract TerraStakeFractionManager is
         int256 maxPrice,
         uint256 updateInterval
     );
-    
+
     event PriceUpdated(
         address indexed token,
         uint256 oldPrice,
@@ -378,14 +470,59 @@ contract TerraStakeFractionManager is
         bytes32 indexed actionId,
         string description
     );
-    
+
     event TimelockConfigUpdated(
         uint256 newDuration,
         bool enabled
     );
-    
+
     event KeeperConfigUpdated(
         uint256 updateInterval,
+        bool enabled
+    );
+
+    event TokensRecovered(
+        address indexed token, 
+        uint256 amount, 
+        address indexed recipient
+    );
+
+    // Fee adjustment events
+    event FeesAutomaticallyAdjusted(
+        uint256 oldFeeRate, 
+        uint256 newFeeRate, 
+        uint256 utilization
+    );
+
+    event FeeAdjustmentConfigUpdated(
+        uint256 targetUtilization, 
+        uint256 minFeeRate, 
+        uint256 maxFeeRate
+    );
+
+    // Delegate events
+    event DelegateChanged(
+        address indexed delegator, 
+        address oldDelegate, 
+        address newDelegate
+    );
+
+    event DelegatedVotingPowerChanged(
+        address srcRep,
+        uint256 newDelegatedAmount,
+        uint256 oldDelegatedAmount
+    );
+
+    // Secondary market events
+    event SecondaryMarketRegistered(
+        address indexed market
+    );
+
+    event SecondaryMarketDeregistered(
+        address indexed market
+    );
+
+    event SecondaryMarketIntegrationSet(
         bool enabled
     );
 
@@ -458,6 +595,52 @@ contract TerraStakeFractionManager is
      * @param newImplementation Address of the new implementation
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+
+    /**
+     * @dev Cleans up expired proposals.
+     */
+    function cleanupExpiredProposals() external {
+        uint256 length = allProposals.length();
+        for (uint256 i = 0; i < length; i++) {
+            bytes32 proposalId = allProposals.at(i);
+            Proposal storage proposal = proposals[proposalId];
+            if (!proposal.executed && block.timestamp > proposal.proposedTime + 7 days) {
+                proposal.canceled = true;
+                allProposals.remove(proposalId);
+            }
+        }
+    }
+
+    /**
+     * @dev Returns global market metrics.
+     * @return Total market cap, total trading volume, active tokens, and average price.
+     */
+    function getMarketMetrics() external view returns (uint256, uint256, uint256, uint256) {
+        uint256 totalMarketCap = 0;
+        uint256 totalVolume = 0;
+        uint256 totalTokens = 0;
+        uint256 avgPrice = 0;
+        uint256 totalPrice = 0;
+        
+        // You'll need to add an EnumerableSet.AddressSet private allFractionTokens; to the contract state variables
+        for (uint256 i = 0; i < allFractionTokens.length(); i++) {
+            address token = allFractionTokens.at(i);
+            FractionMarketData storage market = marketData[token];
+            uint256 lastPrice = market.lastTradePrice;
+            uint256 supply = fractionData[token].totalSupply;
+            if (lastPrice > 0) {
+                uint256 marketCap = supply * lastPrice;
+                totalMarketCap += marketCap;
+                totalPrice += lastPrice;
+                totalTokens++;
+            }
+            totalVolume += market.volumeTraded;
+        }
+        if (totalTokens > 0) {
+            avgPrice = totalPrice / totalTokens;
+        }
+        return (totalMarketCap, totalVolume, totalTokens, avgPrice);
+    } 
 
     /**
      * @dev Fractionalize a TerraStake NFT into ERC20 tokens
@@ -539,7 +722,7 @@ contract TerraStakeFractionManager is
         
         // Map the NFT ID to the fraction token
         nftToFractionToken[params.tokenId] = tokenAddress;
-        allFractionTokens.push(tokenAddress);
+        allFractionTokens.add(tokenAddress);
         
         // Transfer all tokens to the creator
         fractionToken.transfer(msg.sender, params.fractionSupply);
@@ -556,6 +739,149 @@ contract TerraStakeFractionManager is
         // Update global metrics
         _updateGlobalMetrics();
     }
+
+    /**
+     * @dev Creates a new fraction token for a TerraStake NFT
+     * @param nftId The ID of the NFT to fractionalize
+     * @param name The name of the fraction token
+     * @param symbol The symbol of the fraction token
+     * @param fractionCount The number of fractions to create
+     * @param lockPeriod The period for which the NFT will be locked
+     * @return fractionToken The address of the created fraction token
+     */
+    function createFractionToken(
+        uint256 nftId,
+        string memory name,
+        string memory symbol,
+        uint256 fractionCount,
+        uint256 lockPeriod
+    ) external nonReentrant whenNotPaused onlyRole(FRACTIONALIZER_ROLE) returns (address fractionToken) {
+        // Validate inputs
+        require(terraStakeNFT.exists(nftId), "NFT does not exist");
+        require(terraStakeNFT.balanceOf(msg.sender, nftId) > 0, "Caller does not own the NFT");
+        require(fractionCount > 0 && fractionCount <= MAX_FRACTION_SUPPLY, "Invalid fraction count");
+        require(lockPeriod >= MIN_LOCK_PERIOD && lockPeriod <= MAX_LOCK_PERIOD, "Invalid lock period");
+        require(bytes(name).length > 0 && bytes(symbol).length > 0, "Empty name or symbol");
+        
+        // Get NFT metadata
+        (uint256 impactValue, ITerraStakeNFT.ProjectCategory projectCategory, bytes32 projectDataHash) = _getNFTMetadata(nftId);
+        
+        // Transfer NFT to this contract
+        terraStakeNFT.safeTransferFrom(msg.sender, address(this), nftId, 1, "");
+        
+        // Deploy new fraction token
+        FractionToken newFractionToken = new FractionToken();
+        
+        // Initialize the fraction token with proper parameters
+        newFractionToken.initialize(
+            name,
+            symbol,
+            fractionCount * 10**18, // Using 18 decimals for ERC20
+            nftId,
+            address(this),
+            impactValue,
+            projectCategory,
+            projectDataHash
+        );
+        
+        // Register the fractionalization
+        _registerFractionalization(
+            nftId, 
+            address(newFractionToken), 
+            msg.sender, 
+            fractionCount, 
+            block.timestamp + lockPeriod
+        );
+        
+        // Transfer fraction tokens to the creator
+        IERC20(address(newFractionToken)).transfer(msg.sender, fractionCount * 10**18);
+        
+        // Add to user's portfolio
+        userPortfolios[msg.sender].add(address(newFractionToken));
+        userFractionBalances[msg.sender][address(newFractionToken)] = fractionCount * 10**18;
+        
+        // Emit event
+        emit FractionTokenCreated(
+            nftId,
+            address(newFractionToken),
+            msg.sender,
+            fractionCount * 10**18,
+            block.timestamp + lockPeriod
+        );
+        
+        return address(newFractionToken);
+    }
+
+    /**
+     * @dev Helper function to get NFT metadata
+     * @param nftId The NFT ID
+     * @return impactValue The impact value of the NFT
+     * @return projectCategory The project category of the NFT
+     * @return projectDataHash The project data hash of the NFT
+     */
+    function _getNFTMetadata(uint256 nftId) internal view returns (
+        uint256 impactValue,
+        ITerraStakeNFT.ProjectCategory projectCategory,
+        bytes32 projectDataHash
+    ) {
+        // Get NFT type
+        ITerraStakeNFT.NFTMetadata memory metadata = terraStakeNFT.getTokenMetadata(nftId);
+        projectCategory = metadata.category;
+        
+        // If it's an impact NFT, get the impact certificate details
+        if (metadata.nftType == ITerraStakeNFT.NFTType.IMPACT) {
+            ITerraStakeNFT.ImpactCertificate memory certificate = terraStakeNFT.getImpactCertificate(nftId);
+            impactValue = certificate.impactValue;
+            projectDataHash = certificate.reportHash;
+        } else {
+            // For non-impact NFTs, use default values
+            impactValue = 0;
+            projectDataHash = bytes32(0);
+        }
+        
+        return (impactValue, projectCategory, projectDataHash);
+    }
+
+    /**
+     * @dev Registers a new fractionalization in the system
+     * @param nftId The NFT ID
+     * @param fractionToken The fraction token address
+     * @param creator The creator of the fractionalization
+     * @param fractionCount The number of fractions created
+     * @param unlockTime The time when the NFT can be redeemed
+     */
+    function _registerFractionalization(
+        uint256 nftId,
+        address fractionToken,
+        address creator,
+        uint256 fractionCount,
+        uint256 unlockTime
+    ) internal {
+        // Implementation depends on your existing data structures
+        // This would typically update mappings that track:
+        // - Which NFTs are fractionalized
+        // - The relationship between NFTs and fraction tokens
+        // - Lock periods and other fractionalization details
+        
+        // Example (assuming you have appropriate state variables):
+        nftToFractionToken[nftId] = fractionToken;
+        fractionTokenToNFT[fractionToken] = nftId;
+        fractionTokenCreator[fractionToken] = creator;
+        fractionTokenSupply[fractionToken] = fractionCount * 10**18;
+        fractionTokenUnlockTime[fractionToken] = unlockTime;
+        
+        // Add to active fractionalization list
+        activeFractionTokens.add(fractionToken);
+    }
+
+    // Event for fraction token creation
+    event FractionTokenCreated(
+        uint256 indexed nftId,
+        address indexed fractionToken,
+        address creator,
+        uint256 totalSupply,
+        uint256 unlockTime
+    );
 
     /**
      * @dev Make an offer to redeem the NFT
@@ -692,6 +1018,15 @@ contract TerraStakeFractionManager is
         nonReentrant 
         whenNotPaused 
     {
+        _buyFractions(fractionToken, amount);
+    }
+
+    /**
+     * @dev Internal function to buy fractions
+     * @param fractionToken The fraction token address
+     * @param amount The amount of fractions to buy
+     */
+    function _buyFractions(address fractionToken, uint256 amount) internal {
         FractionData storage data = fractionData[fractionToken];
         
         if (!data.isActive) {
@@ -744,6 +1079,25 @@ contract TerraStakeFractionManager is
     }
 
     /**
+     * @dev Batch buy fractions at the current oracle price
+     * @param fractionTokens Array of fraction token addresses
+     * @param amounts Array of amounts to buy
+     */
+    function batchBuyFractions(address[] calldata fractionTokens, uint256[] calldata amounts) 
+        external 
+        nonReentrant 
+        whenNotPaused 
+    {
+        if (fractionTokens.length != amounts.length) {
+            revert InvalidAmount();
+        }
+        
+        for (uint256 i = 0; i < fractionTokens.length; i++) {
+            _buyFractions(fractionTokens[i], amounts[i]);
+        }
+    }
+
+    /**
      * @dev Sell fractions at the current oracle price
      * @param fractionToken The fraction token address
      * @param amount The amount of fractions to sell
@@ -753,6 +1107,15 @@ contract TerraStakeFractionManager is
         nonReentrant 
         whenNotPaused 
     {
+        _sellFractions(fractionToken, amount);
+    }
+
+    /**
+     * @dev Internal function to sell fractions
+     * @param fractionToken The fraction token address
+     * @param amount The amount of fractions to sell
+     */
+    function _sellFractions(address fractionToken, uint256 amount) internal {
         FractionData storage data = fractionData[fractionToken];
         
         if (!data.isActive) {
@@ -800,6 +1163,25 @@ contract TerraStakeFractionManager is
         
         // Update global metrics
         _updateGlobalMetrics();
+    }
+
+    /**
+     * @dev Batch sell fractions at the current oracle price
+     * @param fractionTokens Array of fraction token addresses
+     * @param amounts Array of amounts to sell
+     */
+    function batchSellFractions(address[] calldata fractionTokens, uint256[] calldata amounts) 
+        external 
+        nonReentrant 
+        whenNotPaused 
+    {
+        if (fractionTokens.length != amounts.length) {
+            revert InvalidAmount();
+        }
+        
+        for (uint256 i = 0; i < fractionTokens.length; i++) {
+            _sellFractions(fractionTokens[i], amounts[i]);
+        }
     }
 
     /**
@@ -1018,8 +1400,8 @@ contract TerraStakeFractionManager is
         uint256 totalEnvironmentalImpact = 0;
         uint256 activeTokens = 0;
         
-        for (uint256 i = 0; i < allFractionTokens.length; i++) {
-            address tokenAddress = allFractionTokens[i];
+        for (uint256 i = 0; i < allFractionTokens.length(); i++) {
+            address tokenAddress = allFractionTokens.at(i);
             FractionData storage data = fractionData[tokenAddress];
             
             if (data.isActive) {
@@ -1194,7 +1576,10 @@ contract TerraStakeFractionManager is
             revert ProposalAlreadyApproved();
         }
         
+        // Add voter and their voting power (including delegated power)
         proposal.approvers.add(msg.sender);
+        uint256 votingPower = getVotingPower(msg.sender);
+        proposal.votingPower += votingPower;
         
         emit ProposalApproved(
             proposalId, 
@@ -1247,6 +1632,12 @@ contract TerraStakeFractionManager is
             revert InsufficientApprovals();
         }
 
+        // Verify that the execution parameters match what was proposed
+        bytes32 executionHash = keccak256(abi.encodePacked(target, data));
+        if (executionHash != proposal.actionHash) {
+            revert ActionHashMismatch();
+        }
+        
         // Execute proposal
         (bool success, ) = target.call(data);
         if (!success) {
@@ -1343,6 +1734,82 @@ contract TerraStakeFractionManager is
     }
 
     /**
+     * @dev Delegate voting power to another address
+     * @param delegatee The address to delegate voting power to
+     */
+    function delegate(address delegatee) external whenNotPaused {
+        address currentDelegate = delegates[msg.sender];
+        uint256 votingPower = tStakeToken.balanceOf(msg.sender);
+        
+        // Update delegations
+        _moveDelegates(currentDelegate, delegatee, votingPower);
+        delegates[msg.sender] = delegatee;
+        
+        emit DelegateChanged(msg.sender, currentDelegate, delegatee);
+    }
+
+    /**
+     * @dev Internal function to update delegation records
+     */
+    function _moveDelegates(address srcRep, address dstRep, uint256 amount) internal {
+        if (srcRep != address(0) && srcRep != dstRep) {
+            // Remove delegation from previous delegate
+            delegatedAmounts[srcRep][msg.sender] = 0;
+            totalDelegatedToMe[srcRep] -= amount;
+            myDelegators[srcRep].remove(msg.sender);
+            
+            emit DelegatedVotingPowerChanged(srcRep, 
+                totalDelegatedToMe[srcRep] + amount, 
+                totalDelegatedToMe[srcRep]);
+        }
+        
+        if (dstRep != address(0) && srcRep != dstRep) {
+            // Add delegation to new delegate
+            delegatedAmounts[dstRep][msg.sender] = amount;
+            totalDelegatedToMe[dstRep] += amount;
+            myDelegators[dstRep].add(msg.sender);
+            
+            emit DelegatedVotingPowerChanged(dstRep, 
+                totalDelegatedToMe[dstRep] - amount, 
+                totalDelegatedToMe[dstRep]);
+        }
+    }
+
+    /**
+     * @dev Get the current delegate for an account
+     * @param account The account to check
+     * @return The delegate address
+     */
+    function getDelegate(address account) external view returns (address) {
+        return delegates[account];
+    }
+
+    /**
+     * @dev Get the total voting power of an account including delegations
+     * @param account The account to check
+     * @return The total voting power
+     */
+    function getVotingPower(address account) public view returns (uint256) {
+        return tStakeToken.balanceOf(account) + totalDelegatedToMe[account];
+    }
+
+    /**
+     * @dev Get all addresses that delegated to this account
+     * @param account The delegate account
+     * @return Array of delegator addresses
+     */
+    function getDelegators(address account) external view returns (address[] memory) {
+        uint256 count = myDelegators[account].length();
+        address[] memory result = new address[](count);
+        
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = myDelegators[account].at(i);
+        }
+        
+        return result;
+    }
+
+    /**
      * @dev Set timelock configuration
      * @param _duration New timelock duration
      * @param _enabled Whether timelock is enabled
@@ -1403,6 +1870,96 @@ contract TerraStakeFractionManager is
         keeperEnabled = _enabled;
         
         emit KeeperConfigUpdated(_updateInterval, _enabled);
+    }
+
+    /**
+     * @dev Register a secondary market to receive transfer notifications
+     * @param marketAddress The address of the secondary market
+     */
+    function registerSecondaryMarket(address marketAddress) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        require(marketAddress != address(0), "Invalid market address");
+        registeredMarkets[marketAddress] = true;
+        secondaryMarkets.add(marketAddress);
+        
+        emit SecondaryMarketRegistered(marketAddress);
+    }
+
+    /**
+     * @dev Deregister a secondary market
+     * @param marketAddress The address of the secondary market
+     */
+    function deregisterSecondaryMarket(address marketAddress) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        registeredMarkets[marketAddress] = false;
+        secondaryMarkets.remove(marketAddress);
+        
+        emit SecondaryMarketDeregistered(marketAddress);
+    }
+
+    /**
+     * @dev Enable or disable secondary market integration
+     * @param enabled Whether integration is enabled
+     */
+    function setSecondaryMarketIntegration(bool enabled) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        secondaryMarketIntegrationEnabled = enabled;
+        
+        emit SecondaryMarketIntegrationSet(enabled);
+    }
+
+    /**
+     * @dev Notify secondary markets of token transfers
+     * @param from The address sending tokens
+     * @param to The address receiving tokens
+     * @param fractionToken The fraction token address
+     * @param amount The amount of tokens transferred
+     */
+    function notifySecondaryMarkets(
+        address from,
+        address to,
+        address fractionToken,
+        uint256 amount
+    ) internal {
+        if (!secondaryMarketIntegrationEnabled) return;
+        
+        uint256 length = secondaryMarkets.length();
+        for (uint256 i = 0; i < length; i++) {
+            address market = secondaryMarkets.at(i);
+            if (registeredMarkets[market]) {
+                try ISecondaryMarketCallback(market).onFractionTransfer(
+                    from, to, fractionToken, amount
+                ) {} catch {}
+            }
+        }
+    }
+
+    /**
+     * @dev Receive notifications about token transfers from fraction tokens
+     * @param from The address sending tokens
+     * @param to The address receiving tokens
+     * @param fractionToken The fraction token address
+     * @param amount The amount of tokens transferred
+     */
+    function notifyTransfer(
+        address from,
+        address to,
+        address fractionToken,
+        uint256 amount
+    ) external {
+        // Ensure only fraction tokens can call this
+        require(fractionData[fractionToken].isActive, "Not a valid fraction token");
+        
+        // Update user analytics here
+        
+        // Notify secondary markets
+        notifySecondaryMarkets(from, to, fractionToken, amount);
     }
 
     /**
@@ -1525,6 +2082,36 @@ contract TerraStakeFractionManager is
         returns (bool) 
     {
         return proposals[proposalId].approvers.contains(account);
+    }
+
+    /**
+     * @dev Recovers ERC20 tokens accidentally sent to the contract
+     * @param token The address of the token to recover
+     * @param amount The amount of tokens to recover
+     * @param recipient The address to send the tokens to
+     */
+    function recoverERC20(address token, uint256 amount, address recipient) 
+        external 
+        onlyRole(DEFAULT_ADMIN_ROLE) 
+    {
+        // Ensure we're not trying to withdraw fraction tokens that are part of active fractionalizations
+        if (allFractionTokens.contains(token)) {
+            FractionData storage data = fractionData[token];
+            if (data.isActive) {
+                revert FractionalizationStillActive();
+            }
+        }
+        
+        // Ensure the recipient is valid
+        if (recipient == address(0)) {
+            revert InvalidAddress();
+        }
+        
+        // Transfer the tokens to the recipient
+        IERC20(token).transfer(recipient, amount);
+        
+        // Emit an event for transparency
+        emit TokensRecovered(token, amount, recipient);
     }
 
     // Required override for multiple inheritance

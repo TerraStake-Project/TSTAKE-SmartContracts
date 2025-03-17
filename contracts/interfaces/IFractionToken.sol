@@ -216,6 +216,13 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
     function getTokenPrice(address fractionToken) external view returns (uint256);
     function getAggregateMetrics() external view returns (AggregateMetrics memory metrics);
     function getTotalFractionTokens() external view returns (uint256);
+    function createFractionToken(
+        uint256 nftId,
+        string memory name,
+        string memory symbol,
+        uint256 fractionCount,
+        uint256 lockPeriod
+    ) external returns (address fractionToken);
 
     // =====================================================
     // Oracle Functions

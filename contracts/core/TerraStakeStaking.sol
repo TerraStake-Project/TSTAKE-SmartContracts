@@ -17,6 +17,7 @@ import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeSlashing.sol";
 
+
 /**
  * @title TerraStakeStaking
  * @notice Official staking contract for the TerraStake ecosystem with multi-project (batch) operations,

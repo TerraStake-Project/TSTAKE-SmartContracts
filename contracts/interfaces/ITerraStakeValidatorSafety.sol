@@ -23,6 +23,14 @@ interface ITerraStakeValidatorSafety {
     event EmergencyModeDeactivated(address deactivator);
     event EmergencyCooldownUpdated(uint256 newCooldown);
     event EmergencyValidatorThresholdReduction(uint256 oldThreshold, uint256 newThreshold);
+    event ValidatorActivityRecorded(address indexed validator, address recorder);
+    event ValidatorInactivityThresholdUpdated(uint256 newThreshold);
+    event OperationScheduled(bytes32 indexed operationId, uint256 executionTime);
+    event OperationExecuted(bytes32 indexed operationId);
+    event OperationCancelled(bytes32 indexed operationId);
+    event ValidatorSuspended(address indexed validator, uint256 riskScore);
+    event AutoSuspendModeUpdated(bool enabled);
+    event TimelockPeriodUpdated(uint256 newPeriod);
     
     // -------------------------------------------
     //  Errors
@@ -38,6 +46,11 @@ interface ITerraStakeValidatorSafety {
     error EmergencyCooldownActive();
     error ThresholdTooLow();
     error QuorumTooHigh();
+    error ExceedsActiveValidatorCount();
+    error ZeroAddressNotAllowed();
+    error OperationNotScheduled();
+    error TimelockNotExpired();
+    error InsufficientActiveValidators();
     
     // -------------------------------------------
     //  View Functions
@@ -68,6 +81,10 @@ interface ITerraStakeValidatorSafety {
     function emergencyMode() external view returns (bool);
     function emergencyModeActivationTime() external view returns (uint256);
     function emergencyModeCooldown() external view returns (uint256);
+    function validatorInactivityThreshold() external view returns (uint256);
+    function timelockPeriod() external view returns (uint256);
+    function pendingOperations(bytes32 operationId) external view returns (uint256);
+    function autoSuspendHighRiskValidators() external view returns (bool);
     
     function isHighRiskValidator(address validator) external view returns (bool);
     function getActiveValidators() external view returns (address[] memory);
@@ -77,6 +94,14 @@ interface ITerraStakeValidatorSafety {
     function isEmergencyCooldownActive() external view returns (bool);
     function getHighRiskValidatorCount() external view returns (uint256);
     function getInactiveValidators() external view returns (address[] memory);
+    function getOperationStatus(bytes32 operationId) external view returns (bool pending, uint256 executionTime);
+    function hasSufficientValidators() external view returns (bool);
+    function getSystemStatus() external view returns (
+        bool isEmergency,
+        uint256 validatorCount,
+        uint256 minValidators,
+        uint256 highRiskCount
+    );
     
     // -------------------------------------------
     //  State-Changing Functions
@@ -84,12 +109,18 @@ interface ITerraStakeValidatorSafety {
     
     function initialize(address _initialAdmin) external;
     
+    function scheduleAddValidator(address validator) external;
     function addValidator(address validator) external;
+    function scheduleRemoveValidator(address validator) external;
     function removeValidator(address validator) external;
+    function scheduleUpdateValidatorThreshold(uint256 newThreshold) external;
     function updateValidatorThreshold(uint256 newThreshold) external;
+    function scheduleUpdateValidatorQuorum(uint256 newQuorum) external;
     function updateValidatorQuorum(uint256 newQuorum) external;
     function updateGovernanceTier(uint8 tierId, uint256 newThreshold) external;
     function updateValidatorCooldown(uint256 newCooldown) external;
+    function updateValidatorInactivityThreshold(uint256 newThreshold) external;
+    function setAutoSuspendHighRiskValidators(bool enabled) external;
     
     function updateRiskScore(address validator, uint256 newScore) external;
     function updateRiskScoreThreshold(uint256 newThreshold) external;
@@ -99,4 +130,7 @@ interface ITerraStakeValidatorSafety {
     function deactivateEmergencyMode() external;
     function updateEmergencyCooldown(uint256 newCooldown) external;
     function emergencyReduceValidatorThreshold(uint256 newThreshold) external;
+    
+    function cancelOperation(bytes32 operationId) external;
+    function updateTimelockPeriod(uint256 newPeriod) external;
 }

@@ -38,7 +38,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     }
     
     struct FractionInfo {
-        uint256 original__tokenID;
+        uint256 originalTokenID; // Updated name
         uint256 fractionCount;
         address fractionalizer;
         bool isActive;
@@ -93,7 +93,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
         external 
         returns (uint256[] memory);
     
-    function reassembleToken(uint256 original__tokenID) external;
+    function reassembleToken(uint256 originalTokenID) external; // Updated name
     
     // ====================================================
     //  URI Management
@@ -117,9 +117,9 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     
     function getFractionInfo(uint256 _tokenID) external view returns (FractionInfo memory);
     
-    function getFractionTokens(uint256 original__tokenID) external view returns (uint256[] memory);
+    function getFractionTokens(uint256 originalTokenID) external view returns (uint256[] memory); // Updated name
     
-    function getOriginal__tokenID(uint256 fraction__tokenID) external view returns (uint256);
+    function getOriginalTokenID(uint256 fractionTokenID) external view returns (uint256); // Updated name
     
     function exists(uint256 _tokenID) external view returns (bool);
     
@@ -215,8 +215,8 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     event TokenMinted(uint256 indexed _tokenID, address indexed recipient, NFTType nftType, ProjectCategory category);
     event ImpactCertificateCreated(uint256 indexed _tokenID, uint256 indexed projectId, bytes32 reportHash);
     event ImpactVerified(uint256 indexed _tokenID, bytes32 reportHash, address verifier);
-    event TokenFractionalized(uint256 indexed original__tokenID, uint256[] fractionIds, uint256 fractionCount);
-    event TokensReassembled(uint256 indexed original__tokenID, address collector);
+    event TokenFractionalized(uint256 indexed originalTokenID, uint256[] fractionIds, uint256 fractionCount); // Updated name
+    event TokensReassembled(uint256 indexed originalTokenID, address collector); // Updated name
     event TokenURIUpdated(uint256 indexed _tokenID, string newUri);
     event TokenURILocked(uint256 indexed _tokenID);
     event FeePercentagesUpdated(uint8 burnPercent, uint8 treasuryPercent, uint8 buybackPercent);

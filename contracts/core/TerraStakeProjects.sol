@@ -16,6 +16,7 @@ import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeMarketplace.sol";
 
+
 /**
  * @title TerraStakeProjects 
  * @notice Manages projects, staking, impact tracking, governance-driven fees, and NFT integration.
@@ -547,6 +548,19 @@ contract TerraStakeProjects is
         }
     }
 
+    function _finalizeProjectStaking(uint256 projectId, bool isCompleted) internal {
+        // Notify staking contract about project completion
+        // This allows for special handling of staked tokens
+        stakingContract.finalizeProjectStaking(projectId, isCompleted);
+        
+        // Update project staking status
+        projectStakingStatus[projectId] = isCompleted ? 
+            StakingStatus.Completed : 
+            StakingStatus.Cancelled;
+            
+        emit ProjectStakingFinalized(projectId, isCompleted, block.timestamp);
+    }
+
     // ====================================================
     //  Project Management
     // ====================================================
@@ -773,158 +787,216 @@ contract TerraStakeProjects is
     }
     
     function _finalizeProjectStaking(uint256 projectId) internal {
-        // Handle any final staking logic, rewards, etc.
-        // This could distribute final rewards or clean up staking positions
-        
-        // For now, we'll just emit an event
-        emit ProjectStakingFinalized(projectId);
-    }
+    // Handle any final staking logic, rewards, etc.
+    // This could distribute final rewards or clean up staking positions
     
-    function updateStakingMultiplier(
-        uint256 projectId,
-        uint32 newMultiplier
-    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        if (newMultiplier == 0) revert InvalidStakingMultiplier();
-        
-        ProjectStateData storage project = projectStateData[projectId];
-        
-        // Ensure project isn't in a terminal state
-        if (project.state == ProjectState.Completed || 
-            project.state == ProjectState.Cancelled) {
-            revert ProjectInTerminalState();
-        }
-        
-        // Update multiplier
-        uint32 oldMultiplier = project.stakingMultiplier;
-        project.stakingMultiplier = newMultiplier;
-        
-        emit StakingMultiplierUpdated(projectId, oldMultiplier, newMultiplier);
-    }
-    
-    // ====================================================
-    // 🔹 Verification, Validation & Impact Reporting
-    // ====================================================
-    
-    function verifyProject(
-        uint256 projectId,
-        address verifier,
-        string calldata verificationDetails,
-        bytes32 documentHash
-    ) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        // Fee handling
-        uint256 verificationFee = fees.verificationFee;
-        if (verificationFee > 0) {
-            bool success = tStakeToken.transferFrom(msg.sender, address(this), verificationFee);
-            if (!success) revert TokenTransferFailed();
-            
-            // Update fee collections
-            totalFeesCollected += verificationFee;
-            feesByType[FeeType.Verification] += verificationFee;
-            
-            emit FeeCollected(projectId, FeeType.Verification, verificationFee);
-        }
-        
-        // Create or update verification record
-        projectVerifications[projectId] = VerificationData({
-            verifier: verifier,
-            verificationDate: uint48(block.timestamp),
-            verificationDocumentHash: documentHash,
-            verifierNotes: verificationDetails
-        });
-        
-        emit ProjectVerified(projectId, verifier, documentHash);
-    }
-    
-    function submitImpactReport(
-        uint256 projectId,
-        string calldata reportTitle,
-        string calldata reportDetails,
-        bytes32 ipfsReportHash,
-        uint256 impactMetricValue
-    ) external override nonReentrant whenNotPaused {
-        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-        
-        // Ensure project is active
-        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
-        
-        // Fee handling
-        uint256 reportingFee = fees.impactReportingFee;
-        if (reportingFee > 0) {
-            bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
-            if (!success) revert TokenTransferFailed();
-            
-            // Update fee collections
-            totalFeesCollected += reportingFee;
-            feesByType[FeeType.ImpactReporting] += reportingFee;
-            
-            emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
-        }
-        
-        // Create impact report
-        ImpactReport memory impactReport = ImpactReport({
-            projectId: projectId,
-            reporter: msg.sender,
-            timestamp: uint48(block.timestamp),
-            title: reportTitle,
-            details: reportDetails,
-            ipfsHash: ipfsReportHash,
-            metricValue: impactMetricValue,
-            validated: false
-        });
-        
-        projectImpactReports[projectId].push(impactReport);
-        
-        uint256 reportId = projectImpactReports[projectId].length;
+    // For now, we'll just emit an event
+    emit ProjectStakingFinalized(projectId);
+}
 
-        emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
+function updateStakingMultiplier(
+    uint256 projectId,
+    uint32 newMultiplier
+) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+    if (newMultiplier == 0) revert InvalidStakingMultiplier();
+    
+    ProjectStateData storage project = projectStateData[projectId];
+    
+    // Ensure project isn't in a terminal state
+    if (project.state == ProjectState.Completed || 
+        project.state == ProjectState.Cancelled) {
+        revert ProjectInTerminalState();
     }
     
-    function validateImpactReport(
-        uint256 projectId,
-        uint256 reportId,
-        bool isValid,
-        string calldata validationNotes
-    ) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
-        ImpactReport storage report = projectImpactReports[projectId][reportId];
+    // Update multiplier
+    uint32 oldMultiplier = project.stakingMultiplier;
+    project.stakingMultiplier = newMultiplier;
+    
+    emit StakingMultiplierUpdated(projectId, oldMultiplier, newMultiplier);
+}
+
+// ====================================================
+//  Verification, Validation & Impact Reporting
+// ====================================================
+function verifyProject(
+    uint256 projectId,
+    address verifier,
+    string calldata verificationDetails,
+    bytes32 documentHash
+) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
+    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+    
+    // Fee handling
+    uint256 verificationFee = fees.verificationFee;
+    if (verificationFee > 0) {
+        bool success = tStakeToken.transferFrom(msg.sender, address(this), verificationFee);
+        if (!success) revert TokenTransferFailed();
         
-        // Check if report exists
-        if (report.timestamp == 0) revert InvalidReportId();
+        // Update fee collections
+        totalFeesCollected += verificationFee;
+        feesByType[FeeType.Verification] += verificationFee;
         
-        // Check if already validated
-        if (report.validated) revert ReportAlreadyValidated();
-        
-        // Update validation status
-        report.validated = isValid;
-        
-        // Store validation
-        reportValidations[reportId] = ValidationData({
-            validator: msg.sender,
-            validationTime: uint48(block.timestamp),
-            validationNotes: validationNotes,
-            isValid: isValid
-        });
-        
-        // Update project impact metrics if valid
-        if (isValid) {
-            uint256 projectId = report.projectId;
-            totalValidatedImpact[projectId] += report.metricValue;
-            
-            // Apply category weight to the impact value for weighted metrics
-            ProjectCategory category = projectStateData[projectId].category;
-            uint256 weight = categoryInfo[category].impactWeight;
-            uint256 weightedImpact = (report.metricValue * weight) / 100;
-            
-            totalWeightedImpact[projectId] += weightedImpact;
-        }
-        
-        emit ImpactReportValidated(reportId, report.projectId, msg.sender, isValid);
+        emit FeeCollected(projectId, FeeType.Verification, verificationFee);
     }
+    
+    // Create or update verification record
+    projectVerifications[projectId] = VerificationData({
+        verifier: verifier,
+        verificationDate: uint48(block.timestamp),
+        verificationDocumentHash: documentHash,
+        verifierNotes: verificationDetails
+    });
+    
+    emit ProjectVerified(projectId, verifier, documentHash);
+}
+
+function submitImpactReport(
+    uint256 projectId,
+    string calldata reportTitle,
+    string calldata reportDetails,
+    bytes32 ipfsReportHash,
+    uint256 impactMetricValue
+) external override nonReentrant whenNotPaused {
+    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+    
+    // Ensure project is active
+    if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
+    
+    // Fee handling
+    uint256 reportingFee = fees.impactReportingFee;
+    if (reportingFee > 0) {
+        bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
+        if (!success) revert TokenTransferFailed();
+        
+        // Update fee collections
+        totalFeesCollected += reportingFee;
+        feesByType[FeeType.ImpactReporting] += reportingFee;
+        
+        emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
+    }
+    
+    // Create impact report
+    ImpactReport memory impactReport = ImpactReport({
+        projectId: projectId,
+        reporter: msg.sender,
+        timestamp: uint48(block.timestamp),
+        title: reportTitle,
+        details: reportDetails,
+        ipfsHash: ipfsReportHash,
+        metricValue: impactMetricValue,
+        validated: false
+    });
+    
+    projectImpactReports[projectId].push(impactReport);
+    
+    uint256 reportId = projectImpactReports[projectId].length;
+    emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
+}
+
+function validateImpactReport(
+    uint256 projectId,
+    uint256 reportId,
+    bool isValid,
+    string calldata validationNotes
+) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
+    ImpactReport storage report = projectImpactReports[projectId][reportId];
+    
+    // Check if report exists
+    if (report.timestamp == 0) revert InvalidReportId();
+    
+    // Check if already validated
+    if (report.validated) revert ReportAlreadyValidated();
+    
+    // Update validation status
+    report.validated = isValid;
+    
+    // Store validation
+    reportValidations[reportId] = ValidationData({
+        validator: msg.sender,
+        validationTime: uint48(block.timestamp),
+        validationNotes: validationNotes,
+        isValid: isValid
+    });
+    
+    // Update project impact metrics if valid
+    if (isValid) {
+        uint256 projectId = report.projectId;
+        totalValidatedImpact[projectId] += report.metricValue;
+        
+        // Apply category weight to the impact value for weighted metrics
+        ProjectCategory category = projectStateData[projectId].category;
+        uint256 weight = categoryInfo[category].impactWeight;
+        uint256 weightedImpact = (report.metricValue * weight) / 100;
+        
+        totalWeightedImpact[projectId] += weightedImpact;
+    }
+    
+    emit ImpactReportValidated(reportId, report.projectId, msg.sender, isValid);
+}
+
+function getProjectReportStats(uint256 projectId) external view returns (
+    uint256 totalReports,
+    uint256 validatedReports,
+    uint256 rejectedReports,
+    uint256 pendingReports,
+    uint256 averageValidationTime
+) {
+    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+    
+    // Get all reports for this project
+    uint256[] memory reportIds = projectImpactReports[projectId];
+    totalReports = reportIds.length;
+    
+    // Initialize counters
+    validatedReports = 0;
+    rejectedReports = 0;
+    pendingReports = 0;
+    
+    // Track validation times for average calculation
+    uint256 totalValidationTime = 0;
+    uint256 validationTimeCount = 0;
+    
+    // Iterate through all reports
+    for (uint256 i = 0; i < totalReports; i++) {
+        uint256 reportId = reportIds[i];
+        ImpactReport memory report = projectReports[projectId][reportId];
+        
+        // Check validation status
+        ValidationData memory validation = reportValidations[reportId];
+        
+        if (validation.validationTime > 0) {
+            // Report has been validated
+            if (validation.isValid) {
+                validatedReports++;
+            } else {
+                rejectedReports++;
+            }
+            
+            // Calculate validation time (time between report submission and validation)
+            uint256 validationDuration = validation.validationTime - report.timestamp;
+            totalValidationTime += validationDuration;
+            validationTimeCount++;
+        } else {
+            // Report is pending validation
+            pendingReports++;
+        }
+    }
+    
+    // Calculate average validation time (in seconds)
+    averageValidationTime = validationTimeCount > 0 ? totalValidationTime / validationTimeCount : 0;
+    
+    return (
+        totalReports,
+        validatedReports,
+        rejectedReports,
+        pendingReports,
+        averageValidationTime
+    );
+}
     
     // ====================================================
-    // 🔹 Staking & Rewards
+    //  Staking & Rewards
     // ====================================================
     
     function stakeOnProject(
@@ -1471,54 +1543,54 @@ contract TerraStakeProjects is
     
     // Function to get project leaderboard by impact
     function getProjectLeaderboard(
-        uint256 limit
-    ) external view returns (
-        uint256[] memory projectIds,
-        uint256[] memory impactValues
-    ) {
-        // Limit the number of projects to return
-        uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
-        
-        // Initialize arrays
-        projectIds = new uint256[](resultSize);
-        impactValues = new uint256[](resultSize);
-        
-        // Create temporary array of project IDs and impact values
-        uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
-        uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
-        
-        // Fill temporary arrays
-        for (uint256 i = 0; i < allProjectIds.length; i++) {
-            uint256 projectId = allProjectIds[i];
-            tempProjectIds[i] = projectId;
-            tempImpactValues[i] = totalWeightedImpact[projectId];
-        }
-        
-        // Sort projects by impact (simple bubble sort)
-        for (uint256 i = 0; i < tempProjectIds.length; i++) {
-            for (uint256 j = i + 1; j < tempProjectIds.length; j++) {
-                if (tempImpactValues[i] < tempImpactValues[j]) {
-                    // Swap impact values
-                    uint256 tempImpact = tempImpactValues[i];
-                    tempImpactValues[i] = tempImpactValues[j];
-                    tempImpactValues[j] = tempImpact;
-                    
-                    // Swap project IDs
-                    uint256 tempId = tempProjectIds[i];
-                    tempProjectIds[i] = tempProjectIds[j];
-                    tempProjectIds[j] = tempId;
-                }
+    uint256 limit
+) external view returns (
+    uint256[] memory projectIds,
+    uint256[] memory impactValues
+) {
+    // Limit the number of projects to return
+    uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
+    
+    // Initialize arrays
+    projectIds = new uint256[](resultSize);
+    impactValues = new uint256[](resultSize);
+    
+    // Create temporary array of project IDs and impact values
+    uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
+    uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
+    
+    // Fill temporary arrays
+    for (uint256 i = 0; i < allProjectIds.length; i++) {
+        uint256 projectId = allProjectIds[i];
+        tempProjectIds[i] = projectId;
+        tempImpactValues[i] = totalWeightedImpact[projectId];
+    }
+    
+    // Sort projects by impact (optimized bubble sort)
+    for (uint256 i = 0; i < tempProjectIds.length - 1; i++) {
+        for (uint256 j = 0; j < tempProjectIds.length - i - 1; j++) {
+            if (tempImpactValues[j] < tempImpactValues[j + 1]) {
+                // Swap impact values
+                uint256 tempImpact = tempImpactValues[j];
+                tempImpactValues[j] = tempImpactValues[j + 1];
+                tempImpactValues[j + 1] = tempImpact;
+                
+                // Swap project IDs
+                uint256 tempId = tempProjectIds[j];
+                tempProjectIds[j] = tempProjectIds[j + 1];
+                tempProjectIds[j + 1] = tempId;
             }
         }
-        
-        // Take the top 'resultSize' projects
-        for (uint256 i = 0; i < resultSize; i++) {
-            projectIds[i] = tempProjectIds[i];
-            impactValues[i] = tempImpactValues[i];
-        }
-        
-        return (projectIds, impactValues);
     }
+    
+    // Take the top 'resultSize' projects
+    for (uint256 i = 0; i < resultSize; i++) {
+        projectIds[i] = tempProjectIds[i];
+        impactValues[i] = tempImpactValues[i];
+    }
+    
+    return (projectIds, impactValues);
+}
     
     // Function to generate a summary of the platform
     function getPlatformSummary() external view returns (

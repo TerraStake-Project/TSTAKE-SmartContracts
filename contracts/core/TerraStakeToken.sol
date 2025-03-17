@@ -483,8 +483,8 @@ contract TerraStakeToken is
     //  Halving Mechanism Integration
     // ================================
     function triggerHalving() external onlyRole(ADMIN_ROLE) returns (uint256) {
-        // stakingContract.applyHalving();
-        // governanceContract.applyHalving();
+        stakingContract.applyHalving();
+        governanceContract.applyHalving();
         currentHalvingEpoch++;
         lastHalvingTime = block.timestamp;
         emit HalvingTriggered(currentHalvingEpoch, lastHalvingTime);

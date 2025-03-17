@@ -17,7 +17,8 @@ contract TerraStakeValidatorSafety is
     Initializable, 
     AccessControlEnumerableUpgradeable, 
     ReentrancyGuardUpgradeable, 
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    ITerraStakeValidatorSafety
 {
     // -------------------------------------------
     //  Constants
@@ -51,43 +52,22 @@ contract TerraStakeValidatorSafety is
     mapping(address => bool) public isActiveValidator;
     address[] public validatorSet;
     uint256 public activeValidatorCount;
+    mapping(address => uint256) private validatorIndices; // Track index in validatorSet
     
     // Emergency parameters
     bool public emergencyMode;
     uint256 public emergencyModeActivationTime;
     uint256 public emergencyModeCooldown;
     
-    // -------------------------------------------
-    //  Events
-    // -------------------------------------------
+    // Inactivity threshold for validators
+    uint256 public validatorInactivityThreshold;
     
-    event ValidatorAdded(address indexed validator);
-    event ValidatorRemoved(address indexed validator);
-    event ValidatorThresholdUpdated(uint256 newThreshold);
-    event ValidatorQuorumUpdated(uint256 newQuorum);
-    event GovernanceTierUpdated(uint8 tierId, uint256 newThreshold);
-    event ValidatorCooldownUpdated(uint256 newCooldown);
-    event RiskScoreUpdated(address indexed validator, uint256 newScore);
-    event RiskScoreThresholdUpdated(uint256 newThreshold);
-    event EmergencyModeActivated(address activator);
-    event EmergencyModeDeactivated(address deactivator);
-    event EmergencyCooldownUpdated(uint256 newCooldown);
-    event EmergencyValidatorThresholdReduction(uint256 oldThreshold, uint256 newThreshold);
+    // Timelock for critical operations
+    uint256 public timelockPeriod;
+    mapping(bytes32 => uint256) public pendingOperations;
     
-    // -------------------------------------------
-    //  Errors
-    // -------------------------------------------
-    
-    error Unauthorized();
-    error InvalidParameters();
-    error CooldownActive();
-    error ValidatorNotActive();
-    error ValidatorAlreadyActive();
-    error EmergencyModeActive();
-    error EmergencyModeNotActive();
-    error EmergencyCooldownActive();
-    error ThresholdTooLow();
-    error QuorumTooHigh();
+    // Automatic risk handling
+    bool public autoSuspendHighRiskValidators;
     
     // -------------------------------------------
     //  Modifiers
@@ -109,6 +89,28 @@ contract TerraStakeValidatorSafety is
         _;
     }
     
+    /**
+     * @notice Checks if an operation has passed its timelock period
+     * @param operationId The hash identifying the operation
+     */
+    modifier timelockElapsed(bytes32 operationId) {
+        if (pendingOperations[operationId] == 0) revert OperationNotScheduled();
+        if (block.timestamp < pendingOperations[operationId]) revert TimelockNotExpired();
+        _;
+        
+        // Clean up the operation after execution
+        delete pendingOperations[operationId];
+        emit OperationExecuted(operationId);
+    }
+    
+    /**
+     * @notice Ensures there are sufficient active validators for safe operation
+     */
+    modifier sufficientValidators() {
+        if (activeValidatorCount < validatorThreshold) revert InsufficientActiveValidators();
+        _;
+    }
+    
     // -------------------------------------------
     //  Initializer & Upgrade Control
     // -------------------------------------------
@@ -123,6 +125,8 @@ contract TerraStakeValidatorSafety is
      * @param _initialAdmin Initial admin address
      */
     function initialize(address _initialAdmin) external initializer {
+        if (_initialAdmin == address(0)) revert ZeroAddressNotAllowed();
+        
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
@@ -138,6 +142,9 @@ contract TerraStakeValidatorSafety is
         validatorQuorum = 3; // Require at least 3 validators for consensus
         validatorCooldownPeriod = 7 days;
         riskScoreThreshold = 80; // Risk score from 0-100, 80+ is high risk
+        validatorInactivityThreshold = 7 days; // Default inactivity threshold
+        timelockPeriod = 2 days; // Default timelock for critical operations
+        autoSuspendHighRiskValidators = true; // Auto-suspend high risk validators by default
         
         // Set governance tier thresholds
         governanceTier1Threshold = 50_000 * 10**18; // 50,000 tokens
@@ -156,19 +163,70 @@ contract TerraStakeValidatorSafety is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
     
     // -------------------------------------------
+    //  Timelock Management
+    // -------------------------------------------
+    
+    /**
+     * @notice Schedule an operation with a timelock
+     * @param operationId Unique identifier for the operation
+     */
+    function scheduleOperation(bytes32 operationId) internal {
+        pendingOperations[operationId] = block.timestamp + timelockPeriod;
+        emit OperationScheduled(operationId, pendingOperations[operationId]);
+    }
+    
+    /**
+     * @notice Cancel a scheduled operation
+     * @param operationId Unique identifier for the operation
+     */
+    function cancelOperation(bytes32 operationId) external onlyRole(GOVERNANCE_ROLE) {
+        if (pendingOperations[operationId] == 0) revert OperationNotScheduled();
+        delete pendingOperations[operationId];
+        emit OperationCancelled(operationId);
+    }
+    
+    /**
+     * @notice Update the timelock period
+     * @param newPeriod New timelock period in seconds
+     */
+    function updateTimelockPeriod(uint256 newPeriod) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
+        if (newPeriod < 1 hours) revert InvalidParameters(); // Minimum 1 hour
+        timelockPeriod = newPeriod;
+        emit TimelockPeriodUpdated(newPeriod);
+    }
+    
+    // -------------------------------------------
     //  Validator Management Functions
     // -------------------------------------------
     
     /**
-     * @notice Add a new validator to the network
+     * @notice Schedule addition of a new validator to the network
      * @param validator Address of the new validator
      */
-    function addValidator(address validator) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
-        if (validator == address(0)) revert InvalidParameters();
+    function scheduleAddValidator(address validator) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
+        if (validator == address(0)) revert ZeroAddressNotAllowed();
+        if (isActiveValidator[validator]) revert ValidatorAlreadyActive();
+        
+        bytes32 operationId = keccak256(abi.encode("ADD_VALIDATOR", validator, block.timestamp));
+        scheduleOperation(operationId);
+    }
+    
+    /**
+     * @notice Add a new validator to the network after timelock period
+     * @param validator Address of the new validator
+     */
+    function addValidator(address validator) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE) 
+        notInEmergencyMode 
+        timelockElapsed(keccak256(abi.encode("ADD_VALIDATOR", validator, block.timestamp - timelockPeriod)))
+    {
+        if (validator == address(0)) revert ZeroAddressNotAllowed();
         if (isActiveValidator[validator]) revert ValidatorAlreadyActive();
         
         // Add to active validators
         isActiveValidator[validator] = true;
+        validatorIndices[validator] = validatorSet.length;
         validatorSet.push(validator);
         activeValidatorCount++;
         
@@ -183,10 +241,28 @@ contract TerraStakeValidatorSafety is
     }
     
     /**
-     * @notice Remove a validator from the network
+     * @notice Schedule removal of a validator from the network
      * @param validator Address of the validator to remove
      */
-    function removeValidator(address validator) external onlyRole(GOVERNANCE_ROLE) {
+    function scheduleRemoveValidator(address validator) external onlyRole(GOVERNANCE_ROLE) {
+        if (!isActiveValidator[validator]) revert ValidatorNotActive();
+        
+        // Check if we'll still have enough validators after removal
+        if (activeValidatorCount <= validatorThreshold) revert ThresholdTooLow();
+        
+        bytes32 operationId = keccak256(abi.encode("REMOVE_VALIDATOR", validator, block.timestamp));
+        scheduleOperation(operationId);
+    }
+    
+    /**
+     * @notice Remove a validator from the network after timelock period
+     * @param validator Address of the validator to remove
+     */
+    function removeValidator(address validator) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        timelockElapsed(keccak256(abi.encode("REMOVE_VALIDATOR", validator, block.timestamp - timelockPeriod)))
+    {
         if (!isActiveValidator[validator]) revert ValidatorNotActive();
         
         // Check if we'll still have enough validators after removal
@@ -199,22 +275,53 @@ contract TerraStakeValidatorSafety is
         // Remove validator role
         _revokeRole(VALIDATOR_ROLE, validator);
         
-        // We don't remove from the array to keep gas costs lower,
-        // we just track active status separately
+        // Properly remove validator from array by swapping with last element and popping
+        uint256 indexToRemove = validatorIndices[validator];
+        uint256 lastIndex = validatorSet.length - 1;
+        
+        if (indexToRemove != lastIndex) {
+            address lastValidator = validatorSet[lastIndex];
+            validatorSet[indexToRemove] = lastValidator;
+            validatorIndices[lastValidator] = indexToRemove;
+        }
+        
+        validatorSet.pop();
+        delete validatorIndices[validator];
         
         emit ValidatorRemoved(validator);
     }
     
     /**
-     * @notice Update validator threshold
+     * @notice Schedule validator threshold update
      * @param newThreshold New minimum number of validators required
      */
-    function updateValidatorThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
+    function scheduleUpdateValidatorThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
         // Ensure cooldown has passed
         if (block.timestamp < lastValidatorConfigUpdate + validatorCooldownPeriod) {
             revert CooldownActive();
         }
         
+        // Threshold must be at least 3 for reasonable security
+        if (newThreshold < 3) revert ThresholdTooLow();
+        
+        // Threshold must be lower than or equal to current active validator count
+        if (newThreshold > activeValidatorCount) revert InvalidParameters();
+        
+        bytes32 operationId = keccak256(abi.encode("UPDATE_VALIDATOR_THRESHOLD", newThreshold, block.timestamp));
+        scheduleOperation(operationId);
+    }
+    
+    /**
+     * @notice Update validator threshold after timelock period
+     * @param newThreshold New minimum number of validators required
+     */
+    function updateValidatorThreshold(uint256 newThreshold) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE) 
+        notInEmergencyMode
+        timelockElapsed(keccak256(abi.encode("UPDATE_VALIDATOR_THRESHOLD", newThreshold, block.timestamp - timelockPeriod)))
+        sufficientValidators
+    {
         // Threshold must be at least 3 for reasonable security
         if (newThreshold < 3) revert ThresholdTooLow();
         
@@ -228,15 +335,36 @@ contract TerraStakeValidatorSafety is
     }
     
     /**
-     * @notice Update validator quorum
+     * @notice Schedule validator quorum update
      * @param newQuorum New quorum threshold for validator consensus
      */
-    function updateValidatorQuorum(uint256 newQuorum) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
+    function scheduleUpdateValidatorQuorum(uint256 newQuorum) external onlyRole(GOVERNANCE_ROLE) notInEmergencyMode {
         // Ensure cooldown has passed
         if (block.timestamp < lastValidatorConfigUpdate + validatorCooldownPeriod) {
             revert CooldownActive();
         }
         
+        // Quorum must be at least 2
+        if (newQuorum < 2) revert ThresholdTooLow();
+        
+        // Quorum must not exceed validator threshold
+        if (newQuorum > validatorThreshold) revert QuorumTooHigh();
+        
+        bytes32 operationId = keccak256(abi.encode("UPDATE_VALIDATOR_QUORUM", newQuorum, block.timestamp));
+        scheduleOperation(operationId);
+    }
+    
+    /**
+     * @notice Update validator quorum after timelock period
+     * @param newQuorum New quorum threshold for validator consensus
+     */
+    function updateValidatorQuorum(uint256 newQuorum) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE) 
+        notInEmergencyMode
+        timelockElapsed(keccak256(abi.encode("UPDATE_VALIDATOR_QUORUM", newQuorum, block.timestamp - timelockPeriod)))
+        sufficientValidators
+    {
         // Quorum must be at least 2
         if (newQuorum < 2) revert ThresholdTooLow();
         
@@ -254,7 +382,11 @@ contract TerraStakeValidatorSafety is
      * @param tierId Tier ID (1, 2, or 3)
      * @param newThreshold New token threshold for this tier
      */
-    function updateGovernanceTier(uint8 tierId, uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+    function updateGovernanceTier(uint8 tierId, uint256 newThreshold) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        notInEmergencyMode 
+    {
         if (tierId < 1 || tierId > 3) revert InvalidParameters();
         
         if (tierId == 1) {
@@ -276,13 +408,47 @@ contract TerraStakeValidatorSafety is
      * @notice Update validator cooldown period
      * @param newCooldown New cooldown period in seconds
      */
-    function updateValidatorCooldown(uint256 newCooldown) external onlyRole(GOVERNANCE_ROLE) {
+    function updateValidatorCooldown(uint256 newCooldown) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        notInEmergencyMode 
+    {
         // Ensure cooldown is reasonable (at least 1 day, at most 30 days)
         if (newCooldown < 1 days || newCooldown > 30 days) revert InvalidParameters();
         
         validatorCooldownPeriod = newCooldown;
         
         emit ValidatorCooldownUpdated(newCooldown);
+    }
+    
+    /**
+     * @notice Update validator inactivity threshold
+     * @param newThreshold New inactivity threshold in seconds
+     */
+    function updateValidatorInactivityThreshold(uint256 newThreshold) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        notInEmergencyMode 
+    {
+        // Ensure threshold is reasonable (at least 1 day)
+        if (newThreshold < 1 days) revert InvalidParameters();
+        
+        validatorInactivityThreshold = newThreshold;
+        
+        emit ValidatorInactivityThresholdUpdated(newThreshold);
+    }
+    
+    /**
+     * @notice Toggle automatic suspension of high risk validators
+     * @param enabled True to enable automatic suspension, false to disable
+     */
+    function setAutoSuspendHighRiskValidators(bool enabled) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        notInEmergencyMode 
+    {
+        autoSuspendHighRiskValidators = enabled;
+        emit AutoSuspendModeUpdated(enabled);
     }
     
     // -------------------------------------------
@@ -294,15 +460,29 @@ contract TerraStakeValidatorSafety is
      * @param validator Validator address
      * @param newScore New risk score (0-100)
      */
-    function updateRiskScore(address validator, uint256 newScore) external onlyRole(GOVERNANCE_ROLE) {
+    function updateRiskScore(address validator, uint256 newScore) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        sufficientValidators 
+    {
         if (!isActiveValidator[validator]) revert ValidatorNotActive();
         if (newScore > 100) revert InvalidParameters(); // Score must be 0-100
         
         validatorRiskScores[validator] = newScore;
         
-        // If score exceeds threshold, this is high risk
-        if (newScore >= riskScoreThreshold) {
-            // Consider adding automatic actions for high-risk validators
+        // If score exceeds threshold and auto-suspend is enabled, suspend the validator
+        if (newScore >= riskScoreThreshold && autoSuspendHighRiskValidators) {
+            // Make sure we maintain sufficient validators after suspension
+            if (activeValidatorCount <= validatorThreshold) {
+                // Can't suspend - would breach threshold
+                emit ValidatorSuspended(validator, newScore); // Log attempt but don't suspend
+            } else {
+                // Remove from active validators but keep in the system
+                isActiveValidator[validator] = false;
+                activeValidatorCount--;
+                
+                emit ValidatorSuspended(validator, newScore);
+            }
         }
         
         emit RiskScoreUpdated(validator, newScore);
@@ -312,7 +492,11 @@ contract TerraStakeValidatorSafety is
      * @notice Update the risk score threshold
      * @param newThreshold New risk score threshold (0-100)
      */
-    function updateRiskScoreThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) {
+    function updateRiskScoreThreshold(uint256 newThreshold) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        notInEmergencyMode 
+    {
         if (newThreshold > 100) revert InvalidParameters(); // Threshold must be 0-100
         
         riskScoreThreshold = newThreshold;
@@ -324,12 +508,19 @@ contract TerraStakeValidatorSafety is
      * @notice Records validator activity to track engagement
      * @param validator Validator address
      */
-    function recordValidatorActivity(address validator) external {
-        // Only validators can record their own activity
-        if (!hasRole(VALIDATOR_ROLE, validator)) revert Unauthorized();
-        if (msg.sender != validator) revert Unauthorized();
+    function recordValidatorActivity(address validator) external nonReentrant {
+        // Only validators can record their own activity or governance/guardian role can record for any validator
+        bool isAuthorized = (msg.sender == validator && 
+                            hasRole(VALIDATOR_ROLE, validator)) || 
+                            hasRole(GOVERNANCE_ROLE, msg.sender) || 
+                            hasRole(GUARDIAN_ROLE, msg.sender);
+        
+        if (!isAuthorized) revert Unauthorized();
+        if (!isActiveValidator[validator]) revert ValidatorNotActive();
         
         lastValidatorActivity[validator] = block.timestamp;
+        
+        emit ValidatorActivityRecorded(validator, msg.sender);
     }
     
     // -------------------------------------------
@@ -340,7 +531,11 @@ contract TerraStakeValidatorSafety is
      * @notice Activate emergency mode
      * @dev Can only be called by guardian role
      */
-    function activateEmergencyMode() external onlyRole(GUARDIAN_ROLE) notInEmergencyMode {
+    function activateEmergencyMode() external 
+        nonReentrant 
+        onlyRole(GUARDIAN_ROLE) 
+        notInEmergencyMode 
+    {
         // Check if emergency cooldown has passed since last deactivation
         if (emergencyModeActivationTime > 0) {
             if (block.timestamp < emergencyModeActivationTime + emergencyModeCooldown) {
@@ -358,7 +553,11 @@ contract TerraStakeValidatorSafety is
      * @notice Deactivate emergency mode
      * @dev Can only be called by governance role
      */
-    function deactivateEmergencyMode() external onlyRole(GOVERNANCE_ROLE) onlyInEmergencyMode {
+    function deactivateEmergencyMode() external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE) 
+        onlyInEmergencyMode 
+    {
         emergencyMode = false;
         
         emit EmergencyModeDeactivated(msg.sender);
@@ -368,7 +567,11 @@ contract TerraStakeValidatorSafety is
      * @notice Update emergency mode cooldown
      * @param newCooldown New cooldown period in seconds
      */
-    function updateEmergencyCooldown(uint256 newCooldown) external onlyRole(GOVERNANCE_ROLE) {
+    function updateEmergencyCooldown(uint256 newCooldown) external 
+        nonReentrant 
+        onlyRole(GOVERNANCE_ROLE)
+        notInEmergencyMode 
+    {
         // Ensure cooldown is reasonable (at least 1 day)
         if (newCooldown < 1 days) revert InvalidParameters();
         
@@ -378,17 +581,21 @@ contract TerraStakeValidatorSafety is
     }
     
     /**
-* @notice Emergency function to reduce validator threshold
+     * @notice Emergency function to reduce validator threshold
      * @param newThreshold New validator threshold
      * @dev This is needed in case too many validators go offline
      */
     function emergencyReduceValidatorThreshold(uint256 newThreshold) 
         external 
+        nonReentrant
         onlyRole(GUARDIAN_ROLE) 
         onlyInEmergencyMode 
     {
         // Must maintain minimum security with at least 2 validators
         if (newThreshold < 2) revert ThresholdTooLow();
+        
+        // Threshold must be lower than or equal to current active validator count
+        if (newThreshold > activeValidatorCount) revert ExceedsActiveValidatorCount();
         
         // Record the change
         uint256 oldThreshold = validatorThreshold;
@@ -481,6 +688,7 @@ contract TerraStakeValidatorSafety is
     function getHighRiskValidatorCount() external view returns (uint256) {
         uint256 count = 0;
         
+        // Single pass through validator set checking both activity and risk
         for (uint256 i = 0; i < validatorSet.length; i++) {
             address validator = validatorSet[i];
             if (isActiveValidator[validator] && validatorRiskScores[validator] >= riskScoreThreshold) {
@@ -492,33 +700,92 @@ contract TerraStakeValidatorSafety is
     }
     
     /**
-     * @notice Get inactive validators (no activity in last 7 days)
+     * @notice Get inactive validators (no activity in configured threshold period)
      * @return Array of inactive validator addresses
      */
     function getInactiveValidators() external view returns (address[] memory) {
-        // Pre-allocate maximum possible size
-        address[] memory inactiveValidators = new address[](activeValidatorCount);
-        
         uint256 inactiveCount = 0;
-        uint256 inactivityThreshold = 7 days;
         
+        // First, count inactive validators in a single pass
         for (uint256 i = 0; i < validatorSet.length; i++) {
             address validator = validatorSet[i];
             if (isActiveValidator[validator]) {
                 uint256 inactiveDuration = block.timestamp - lastValidatorActivity[validator];
-                if (inactiveDuration > inactivityThreshold) {
-                    inactiveValidators[inactiveCount] = validator;
+                if (inactiveDuration > validatorInactivityThreshold) {
                     inactiveCount++;
                 }
             }
         }
         
-        // Create correctly sized array with only inactive validators
+        // Only allocate the array once we know the exact size
         address[] memory result = new address[](inactiveCount);
-        for (uint256 i = 0; i < inactiveCount; i++) {
-            result[i] = inactiveValidators[i];
+        
+        // Fill the array in a second pass if we have any inactive validators
+        if (inactiveCount > 0) {
+            uint256 resultIndex = 0;
+            for (uint256 i = 0; i < validatorSet.length; i++) {
+                address validator = validatorSet[i];
+                if (isActiveValidator[validator]) {
+                    uint256 inactiveDuration = block.timestamp - lastValidatorActivity[validator];
+                    if (inactiveDuration > validatorInactivityThreshold) {
+                        result[resultIndex] = validator;
+                        resultIndex++;
+                    }
+                }
+            }
         }
         
         return result;
     }
+    
+    /**
+     * @notice Check if a timelock operation is pending and when it can be executed
+     * @param operationId Unique identifier for the operation
+     * @return pending Whether the operation is pending
+     * @return executionTime When the operation can be executed (0 if not pending)
+     */
+    function getOperationStatus(bytes32 operationId) external view returns (bool pending, uint256 executionTime) {
+        executionTime = pendingOperations[operationId];
+        pending = executionTime > 0;
+        return (pending, executionTime);
+    }
+    
+    /**
+     * @notice Check if the contract has sufficient active validators
+     * @return True if there are enough active validators
+     */
+    function hasSufficientValidators() external view returns (bool) {
+        return activeValidatorCount >= validatorThreshold;
+    }
+    
+    /**
+     * @notice Get current system status information
+     * @return isEmergency Whether emergency mode is active
+     * @return validatorCount Current number of active validators
+     * @return minValidators Minimum number of validators required
+     * @return highRiskCount Number of high risk validators
+     */
+    function getSystemStatus() external view returns (
+        bool isEmergency,
+        uint256 validatorCount,
+        uint256 minValidators,
+        uint256 highRiskCount
+    ) {
+        isEmergency = emergencyMode;
+        validatorCount = activeValidatorCount;
+        minValidators = validatorThreshold;
+        
+        // Count high risk validators
+        highRiskCount = 0;
+        for (uint256 i = 0; i < validatorSet.length; i++) {
+            address validator = validatorSet[i];
+            if (isActiveValidator[validator] && validatorRiskScores[validator] >= riskScoreThreshold) {
+                highRiskCount++;
+            }
+        }
+        
+        return (isEmergency, validatorCount, minValidators, highRiskCount);
+    }
 }
+
+
