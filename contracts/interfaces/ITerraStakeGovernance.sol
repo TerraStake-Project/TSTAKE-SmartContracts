@@ -52,6 +52,17 @@ interface ITerraStakeGovernance {
         VoteType support;
         uint256 votes;
     }
+
+    struct FeeProposal {
+        uint256 projectSubmissionFee;
+        uint256 impactReportingFee;
+        uint256 buybackPercentage;
+        uint256 liquidityPairingPercentage;
+        uint256 burnPercentage;
+        uint256 treasuryPercentage;
+        uint256 voteEnd;
+        bool executed;
+    }
     
     // -------------------------------------------
     //  Events

@@ -72,6 +72,11 @@ contract TerraStakeLiquidityGuard is
     uint256 constant DEFAULT_SLIPPAGE_TOLERANCE = 50; // 0.5%
     uint24 constant DEFAULT_POOL_FEE = 3000; // 0.3%
 
+    /// @dev The minimum tick that may be passed to #getSqrtRatioAtTick computed from log base 1.0001 of 2**-128
+    int24 internal constant MIN_TICK = -887272;
+    /// @dev The maximum tick that may be passed to #getSqrtRatioAtTick computed from log base 1.0001 of 2**128
+    int24 internal constant MAX_TICK = -MIN_TICK;
+
     // -------------------------------------------
     //  Errors
     // -------------------------------------------
@@ -285,7 +290,8 @@ contract TerraStakeLiquidityGuard is
             fee: DEFAULT_POOL_FEE,
             tickLower: tickLower,
             tickUpper: tickUpper,
-                        amount1Desired: usdcAmount,
+            amount0Desired: amount,
+            amount1Desired: usdcAmount,
             amount0Min: amount * (10000 - slippageTolerance) / 10000,
             amount1Min: usdcAmount * (10000 - slippageTolerance) / 10000,
             recipient: address(this),

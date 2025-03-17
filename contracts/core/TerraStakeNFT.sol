@@ -770,6 +770,41 @@ contract TerraStakeNFT is
     // ====================================================
 
     /**
+     * @notice Gets comprehensive data for a token including impact and verification details
+     * @param tokenId The token ID to query
+     * @return impactValue The quantified impact value of the token
+     * @return category The project category of the token
+     * @return verificationHash The hash of the verification report (reportHash)
+     */
+    function getTokenData(uint256 tokenId) 
+        external 
+        view 
+        returns (
+            uint256 impactValue,
+            ProjectCategory category,
+            bytes32 verificationHash
+        ) 
+    {
+        if (!exists(tokenId)) revert InvalidTokenId();
+        
+        // Get the category from token metadata
+        category = tokenMetadata[tokenId].category;
+        
+        // For impact NFTs, get the impact value and verification hash
+        if (tokenMetadata[tokenId].nftType == NFTType.IMPACT) {
+            ImpactCertificate memory certificate = impactCertificates[tokenId];
+            impactValue = certificate.impactValue;
+            verificationHash = certificate.reportHash;
+        } else {
+            // For non-impact NFTs, these values will be 0/empty
+            impactValue = 0;
+            verificationHash = bytes32(0);
+        }
+        
+        return (impactValue, category, verificationHash);
+    }
+
+    /**
      * @notice Gets all tokens for a specific project category
      * @param category The project category to query
      * @return List of token IDs in the category

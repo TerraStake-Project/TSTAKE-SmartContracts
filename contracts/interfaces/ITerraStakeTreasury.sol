@@ -6,6 +6,13 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20Burnable
 import "../interfaces/IAntiBot.sol";
 import "../interfaces/ITerraStakeITO.sol";
 
+
+/// @dev Minimal interface extending IERC20 to include burning functionality.
+interface IBurnableERC20 is IERC20 {
+    function burn(uint256 amount) external;
+}
+
+
 /**
  * @title ITerraStakeTreasury
  * @notice Interface for the TerraStake Treasury contract

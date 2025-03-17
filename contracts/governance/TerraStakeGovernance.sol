@@ -139,10 +139,7 @@ contract TerraStakeGovernance is
     error InvalidVote();
     error TimelockNotExpired();
     error ProposalAlreadyExecuted();
-    error InvalidProposalState();
-    error InvalidParameters();
     error GovernanceViolation();
-    error Unauthorized();
     error InsufficientValidators();
     error ProposalTypeNotAllowed();
     error InvalidGuardianSignatures();
