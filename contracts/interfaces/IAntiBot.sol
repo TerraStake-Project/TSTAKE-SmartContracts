@@ -39,19 +39,17 @@ interface IAntiBot {
     /**
      * @notice Gets price monitoring status
      * @return lastPrice Last checked price
-     * @return currentPrice Current price
-     * @return timeSinceLastCheck Time since last price check
-     * @return buybackPaused Whether buyback is paused
-     * @return circuitBroken Whether circuit breaker is triggered
-     * @return surgeBroken Whether price surge breaker is triggered
+     * @return lastCheckTime Last price check timestamp
+     * @return isBreaker Whether circuit breaker is active
+     * @return isSurge Whether price surge breaker is active
+     * @return surgeCooldownEnd Timestamp when surge cooldown ends
      */
     function getPriceMonitoringStatus() external view returns (
         int256 lastPrice,
-        int256 currentPrice,
-        uint256 timeSinceLastCheck,
-        bool buybackPaused,
-        bool circuitBroken,
-        bool surgeBroken
+        uint256 lastCheckTime,
+        bool isBreaker,
+        bool isSurge,
+        uint256 surgeCooldownEnd
     );
     
     /**
@@ -123,18 +121,18 @@ interface IAntiBot {
     
     /**
      * @notice Gets failsafe mechanism status
-     * @return admin Failsafe admin address
-     * @return isActive Whether failsafe mode is active
-     * @return inactivityThreshold Governance inactivity threshold
+     * @return active Whether failsafe mode is active
+     * @return admin Current failsafe admin address
+     * @return governanceActive Whether governance is considered active
      * @return lastActivity Last governance activity timestamp
-     * @return timeUntilFailsafe Time until failsafe can be activated
+     * @return inactivityThreshold Governance inactivity threshold
      */
     function getFailsafeStatus() external view returns (
+        bool active,
         address admin,
-        bool isActive,
-        uint256 inactivityThreshold,
+        bool governanceActive,
         uint256 lastActivity,
-        uint256 timeUntilFailsafe
+        uint256 inactivityThreshold
     );
     
     /**

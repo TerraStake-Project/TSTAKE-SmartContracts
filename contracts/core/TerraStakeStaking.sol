@@ -20,7 +20,7 @@ import "../interfaces/ITerraStakeSlashing.sol";
 /**
  * @title TerraStakeStaking
  * @notice Official staking contract for the TerraStake ecosystem with multi-project (batch) operations,
- * @auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
+ * auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
  * @dev This contract is upgradeable (UUPS) and uses multiple OpenZeppelin libraries for security.
  */
 contract TerraStakeStaking is 
@@ -127,26 +127,6 @@ contract TerraStakeStaking is
      *      Always keep this at the end of state variables.
      */
     uint256[50] private __gap;
-
-    // -------------------------------------------
-    //   Events
-    // -------------------------------------------
-    event ValidatorRemoved(address indexed validator, uint256 timestamp);
-    event SlashingContractUpdated(address indexed newContract);
-    event ProjectApprovalVoted(uint256 indexed projectId, address voter, bool approved, uint256 votingPower);
-    event RewardRateAdjusted(uint256 oldRate, uint256 newRate);
-    event HalvingApplied(
-        uint256 indexed epoch,
-        uint256 oldBaseAPR,
-        uint256 newBaseAPR,
-        uint256 oldBoostedAPR,
-        uint256 newBoostedAPR
-    );
-    event DynamicRewardsToggled(bool enabled);
-    event GovernanceQuorumUpdated(uint256 newQuorum);
-    event SlashedTokensDistributed(uint256 amount);
-    event SlashedTokensBurned(uint256 amount);
-    event SlashedTokensSentToTreasury(uint256 amount, address treasury);
 
     // -------------------------------------------
     //   Constructor & Initializer
@@ -312,6 +292,7 @@ contract TerraStakeStaking is
         }
         emit Staked(msg.sender, projectId, amount, duration, block.timestamp, position.amount);
     }
+
     /**
      * @notice Stake tokens across multiple projects in a single transaction.
      * @param projectIds    Array of project IDs to stake into
@@ -933,36 +914,6 @@ contract TerraStakeStaking is
         
         return halvingEpoch;
     }
-}
-
-    /**
-     * @notice Slashes a user's governance voting rights as penalty for governance violations
-     * @param user Address of the user whose governance voting rights will be slashed
-     * @return The amount of voting power that was slashed
-     */
-    function slashGovernanceVote(address user) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-        returns (uint256) 
-    {
-        if (_governanceViolators[user]) {
-            return 0; // Already a violator
-        }
-        
-        uint256 slashedAmount = _governanceVotes[user];
-        if (slashedAmount == 0) {
-            return 0; // No voting power to slash
-        }
-        
-        // Mark as violator and remove voting power
-        _governanceViolators[user] = true;
-        _governanceVotes[user] = 0;
-        
-        emit GovernanceViolatorMarked(user, block.timestamp);
-        
-        return slashedAmount;
-    }
-
 
     // -------------------------------------------
     //   Administrative & Emergency
@@ -1086,33 +1037,6 @@ contract TerraStakeStaking is
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
-/**
- * @notice Adjust reward rates based on platform metrics
- */
-function adjustRewardRates() external onlyRole(DEFAULT_ADMIN_ROLE) {
-    uint256 oldBaseAPR = dynamicBaseAPR;
-    uint256 oldBoostedAPR = dynamicBoostedAPR;
-    // Implement rate adjustment logic here
-    // This is placeholder logic - would need real implementation
-    dynamicBaseAPR = BASE_APR;
-    dynamicBoostedAPR = BOOSTED_APR;
-    emit RewardRateAdjusted(oldBaseAPR, dynamicBaseAPR);
-}
-
-/**
- * @notice Apply reward halving if the halving period has elapsed
- */
-function applyHalvingIfNeeded() external onlyRole(DEFAULT_ADMIN_ROLE) {
-    if (block.timestamp >= lastHalvingTime + halvingPeriod) {
-        uint256 oldBaseAPR = dynamicBaseAPR;
-        uint256 oldBoostedAPR = dynamicBoostedAPR;
-        dynamicBaseAPR = dynamicBaseAPR / 2;
-        dynamicBoostedAPR = dynamicBoostedAPR / 2;
-        lastHalvingTime = block.timestamp;
-        halvingEpoch++;
-        emit HalvingApplied(halvingEpoch, oldBaseAPR, dynamicBaseAPR, oldBoostedAPR, dynamicBoostedAPR);
-    }
-}
 
     /**
      * @notice Recover ERC20 tokens accidentally sent here, except the staked ones.
@@ -1225,175 +1149,175 @@ function applyHalvingIfNeeded() external onlyRole(DEFAULT_ADMIN_ROLE) {
         return reward;
     }
 
-/**
- * @notice Finds the staking tier index that applies for a given duration.
- */
-function getApplicableTier(uint256 duration) public view returns (uint256) {
-    uint256 applicableTier = 0;
-    for (uint256 i = 0; i < _tiers.length; i++) {
-        if (duration >= _tiers[i].minDuration) {
-            applicableTier = i;
-        } else {
-            break;
-        }
-    }
-    return applicableTier;
-}
-
-function getUserStake(address user, uint256 projectId) external view returns (uint256) {
-    return _stakingPositions[user][projectId].amount;
-}
-
-function getUserTotalStake(address user) external view returns (uint256) {
-    return _stakingBalance[user];
-}
-
-function getUserPositions(address user) external view returns (StakingPosition[] memory positions) {
-    // We gather from the project contract how many total projects exist
-    // Then filter the user's staked positions
-    uint256 projectCount = projectsContract.getProjectCount();
-    uint256 count        = 0;
-
-    for (uint256 i = 1; i <= projectCount; i++) {
-        if (_stakingPositions[user][i].amount > 0) {
-            count++;
-        }
-    }
-
-    positions = new StakingPosition[](count);
-    uint256 index = 0;
-
-    for (uint256 i = 1; i <= projectCount; i++) {
-        if (_stakingPositions[user][i].amount > 0) {
-            positions[index] = _stakingPositions[user][i];
-            index++;
-        }
-    }
-    return positions;
-}
-
-function getPenaltyHistory(address user) external view returns (PenaltyEvent[] memory) {
-    return _penaltyHistory[user];
-}
-
-function isValidator(address user) external view returns (bool) {
-    return _validators[user];
-}
-
-function getValidatorCommission(address validator) external view returns (uint256) {
-    return _validatorCommission[validator];
-}
-
-function isGovernanceViolator(address user) external view returns (bool) {
-    return _governanceViolators[user];
-}
-
-function getGovernanceVotes(address user) external view returns (uint256) {
-    return _governanceVotes[user];
-}
-
-function getTotalStaked() external view returns (uint256) {
-    return _totalStaked;
-}
-
-/**
- * @notice Get the total amount of staked tokens
- * @return Total staked tokens
- */
-function totalStakedTokens() external view returns (uint256) {
-    return _totalStaked;
-}
-
-function getValidatorRewardPool() external view returns (uint256) {
-    return validatorRewardPool;
-}
-
-function getAllTiers() external view returns (StakingTier[] memory) {
-    return _tiers;
-}
-
-/**
- * @notice Returns the top stakers up to `limit`.
- * @dev Uses an optimized partial selection sort algorithm that only sorts the top 'limit' elements
- *      for better performance O(n*limit) instead of O(n²).
- */
-function getTopStakers(uint256 limit)
-    external
-    view
-    returns (address[] memory stakers, uint256[] memory amounts)
-{
-    uint256 stakerCount = _activeStakers.length;
-   
-    // Cap the limit at the active stakers count
-    if (limit > stakerCount) {
-        limit = stakerCount;
-    }
-   
-    if (limit == 0) {
-        return (new address[](0), new uint256[](0));
-    }
-
-    // Initialize result arrays
-    stakers = new address[](limit);
-    amounts = new uint256[](limit);
-   
-    // Work with temporary arrays for selection process
-    address[] memory tempStakers = new address[](stakerCount);
-    uint256[] memory tempAmounts = new uint256[](stakerCount);
-
-    // Populate temporary arrays
-    for (uint256 i = 0; i < stakerCount; i++) {
-        tempStakers[i] = _activeStakers[i];
-        tempAmounts[i] = _stakingBalance[_activeStakers[i]];
-    }
-   
-    // Find top 'limit' elements using partial selection sort
-    // This is more efficient because we only sort what we need
-    for (uint256 i = 0; i < limit; i++) {
-        uint256 maxIndex = i;
-       
-        // Find the maximum value in the remaining unsorted portion
-        for (uint256 j = i + 1; j < stakerCount; j++) {
-            if (tempAmounts[j] > tempAmounts[maxIndex]) {
-                maxIndex = j;
+    /**
+     * @notice Finds the staking tier index that applies for a given duration.
+     */
+    function getApplicableTier(uint256 duration) public view returns (uint256) {
+        uint256 applicableTier = 0;
+        for (uint256 i = 0; i < _tiers.length; i++) {
+            if (duration >= _tiers[i].minDuration) {
+                applicableTier = i;
+            } else {
+                break;
             }
         }
-       
-        // If we found a new maximum, swap it to the current position
-        if (maxIndex != i) {
-            // Swap amounts
-            uint256 tempAmount = tempAmounts[i];
-            tempAmounts[i] = tempAmounts[maxIndex];
-            tempAmounts[maxIndex] = tempAmount;
-           
-            // Swap addresses
-            address tempAddr = tempStakers[i];
-            tempStakers[i] = tempStakers[maxIndex];
-            tempStakers[maxIndex] = tempAddr;
-        }
-       
-        // Add to result arrays
-        stakers[i] = tempStakers[i];
-        amounts[i] = tempAmounts[i];
+        return applicableTier;
     }
-   
-    return (stakers, amounts);
-}
 
-/**
- * @notice Get the current count of validators
- * @return Number of validators
- */
-function getValidatorCount() external view returns (uint256) {
-    uint256 count = 0;
-    // Count the validators
-    for (uint256 i = 0; i < _activeStakers.length; i++) {
-        if (_validators[_activeStakers[i]]) {
-            count++;
-        }
+    function getUserStake(address user, uint256 projectId) external view returns (uint256) {
+        return _stakingPositions[user][projectId].amount;
     }
-    return count;
-}
+
+    function getUserTotalStake(address user) external view returns (uint256) {
+        return _stakingBalance[user];
+    }
+
+    function getUserPositions(address user) external view returns (StakingPosition[] memory positions) {
+        // We gather from the project contract how many total projects exist
+        // Then filter the user's staked positions
+        uint256 projectCount = projectsContract.getProjectCount();
+        uint256 count        = 0;
+
+        for (uint256 i = 1; i <= projectCount; i++) {
+            if (_stakingPositions[user][i].amount > 0) {
+                count++;
+            }
+        }
+
+        positions = new StakingPosition[](count);
+        uint256 index = 0;
+
+        for (uint256 i = 1; i <= projectCount; i++) {
+            if (_stakingPositions[user][i].amount > 0) {
+                positions[index] = _stakingPositions[user][i];
+                index++;
+            }
+        }
+        return positions;
+    }
+
+    function getPenaltyHistory(address user) external view returns (PenaltyEvent[] memory) {
+        return _penaltyHistory[user];
+    }
+
+    function isValidator(address user) external view returns (bool) {
+        return _validators[user];
+    }
+
+    function getValidatorCommission(address validator) external view returns (uint256) {
+        return _validatorCommission[validator];
+    }
+
+    function isGovernanceViolator(address user) external view returns (bool) {
+        return _governanceViolators[user];
+    }
+
+    function getGovernanceVotes(address user) external view returns (uint256) {
+        return _governanceVotes[user];
+    }
+
+    function getTotalStaked() external view returns (uint256) {
+        return _totalStaked;
+    }
+
+    /**
+     * @notice Get the total amount of staked tokens
+     * @return Total staked tokens
+     */
+    function totalStakedTokens() external view returns (uint256) {
+        return _totalStaked;
+    }
+
+    function getValidatorRewardPool() external view returns (uint256) {
+        return validatorRewardPool;
+    }
+
+    function getAllTiers() external view returns (StakingTier[] memory) {
+        return _tiers;
+    }
+
+    /**
+     * @notice Returns the top stakers up to `limit`.
+     * @dev Uses an optimized partial selection sort algorithm that only sorts the top 'limit' elements
+     *      for better performance O(n*limit) instead of O(n²).
+     */
+    function getTopStakers(uint256 limit)
+        external
+        view
+        returns (address[] memory stakers, uint256[] memory amounts)
+    {
+        uint256 stakerCount = _activeStakers.length;
+    
+        // Cap the limit at the active stakers count
+        if (limit > stakerCount) {
+            limit = stakerCount;
+        }
+    
+        if (limit == 0) {
+            return (new address[](0), new uint256[](0));
+        }
+
+        // Initialize result arrays
+        stakers = new address[](limit);
+        amounts = new uint256[](limit);
+    
+        // Work with temporary arrays for selection process
+        address[] memory tempStakers = new address[](stakerCount);
+        uint256[] memory tempAmounts = new uint256[](stakerCount);
+
+        // Populate temporary arrays
+        for (uint256 i = 0; i < stakerCount; i++) {
+            tempStakers[i] = _activeStakers[i];
+            tempAmounts[i] = _stakingBalance[_activeStakers[i]];
+        }
+    
+        // Find top 'limit' elements using partial selection sort
+        // This is more efficient because we only sort what we need
+        for (uint256 i = 0; i < limit; i++) {
+            uint256 maxIndex = i;
+        
+            // Find the maximum value in the remaining unsorted portion
+            for (uint256 j = i + 1; j < stakerCount; j++) {
+                if (tempAmounts[j] > tempAmounts[maxIndex]) {
+                    maxIndex = j;
+                }
+            }
+        
+            // If we found a new maximum, swap it to the current position
+            if (maxIndex != i) {
+                // Swap amounts
+                uint256 tempAmount = tempAmounts[i];
+                tempAmounts[i] = tempAmounts[maxIndex];
+                tempAmounts[maxIndex] = tempAmount;
+            
+                // Swap addresses
+                address tempAddr = tempStakers[i];
+                tempStakers[i] = tempStakers[maxIndex];
+                tempStakers[maxIndex] = tempAddr;
+            }
+        
+            // Add to result arrays
+            stakers[i] = tempStakers[i];
+            amounts[i] = tempAmounts[i];
+        }
+    
+        return (stakers, amounts);
+    }
+
+    /**
+     * @notice Get the current count of validators
+     * @return Number of validators
+     */
+    function getValidatorCount() external view returns (uint256) {
+        uint256 count = 0;
+        // Count the validators
+        for (uint256 i = 0; i < _activeStakers.length; i++) {
+            if (_validators[_activeStakers[i]]) {
+                count++;
+            }
+        }
+        return count;
+    }
 
    
     /**

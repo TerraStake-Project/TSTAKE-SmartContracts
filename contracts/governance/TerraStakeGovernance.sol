@@ -112,38 +112,6 @@ contract TerraStakeGovernance is
     // Execution nonces to prevent replay attacks
     mapping(uint256 => bool) public executedNonces;
     uint256 public currentNonce;
-
-    // -------------------------------------------
-    //  Events
-    // -------------------------------------------
-    
-    // Validator safety events
-    event GovernanceTierUpdated(uint8 tier, uint256 validatorCount);
-    event BootstrapModeConfigured(uint256 duration);
-    event BootstrapModeExited();
-    event EmergencyThresholdReduction(uint256 newThreshold, uint256 duration);
-    event ThresholdResetScheduled(uint256 resetTime);
-    event ValidatorHealthCheck(uint256 validatorCount, uint256 totalStaked, uint256 avgStakePerValidator, uint8 governanceTier);
-    event GuardianAdded(address guardian);
-    event GuardianRemoved(address guardian);
-    event GuardianOverrideExecuted(address executor, bytes4 operation, address target);
-    event ValidatorProposalCreated(uint256 proposalId, uint256 newThreshold);
-    event ValidatorRecruitmentInitiated(uint256 incentiveAmount, uint256 targetCount);
-    
-    // -------------------------------------------
-    //  Errors
-    // -------------------------------------------
-    error GovernanceThresholdNotMet();
-    error ProposalNotReady();
-    error ProposalDoesNotExist();
-    error InvalidVote();
-    error TimelockNotExpired();
-    error ProposalAlreadyExecuted();
-    error GovernanceViolation();
-    error InsufficientValidators();
-    error ProposalTypeNotAllowed();
-    error InvalidGuardianSignatures();
-    error NonceAlreadyExecuted();
     
     // -------------------------------------------
     //  Modifiers
@@ -1226,7 +1194,6 @@ contract TerraStakeGovernance is
     
     /**
      * @notice Get validator safety details
-     * @return Current governance tier, validator count, bootstrap status, and threshold details
      */
     function getValidatorSafetyStatus() external view returns (
         uint8 tier,

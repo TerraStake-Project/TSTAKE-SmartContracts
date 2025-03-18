@@ -118,7 +118,9 @@ interface ITerraStakeStaking {
     function getValidatorRewardPool() external view returns (uint256);
     function getAllTiers() external view returns (StakingTier[] memory);
     function getTopStakers(uint256 limit) external view returns (address[] memory stakers, uint256[] memory amounts);
+    function getValidatorCount() external view returns (uint256);
     function getActiveStakers() external view returns (address[] memory);
+    function totalStakedTokens() external view returns (uint256);
     function version() external pure returns (string memory);
     
     // Contract property getters

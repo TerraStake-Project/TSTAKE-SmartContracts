@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -17,12 +17,12 @@ import "../interfaces/IAntiBot.sol";
  * - Circuit breakers with time-weighted price averaging
  * - Comprehensive attack pattern detection
  */
-contract AntiBot is 
+contract AntiBot is
+    IAntiBot,
     Initializable,
-    AccessControlUpgradeable,
+    AccessControlEnumerableUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable,
-    IAntiBot
+    UUPSUpgradeable
 {
     // ================================
     //  Custom Errors
@@ -221,7 +221,7 @@ contract AntiBot is
         address stakingContract,
         address _priceOracle
     ) external initializer {
-        __AccessControl_init();
+        __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
         
@@ -1041,17 +1041,23 @@ contract AntiBot is
     // ================================
     
     /**
-     * @notice Check if address is throttled
-     * @param user Address to check
-     * @return Whether the address is throttled
+     * @notice Checks if a transaction would be throttled
+     * @param from Sender address
+     * @return wouldThrottle Whether the transaction would be throttled
+     * @return cooldownEnds Timestamp when cooldown ends
+     * @return appliedMultiplier Multiplier that would be applied
      */
-    function isThrottled(address user) external view override returns (bool) {
-        if (!isAntibotEnabled || _isExempt(user)) return false;
+    function checkWouldThrottle(address from) external view returns (
+        bool wouldThrottle, 
+        uint256 cooldownEnds,
+        uint256 appliedMultiplier
+    ) {
+        if (!isAntibotEnabled || _isExempt(from)) return (false, 0, 0);
         
-        uint256 cooldown = userCooldown[user];
+        uint256 cooldown = userCooldown[from];
         uint256 multiplier = baseMultiplier;
-        uint256 txCount = userTransactionCount[user];
-        uint256 lastTxTime = lastTransactionTime[user];
+        uint256 txCount = userTransactionCount[from];
+        uint256 lastTxTime = lastTransactionTime[from];
         
         if (txCount > 0 && block.timestamp - lastTxTime < rapidTransactionWindow) {
             if (txCount >= rapidTransactionThreshold) {
@@ -1061,7 +1067,10 @@ contract AntiBot is
             }
         }
         
-        return block.timestamp <= cooldown + (blockThreshold * multiplier);
+        wouldThrottle = block.timestamp <= cooldown + (blockThreshold * multiplier);
+        cooldownEnds = cooldown + (blockThreshold * multiplier);
+        appliedMultiplier = multiplier;
+        return (wouldThrottle, cooldownEnds, appliedMultiplier);
     }
     
     /**
@@ -1203,14 +1212,14 @@ contract AntiBot is
     }
     
     /**
-     * @notice Gets price monitoring info
+     * @notice Gets price monitoring status
      * @return lastPrice Last checked price
      * @return lastCheckTime Last price check timestamp
      * @return isBreaker Whether circuit breaker is active
      * @return isSurge Whether price surge breaker is active
      * @return surgeCooldownEnd Timestamp when surge cooldown ends
      */
-    function getPriceMonitoringInfo() external view returns (
+    function getPriceMonitoringStatus() external view returns (
         int256 lastPrice,
         uint256 lastCheckTime,
         bool isBreaker,
@@ -1226,6 +1235,58 @@ contract AntiBot is
         );
     }
     
+    /**
+     * @notice Gets liquidity lock status for a user
+     * @param user Address to check
+     * @return lockUntil Timestamp when lock expires
+     * @return isLocked Whether liquidity is locked
+     * @return remainingTime Time remaining until unlock
+     */
+    function getLiquidityLockStatus(address user) external view returns (
+        uint256 lockUntil,
+        bool isLocked,
+        uint256 remainingTime
+    ) {
+        uint256 injectionTime = liquidityInjectionTimestamp[user];
+        if (injectionTime == 0) return (0, false, 0);
+        
+        lockUntil = injectionTime + liquidityLockPeriod;
+        isLocked = block.timestamp < lockUntil;
+        remainingTime = isLocked ? lockUntil - block.timestamp : 0;
+        
+        return (lockUntil, isLocked, remainingTime);
+    }
+
+    /**
+     * @notice Gets security threshold parameters
+     * @return blockLimit Block threshold
+     * @return priceImpact Price impact threshold
+     * @return circuitBreaker Circuit breaker threshold
+     * @return lockPeriod Liquidity lock period
+     * @return priceCooldown Price check cooldown
+     * @return surgeThreshold Price surge threshold
+     * @return surgeCooldown Surge cooldown period
+     */
+    function getSecurityThresholds() external view returns (
+        uint256 blockLimit,
+        uint256 priceImpact,
+        uint256 circuitBreaker,
+        uint256 lockPeriod,
+        uint256 priceCooldown,
+        uint256 surgeThreshold,
+        uint256 surgeCooldown
+    ) {
+        return (
+            blockThreshold,
+            priceImpactThreshold,
+            circuitBreakerThreshold,
+            liquidityLockPeriod,
+            priceCheckCooldown,
+            priceSurgeThreshold,
+            surgeCooldownPeriod
+        );
+    }
+
     /**
      * @notice Gets TWAP price history
      * @return prices Array of price observations
@@ -1300,6 +1361,57 @@ contract AntiBot is
             pattern.lastPatternReset,
             pattern.suspiciousPatternCount > 2
         );
+    }
+
+    /**
+     * @notice Gets user cooldown status
+     * @param user Address to check
+     * @return blockNum Current block number
+     * @return threshold Block threshold
+     * @return canTransact Whether user can transact
+     * @return currentMultiplier Applied throttling multiplier
+     */
+    function getUserCooldownStatus(address user) external view returns (
+        uint256 blockNum,
+        uint256 threshold,
+        bool canTransact,
+        uint256 currentMultiplier
+    ) {
+        blockNum = block.number;
+        threshold = blockThreshold;
+        
+        uint256 cooldown = userCooldown[user];
+        uint256 txCount = userTransactionCount[user];
+        currentMultiplier = baseMultiplier;
+        
+        uint256 lastTxTime = lastTransactionTime[user];
+        if (txCount > 0 && block.timestamp - lastTxTime < rapidTransactionWindow) {
+            if (txCount >= rapidTransactionThreshold) {
+                uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
+                currentMultiplier = baseMultiplier * factor;
+                if (currentMultiplier > maxMultiplier) currentMultiplier = maxMultiplier;
+            }
+        }
+        
+        canTransact = block.timestamp > cooldown + (blockThreshold * currentMultiplier);
+        
+        return (blockNum, threshold, canTransact, currentMultiplier);
+    }
+
+    /**
+     * @notice Gets dynamic throttling parameters
+     * @return base Base multiplier
+     * @return rapid Rapid transaction threshold
+     * @return window Time window for rapid transactions
+     * @return maxMult Maximum multiplier
+     */
+    function getDynamicThrottlingParams() external view returns (
+        uint256 base,
+        uint256 rapid,
+        uint256 window,
+        uint256 maxMult
+    ) {
+        return (baseMultiplier, rapidTransactionThreshold, rapidTransactionWindow, maxMultiplier);
     }
     
     /**
