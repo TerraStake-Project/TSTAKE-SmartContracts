@@ -1,0 +1,117 @@
+AntiBot Governance Parameter Documentation
+
+This documentation provides detailed information about all configurable parameters in the AntiBot contract to help governance participants make informed decisions.
+ *Core Protection Parameters
+Transaction Throttling
+Parameter	Description	Current Value	Impact
+blockThreshold	Base number of blocks between transactions	1	Higher values increase delay between transactions. Each increment adds ~12 seconds of delay.
+baseMultiplier	Base multiplier for throttling calculation	12	Directly influences cooldown duration. A value of 12 means ~2-3 minutes cooldown.
+rapidTransactionThreshold	Number of transactions before triggering progressive throttling	5	Lower values activate throttling sooner. Should be between 3-10 for effective protection.
+rapidTransactionWindow	Time window for monitoring rapid transactions	5 minutes	Longer windows increase detection sensitivity. Recommended between 3-15 minutes.
+maxMultiplier	Maximum throttling multiplier	60	Caps maximum cooldown to prevent permanent lockouts. 60 equals ~12 minutes maximum cooldown.
+Governance Considerations:
+
+    Reducing blockThreshold below 1 effectively disables basic throttling
+    baseMultiplier × blockThreshold = seconds of throttling at minimum level
+    During attack vectors, cooldown can reach up to maxMultiplier × blockThreshold seconds
+
+*Price Circuit Breakers
+Parameter	Description	Current Value	Impact
+priceImpactThreshold	Price drop % to trigger buyback pause	5%	Lower values increase sensitivity to price drops. Range: 1-10% recommended.
+circuitBreakerThreshold	Price drop % to trigger full circuit breaker	15%	Should be significantly higher than priceImpactThreshold. Range: 10-25% recommended.
+priceSurgeThreshold	Price increase % to trigger surge protection	10%	Controls sensitivity to price manipulation. Range: 5-20% recommended.
+surgeCooldownPeriod	Duration surge protection remains active	30 minutes	Longer periods provide more protection against price manipulation attacks.
+priceCheckCooldown	Minimum time between price checks	5 minutes	Balance between update frequency and gas costs. Should be 3-10 minutes.
+Governance Considerations:
+
+    Circuit breaker thresholds must maintain: circuitBreakerThreshold > priceImpactThreshold
+    Lower thresholds provide more protection but may trigger more frequently during normal volatility
+    Higher thresholds reduce false positives but may be less effective against rapid attacks
+
+Liquidity Protection
+Parameter	Description	Current Value	Impact
+liquidityLockPeriod	Time liquidity providers must wait before withdrawing	1 hour	Longer periods protect against rug pulls but reduce liquidity flexibility.
+Governance Considerations:
+
+    During extreme volatility, consider increasing this value to 12-24 hours
+    During stable market conditions, can be reduced to 30 minutes
+
+* Oracle Configuration
+Parameter	Description	Current Value	Impact
+oracleCount	Number of configured price oracles	1	More oracles improve security but increase gas costs.
+minimumOracleResponses	Minimum number of oracles needed for consensus	1	Higher values increase security but risk function failure if oracles are down.
+Governance Considerations:
+
+    Always ensure minimumOracleResponses <= oracleCount
+    For critical environments, use at least 3 oracles with minimumOracleResponses = 2
+    Adding trustworthy backup oracles is recommended for resilience
+
+ *Rate Limiting (Token Bucket Algorithm)
+
+Each user has a token bucket with the following default parameters:
+Parameter	Description	Default Value	Impact
+capacity	Maximum tokens a user can hold	5	Higher values allow more transactions in bursts. Range: 3-20 recommended.
+refillRate	Tokens added per minute	1	Controls sustained transaction rate. Higher values allow more frequent transactions.
+Governance Considerations:
+
+    These can be individually adjusted for specific addresses using updateRateLimitConfig
+    For known legitimate high-frequency users, consider values of 10-20 capacity and 2-5 refill rate
+    For suspicious accounts, consider reducing to minimum values (1-2 capacity, 0.5 refill rate)
+
+* Governance Security Parameters
+Parameter	Description	Current Value	Impact
+governanceInactivityThreshold	Time before governance is considered inactive	30 days	Balance between security and practical governance.
+governanceExemptionCount	Current number of governance exemptions	2	Limited to prevent excessive exemptions. Max: 5
+Governance Considerations:
+
+    governanceInactivityThreshold triggers failsafe mode eligibility
+    Keep exemptions minimal to maintain security posture
+    Each exemption increases systemic risk but might be necessary for trusted partners
+
+ *System Toggle Parameters
+Parameter	Description	Current Value	Impact
+isAntibotEnabled	Master switch for all antibot protections	true	When false, disables all protection mechanisms except circuit breakers.
+isBuybackPaused	Controls buyback functionality	false	Set automatically based on price impact, can be manually adjusted.
+Governance Considerations:
+
+    Only disable isAntibotEnabled temporarily for critical protocol upgrades
+    After price stabilization, circuit breakers may need manual reset using resetCircuitBreaker or resetPriceSurgeBreaker
+
+ Performance Impact Guidelines
+
+Parameter adjustments have trade-offs between security, user experience, and gas costs:
+
+    High Security / Low UX: Higher thresholds, longer cooldowns, stricter rate limits
+    Low Security / High UX: Lower thresholds, shorter cooldowns, relaxed rate limits
+
+Security Level	Recommended Configuration
+Maximum Security	baseMultiplier: 24, rapidTransactionThreshold: 3, capacity: 3, refillRate: 0.5
+Balanced	baseMultiplier: 12, rapidTransactionThreshold: 5, capacity: 5, refillRate: 1
+User-Friendly	baseMultiplier: 6, rapidTransactionThreshold: 8, capacity: 10, refillRate: 2
+ Emergency Response Guide
+
+In case of attack, governance should:
+
+    Verify circuit breaker status via getPriceMonitoringInfo()
+    Assess attack pattern via getUserPatternInfo() for suspicious addresses
+    Consider sequentially adjusting:
+        Reduce capacity and refillRate for affected addresses
+        Increase baseMultiplier for stronger throttling
+        Decrease rapidTransactionThreshold to trigger throttling sooner
+        Activate manual circuit breaker if necessary
+
+Critical Parameter Changes During Attacks
+Attack Type	Parameter Adjustments
+Sandwich Attack	Increase baseMultiplier (24-36), reduce rapidTransactionThreshold (2-3)
+Flash Loan	Lower priceImpactThreshold (2-3%), increase circuitBreakerThreshold (20-25%)
+Wash Trading	Reduce default capacity to 3, refillRate to 0.5
+Leveraged Position	Increase surgeCooldownPeriod to 60-120 minutes
+ Governance Procedure for Parameter Updates
+
+    Analysis: Document current parameter values and market conditions
+    Proposal: Specify exact new parameter values with justification
+    Impact Assessment: Evaluate potential effects on legitimate users
+    Implementation: Execute parameter changes with appropriate timelock
+    Monitoring: Observe system behavior for 24-48 hours after changes
+
+Governance participants should maintain these values within safe ranges while adapting to changing market conditions and threat landscapes.

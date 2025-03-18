@@ -17,11 +17,10 @@ import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeSlashing.sol";
 
-
 /**
  * @title TerraStakeStaking
  * @notice Official staking contract for the TerraStake ecosystem with multi-project (batch) operations,
- *         auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
+ * auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
  * @dev This contract is upgradeable (UUPS) and uses multiple OpenZeppelin libraries for security.
  */
 contract TerraStakeStaking is 
@@ -36,7 +35,7 @@ contract TerraStakeStaking is
     using Math for uint256;
 
     // -------------------------------------------
-    //  🔹 Custom Errors
+    //   Custom Errors
     // -------------------------------------------
     error ZeroAmount();
     error InsufficientStakingDuration(uint256 minimum, uint256 provided);
@@ -59,7 +58,7 @@ contract TerraStakeStaking is
     error BatchTransferFailed();
 
     // -------------------------------------------
-    //  🔹 Constants
+    //   Constants
     // -------------------------------------------
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE    = keccak256("UPGRADER_ROLE");
@@ -80,7 +79,7 @@ contract TerraStakeStaking is
     address private constant BURN_ADDRESS         = 0x000000000000000000000000000000000000dEaD;
 
     // -------------------------------------------
-    //  🔹 State Variables (Do not change existing mappings)
+    //   State Variables 
     // -------------------------------------------
     IERC1155 public nftContract;
     IERC20 public stakingToken;
@@ -130,24 +129,7 @@ contract TerraStakeStaking is
     uint256[50] private __gap;
 
     // -------------------------------------------
-    //  🔹 Events
-    // -------------------------------------------
-    event ValidatorRemoved(address indexed validator, uint256 timestamp);
-    event SlashingContractUpdated(address indexed newContract);
-    event ProjectApprovalVoted(uint256 indexed projectId, address voter, bool approved, uint256 votingPower);
-    event RewardRateAdjusted(uint256 oldRate, uint256 newRate);
-    event HalvingApplied(
-        uint256 indexed epoch,
-        uint256 oldBaseAPR,
-        uint256 newBaseAPR,
-        uint256 oldBoostedAPR,
-        uint256 newBoostedAPR
-    );
-    event DynamicRewardsToggled(bool enabled);
-    event GovernanceQuorumUpdated(uint256 newQuorum);
-
-    // -------------------------------------------
-    //  🔹 Constructor & Initializer
+    //   Constructor & Initializer
     // -------------------------------------------
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -224,7 +206,7 @@ contract TerraStakeStaking is
     {}
 
     // -------------------------------------------
-    //  🔹 Staking Operations
+    //   Staking Operations
     // -------------------------------------------
 
     /**
@@ -417,6 +399,11 @@ contract TerraStakeStaking is
             _validators[msg.sender] = true;
             emit ValidatorStatusChanged(msg.sender, true);
         }
+
+        if (!_isActiveStaker[msg.sender]) {
+            _isActiveStaker[msg.sender] = true;
+            _activeStakers.push(msg.sender);
+        }
     }
 
     /**
@@ -581,6 +568,7 @@ contract TerraStakeStaking is
                 if (!success) {
                     revert TransferFailed(address(stakingToken), address(this), BURN_ADDRESS, totalToBurn);
                 }
+                emit SlashedTokensBurned(totalToBurn);
             }
             // Redistribute portion
             if (totalToRedistribute > 0) {
@@ -589,6 +577,7 @@ contract TerraStakeStaking is
                     revert TransferFailed(address(stakingToken), address(this), address(rewardDistributor), totalToRedistribute);
                 }
                 rewardDistributor.addPenaltyRewards(totalToRedistribute);
+                emit SlashedTokensDistributed(totalToRedistribute);
             }
             // Liquidity portion
             if (totalToLiquidity > 0) {
@@ -598,6 +587,11 @@ contract TerraStakeStaking is
                 }
                 emit LiquidityInjected(liquidityPool, totalToLiquidity, block.timestamp);
             }
+        }
+
+        if (_stakingBalance[msg.sender] == 0) {
+            _isActiveStaker[msg.sender] = false;
+            _removeInactiveStaker(msg.sender);
         }
     }
 
@@ -740,7 +734,7 @@ contract TerraStakeStaking is
     }
 
     // -------------------------------------------
-    //  🔹 Validator Operations
+    //   Validator Operations
     // -------------------------------------------
 
     /**
@@ -765,19 +759,18 @@ contract TerraStakeStaking is
         if (!_validators[msg.sender]) {
             revert NotValidator(msg.sender);
         }
-        // Simple approach: count total validators
+        
         uint256 validatorCount = 0;
-        // NOTE: This code uses getRoleMember(DEFAULT_ADMIN_ROLE, i) as a placeholder approach.
-        // In a production environment, you'd track validator addresses more directly.
-        for (uint256 i = 0; i < getRoleMemberCount(DEFAULT_ADMIN_ROLE); i++) {
-            address validator = getRoleMember(DEFAULT_ADMIN_ROLE, i);
-            if (_validators[validator]) {
+        for (uint256 i = 0; i < _activeStakers.length; i++) {
+            if (_validators[_activeStakers[i]]) {
                 validatorCount++;
             }
         }
+        
         if (validatorCount == 0) {
             return; // no distribution possible
         }
+        
         uint256 rewardPerValidator = validatorRewardPool / validatorCount;
         validatorRewardPool = 0;
 
@@ -803,7 +796,7 @@ contract TerraStakeStaking is
     }
 
     // -------------------------------------------
-    //  🔹 Governance Operations
+    //   Governance Operations
     // -------------------------------------------
 
     function voteOnProposal(uint256 proposalId, bool support) 
@@ -857,8 +850,73 @@ contract TerraStakeStaking is
         emit GovernanceViolatorMarked(violator, block.timestamp);
     }
 
+    /**
+     * @notice Slashes a user's governance voting rights as penalty for governance violations
+     * @param user Address of the user whose governance voting rights will be slashed
+     * @return The amount of voting power that was slashed
+     */
+    function slashGovernanceVote(address user) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        returns (uint256) 
+    {
+        if (_governanceViolators[user]) {
+            return 0; // Already a violator
+        }
+        
+        uint256 slashedAmount = _governanceVotes[user];
+        if (slashedAmount == 0) {
+            return 0; // No voting power to slash
+        }
+        
+        // Mark as violator and remove voting power
+        _governanceViolators[user] = true;
+        _governanceVotes[user] = 0;
+        
+        emit GovernanceViolatorMarked(user, block.timestamp);
+        
+        return slashedAmount;
+    }
+
+    /**
+     * @notice Applies halving to reward rates, reducing them according to the protocol's emission schedule
+     * @dev Can only be called by governance or admin roles
+     * @return The new halving epoch number
+     */
+    function applyHalving() 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        returns (uint256) 
+    {
+        // Store old values for event emission
+        uint256 oldBaseAPR = dynamicBaseAPR;
+        uint256 oldBoostedAPR = dynamicBoostedAPR;
+        
+        // Apply the halving (reducing both APRs by 50%)
+        dynamicBaseAPR = dynamicBaseAPR / 2;
+        dynamicBoostedAPR = dynamicBoostedAPR / 2;
+        
+        // Ensure minimum values
+        if (dynamicBaseAPR < 1) dynamicBaseAPR = 1;
+        if (dynamicBoostedAPR < 2) dynamicBoostedAPR = 2;
+        
+        // Update halving state
+        halvingEpoch++;
+        lastHalvingTime = block.timestamp;
+        
+        emit HalvingApplied(
+            halvingEpoch,
+            oldBaseAPR,
+            dynamicBaseAPR,
+            oldBoostedAPR,
+            dynamicBoostedAPR
+        );
+        
+        return halvingEpoch;
+    }
+
     // -------------------------------------------
-    //  🔹 Administrative & Emergency
+    //   Administrative & Emergency
     // -------------------------------------------
 
     /**
@@ -945,6 +1003,33 @@ contract TerraStakeStaking is
         emit LiquidityPoolUpdated(newPool);
     }
 
+    function setSlashingContract(address newSlashingContract)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (newSlashingContract == address(0)) {
+            revert InvalidAddress("newSlashingContract", newSlashingContract);
+        }
+        slashingContract = ITerraStakeSlashing(newSlashingContract);
+        emit SlashingContractUpdated(newSlashingContract);
+    }
+
+    function setGovernanceQuorum(uint256 newQuorum)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        governanceQuorum = newQuorum;
+        emit GovernanceQuorumUpdated(newQuorum);
+    }
+
+    function toggleDynamicRewards(bool enabled)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        dynamicRewardsEnabled = enabled;
+        emit DynamicRewardsToggled(enabled);
+    }
+
     function pause() external onlyRole(EMERGENCY_ROLE) {
         _pause();
     }
@@ -976,7 +1061,7 @@ contract TerraStakeStaking is
     }
 
     // -------------------------------------------
-    //  🔹 Slashing
+    //   Slashing
     // -------------------------------------------
 
     function slash(address validator, uint256 amount) 
@@ -1016,11 +1101,11 @@ contract TerraStakeStaking is
     }
 
     // -------------------------------------------
-    //  🔹 View Functions
+    //   View Functions
     // -------------------------------------------
 
     /**
-     * @notice Calculates user’s pending rewards for a specific position.
+     * @notice Calculates user's pending rewards for a specific position.
      */
     function calculateRewards(address user, uint256 projectId)
         public
@@ -1089,7 +1174,7 @@ contract TerraStakeStaking is
 
     function getUserPositions(address user) external view returns (StakingPosition[] memory positions) {
         // We gather from the project contract how many total projects exist
-        // Then filter the user’s staked positions
+        // Then filter the user's staked positions
         uint256 projectCount = projectsContract.getProjectCount();
         uint256 count        = 0;
 
@@ -1131,11 +1216,15 @@ contract TerraStakeStaking is
         return _governanceVotes[user];
     }
 
-    function slashGovernanceVote(address user) external view returns (uint256) {
-        return 0;
+    function getTotalStaked() external view returns (uint256) {
+        return _totalStaked;
     }
 
-    function getTotalStaked() external view returns (uint256) {
+    /**
+     * @notice Get the total amount of staked tokens
+     * @return Total staked tokens
+     */
+    function totalStakedTokens() external view returns (uint256) {
         return _totalStaked;
     }
 
@@ -1148,60 +1237,89 @@ contract TerraStakeStaking is
     }
 
     /**
-     * @notice Returns the top stakers up to `limit`. 
-     * @dev This uses a naive bubble sort. Large `limit` or many stakers can be expensive. 
-     *      Primarily for demonstration or small sets. 
+     * @notice Returns the top stakers up to `limit`.
+     * @dev Uses an optimized partial selection sort algorithm that only sorts the top 'limit' elements
+     *      for better performance O(n*limit) instead of O(n²).
      */
     function getTopStakers(uint256 limit)
         external
         view
         returns (address[] memory stakers, uint256[] memory amounts)
     {
-        // In a real system, you'd store or track staker addresses more efficiently,
-        // or do an off-chain ranking approach. This is purely illustrative.
+        uint256 stakerCount = _activeStakers.length;
+    
+        // Cap the limit at the active stakers count
+        if (limit > stakerCount) {
+            limit = stakerCount;
+        }
+    
+        if (limit == 0) {
+            return (new address[](0), new uint256[](0));
+        }
 
-        uint256 totalUsers = 100; // placeholder for demonstration
-        address[] memory allStakers = new address[](totalUsers);
-        uint256[] memory allAmounts = new uint256[](totalUsers);
+        // Initialize result arrays
+        stakers = new address[](limit);
+        amounts = new uint256[](limit);
+    
+        // Work with temporary arrays for selection process
+        address[] memory tempStakers = new address[](stakerCount);
+        uint256[] memory tempAmounts = new uint256[](stakerCount);
 
+        // Populate temporary arrays
+        for (uint256 i = 0; i < stakerCount; i++) {
+            tempStakers[i] = _activeStakers[i];
+            tempAmounts[i] = _stakingBalance[_activeStakers[i]];
+        }
+    
+        // Find top 'limit' elements using partial selection sort
+        // This is more efficient because we only sort what we need
+        for (uint256 i = 0; i < limit; i++) {
+            uint256 maxIndex = i;
+        
+            // Find the maximum value in the remaining unsorted portion
+            for (uint256 j = i + 1; j < stakerCount; j++) {
+                if (tempAmounts[j] > tempAmounts[maxIndex]) {
+                    maxIndex = j;
+                }
+            }
+        
+            // If we found a new maximum, swap it to the current position
+            if (maxIndex != i) {
+                // Swap amounts
+                uint256 tempAmount = tempAmounts[i];
+                tempAmounts[i] = tempAmounts[maxIndex];
+                tempAmounts[maxIndex] = tempAmount;
+            
+                // Swap addresses
+                address tempAddr = tempStakers[i];
+                tempStakers[i] = tempStakers[maxIndex];
+                tempStakers[maxIndex] = tempAddr;
+            }
+        
+            // Add to result arrays
+            stakers[i] = tempStakers[i];
+            amounts[i] = tempAmounts[i];
+        }
+    
+        return (stakers, amounts);
+    }
+
+    /**
+     * @notice Get the current count of validators
+     * @return Number of validators
+     */
+    function getValidatorCount() external view returns (uint256) {
         uint256 count = 0;
-        for (uint256 i = 0; i < getRoleMemberCount(DEFAULT_ADMIN_ROLE); i++) {
-            address user = getRoleMember(DEFAULT_ADMIN_ROLE, i);
-            if (_stakingBalance[user] > 0) {
-                allStakers[count] = user;
-                allAmounts[count] = _stakingBalance[user];
+        // Count the validators
+        for (uint256 i = 0; i < _activeStakers.length; i++) {
+            if (_validators[_activeStakers[i]]) {
                 count++;
             }
         }
-
-        // Bubble sort (naive, O(n^2)) - demonstration only
-        for (uint256 i = 0; i < count; i++) {
-            for (uint256 j = i + 1; j < count; j++) {
-                if (allAmounts[i] < allAmounts[j]) {
-                    // swap amounts
-                    uint256 tmpAmount = allAmounts[i];
-                    allAmounts[i] = allAmounts[j];
-                    allAmounts[j] = tmpAmount;
-
-                    // swap addresses
-                    address tmpAddr = allStakers[i];
-                    allStakers[i] = allStakers[j];
-                    allStakers[j] = tmpAddr;
-                }
-            }
-        }
-
-        uint256 resultSize = (count < limit) ? count : limit;
-        stakers = new address[](resultSize);
-        amounts = new uint256[](resultSize);
-
-        for (uint256 i = 0; i < resultSize; i++) {
-            stakers[i] = allStakers[i];
-            amounts[i] = allAmounts[i];
-        }
-        return (stakers, amounts);
+        return count;
     }
-    
+
+   
     /**
      * @notice Basic version info.
      */
@@ -1209,9 +1327,82 @@ contract TerraStakeStaking is
         return "1.0.0-improved";
     }
 
-    // -------------------------------------------
-    //  🔹 Internal Utilities
-    // -------------------------------------------
+    /**
+     * @notice Apply halving to reward rates when the period has elapsed.
+     * @dev Can be called by anyone, but effect happens at most once per halvingPeriod.
+     */
+    function applyHalvingIfNeeded() external {
+        uint256 timeElapsed = block.timestamp - lastHalvingTime;
+        if (timeElapsed < halvingPeriod) {
+            return;
+        }
+
+        uint256 oldBaseAPR = dynamicBaseAPR;
+        uint256 oldBoostedAPR = dynamicBoostedAPR;
+
+        // Apply halving: divide rates by 2
+        dynamicBaseAPR = dynamicBaseAPR / 2;
+        dynamicBoostedAPR = dynamicBoostedAPR / 2;
+        
+        // Ensure minimum values
+        if (dynamicBaseAPR < 1) {
+            dynamicBaseAPR = 1;
+        }
+        if (dynamicBoostedAPR < 2) {
+            dynamicBoostedAPR = 2;
+        }
+
+        lastHalvingTime = block.timestamp;
+        halvingEpoch++;
+
+        emit HalvingApplied(
+            halvingEpoch,
+            oldBaseAPR,
+            dynamicBaseAPR,
+            oldBoostedAPR,
+            dynamicBoostedAPR
+        );
+    }
+
+    /**
+     * @notice Adjust reward rates based on a dynamic formula (if enabled).
+     * @dev This can be called by any address to update rates.
+     */
+    function adjustRewardRates() external {
+        if (!dynamicRewardsEnabled) {
+            return;
+        }
+
+        // Can only adjust once per day
+        if (block.timestamp - lastRewardAdjustmentTime < 1 days) {
+            return;
+        }
+
+        uint256 oldBaseAPR = dynamicBaseAPR;
+        
+        // Example dynamic adjustment: base APR adjusts based on total staking
+        if (_totalStaked < LOW_STAKING_THRESHOLD / 10) {
+            // Extremely low staking, boost rates
+            dynamicBaseAPR = 15;
+            dynamicBoostedAPR = 30;
+        } else if (_totalStaked < LOW_STAKING_THRESHOLD / 2) {
+            // Low staking, moderate boost
+            dynamicBaseAPR = 12;
+            dynamicBoostedAPR = 24;
+        } else if (_totalStaked < LOW_STAKING_THRESHOLD) {
+            // Approaching threshold, smaller boost
+            dynamicBaseAPR = BASE_APR;
+            dynamicBoostedAPR = BOOSTED_APR;
+        } else {
+            // Above threshold, use base rates
+            dynamicBaseAPR = 8;
+            dynamicBoostedAPR = 16;
+        }
+
+        lastRewardAdjustmentTime = block.timestamp;
+        
+        emit RewardRateAdjusted(oldBaseAPR, dynamicBaseAPR);
+    }
 
     /**
      * @dev See {ERC165Upgradeable-supportsInterface}.

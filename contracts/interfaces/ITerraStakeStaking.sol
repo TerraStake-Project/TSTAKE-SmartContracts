@@ -33,15 +33,6 @@ interface ITerraStakeStaking {
         uint256 toLiquidity;
     }
     
-    struct PositionWithTier {
-        StakingPosition position;
-        uint256 currentTier;
-        uint256 nextTier;
-        uint256 timeToNextTier;
-        uint256 pendingRewards;
-        uint256 remainingLockTime;
-    }
-    
     // Events
     event Staked(address indexed user, uint256 indexed projectId, uint256 amount, uint256 duration, uint256 timestamp, uint256 totalStaked);
     event Unstaked(address indexed user, uint256 indexed projectId, uint256 amount, uint256 penalty, uint256 timestamp);
@@ -50,6 +41,7 @@ interface ITerraStakeStaking {
     event PenaltyApplied(address indexed user, uint256 indexed projectId, uint256 totalPenalty, uint256 burned, uint256 redistributed, uint256 toLiquidity);
     event LiquidityInjected(address indexed liquidityPool, uint256 amount, uint256 timestamp);
     event ValidatorAdded(address indexed validator, uint256 timestamp);
+    event ValidatorRemoved(address indexed validator, uint256 timestamp);
     event ValidatorStatusChanged(address indexed validator, bool isActive);
     event ValidatorCommissionUpdated(address indexed validator, uint256 newCommission);
     event ValidatorRewardsDistributed(address indexed validator, uint256 amount);
@@ -65,6 +57,15 @@ interface ITerraStakeStaking {
     event LiquidityPoolUpdated(address indexed newPool);
     event TokenRecovered(address indexed token, uint256 amount, address recipient);
     event Slashed(address indexed validator, uint256 amount, uint256 timestamp);
+    event SlashingContractUpdated(address indexed newContract);
+    event ProjectApprovalVoted(uint256 indexed projectId, address voter, bool approved, uint256 votingPower);
+    event RewardRateAdjusted(uint256 oldRate, uint256 newRate);
+    event HalvingApplied(uint256 indexed epoch, uint256 oldBaseAPR, uint256 newBaseAPR, uint256 oldBoostedAPR, uint256 newBoostedAPR);
+    event DynamicRewardsToggled(bool enabled);
+    event GovernanceQuorumUpdated(uint256 newQuorum);
+    event SlashedTokensDistributed(uint256 amount);
+    event SlashedTokensBurned(uint256 amount);
+    event SlashedTokensSentToTreasury(uint256 amount, address treasury);
     
     // Core staking functions
     function stake(uint256 projectId, uint256 amount, uint256 duration, bool isLP, bool autoCompound) external;
@@ -82,6 +83,7 @@ interface ITerraStakeStaking {
     function voteOnProposal(uint256 proposalId, bool support) external;
     function createProposal(string calldata description, address[] calldata targets, uint256[] calldata values, bytes[] calldata calldatas) external;
     function markGovernanceViolator(address violator) external;
+    function slashGovernanceVote(address user) external returns (uint256);
     
     // Admin functions
     function updateTiers(uint256[] calldata minDurations, uint256[] calldata multipliers, bool[] calldata votingRights) external;
@@ -90,10 +92,16 @@ interface ITerraStakeStaking {
     function setValidatorThreshold(uint256 newThreshold) external;
     function setRewardDistributor(address newDistributor) external;
     function setLiquidityPool(address newPool) external;
+    function setSlashingContract(address newSlashingContract) external;
+    function setGovernanceQuorum(uint256 newQuorum) external;
+    function toggleDynamicRewards(bool enabled) external;
     function pause() external;
     function unpause() external;
     function recoverERC20(address token) external returns (bool);
     function slash(address validator, uint256 amount) external returns (bool);
+    function adjustRewardRates() external;
+    function applyHalvingIfNeeded() external;
+    function applyHalving() external returns (uint256);
     
     // View functions
     function calculateRewards(address user, uint256 projectId) external view returns (uint256);
@@ -101,20 +109,29 @@ interface ITerraStakeStaking {
     function getUserStake(address user, uint256 projectId) external view returns (uint256);
     function getUserTotalStake(address user) external view returns (uint256);
     function getUserPositions(address user) external view returns (StakingPosition[] memory);
-    function getUserPositionsWithTiers(address user) external view returns (PositionWithTier[] memory);
     function getPenaltyHistory(address user) external view returns (PenaltyEvent[] memory);
     function isValidator(address user) external view returns (bool);
     function getValidatorCommission(address validator) external view returns (uint256);
     function isGovernanceViolator(address user) external view returns (bool);
     function getGovernanceVotes(address user) external view returns (uint256);
-    function slashGovernanceVote(address user) external view returns (uint256);
     function getTotalStaked() external view returns (uint256);
     function getValidatorRewardPool() external view returns (uint256);
     function getAllTiers() external view returns (StakingTier[] memory);
-    function getBatchUserStakes(address[] calldata users, uint256 projectId) external view returns (uint256[] memory);
     function getTopStakers(uint256 limit) external view returns (address[] memory stakers, uint256[] memory amounts);
+    function getValidatorCount() external view returns (uint256);
     function getActiveStakers() external view returns (address[] memory);
+    function totalStakedTokens() external view returns (uint256);
+    function version() external pure returns (string memory);
+    
+    // Contract property getters
     function halvingPeriod() external view returns (uint256);
     function lastHalvingTime() external view returns (uint256);
     function halvingEpoch() external view returns (uint256);
+    function dynamicRewardsEnabled() external view returns (bool);
+    function dynamicBaseAPR() external view returns (uint256);
+    function dynamicBoostedAPR() external view returns (uint256);
+    function governanceQuorum() external view returns (uint256);
+    function validatorThreshold() external view returns (uint256);
+    function liquidityInjectionRate() external view returns (uint256);
+    function autoLiquidityEnabled() external view returns (bool);
 }

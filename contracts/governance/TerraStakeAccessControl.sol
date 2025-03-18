@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -19,7 +20,8 @@ contract TerraStakeAccessControl is
     Initializable,
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    UUPSUpgradeable
 {
     // ====================================================
     //  Constants
@@ -104,6 +106,7 @@ contract TerraStakeAccessControl is
         __AccessControl_init();
         __ReentrancyGuard_init();
         __Pausable_init();
+        __UUPSUpgradeable_init();
         
         _tStakeToken = IERC20(__tStakeToken);
         _usdc = IERC20(usdcToken);
@@ -116,6 +119,12 @@ contract TerraStakeAccessControl is
         
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
+
+        /**
+     * @dev Required function for UUPS upgradeable contracts
+     * @param newImplementation Address of the new implementation
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     // ====================================================
     //  Core Role Management Functions
@@ -230,7 +239,7 @@ contract TerraStakeAccessControl is
     function grantRole(
         bytes32 role, 
         address account
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant whenNotPaused {
+    ) public override(ITerraStakeAccessControl, AccessControlUpgradeable) onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant whenNotPaused {
         // For consistency, we'll use a standard duration of 1 year
         uint256 standardDuration = 365 days;
         
@@ -248,7 +257,7 @@ contract TerraStakeAccessControl is
     function revokeRole(
         bytes32 role, 
         address account
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+    ) public override(ITerraStakeAccessControl, AccessControlUpgradeable) onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
         if (!hasRole(role, account)) revert RoleNotAssigned(role, account);
         
         _revokeRole(role, account);

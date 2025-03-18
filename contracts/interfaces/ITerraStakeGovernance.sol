@@ -28,14 +28,6 @@ interface ITerraStakeGovernance {
         Executed
     }
     
-    // Proposal types
-    enum ProposalType {
-        Standard,
-        Parameter,
-        Emergency,
-        Upgrade
-    }
-    
     // Vote types
     enum VoteType {
         Against,
@@ -46,11 +38,40 @@ interface ITerraStakeGovernance {
     // -------------------------------------------
     //  Structs
     // -------------------------------------------
-    
+    struct Proposal {
+        uint256 id;
+        address proposer;
+        string description;
+        uint8 proposalType;
+        uint256 createTime;
+        uint256 voteStart;
+        uint256 voteEnd;
+        uint256 forVotes;
+        uint256 againstVotes;
+        bool executed;
+        bool canceled;
+    }
+
+    struct ExtendedProposalData {
+        bytes customData;
+        uint256 timelockExpiry;
+    }
+
     struct Receipt {
         bool hasVoted;
         VoteType support;
         uint256 votes;
+    }
+
+    struct FeeProposal {
+        uint256 projectSubmissionFee;
+        uint256 impactReportingFee;
+        uint256 buybackPercentage;
+        uint256 liquidityPairingPercentage;
+        uint256 burnPercentage;
+        uint256 treasuryPercentage;
+        uint256 voteEnd;
+        bool executed;
     }
     
     // -------------------------------------------
@@ -60,13 +81,10 @@ interface ITerraStakeGovernance {
     event ProposalCreated(
         uint256 indexed proposalId,
         address indexed proposer,
-        address[] targets,
-        uint256[] values,
-        bytes[] calldatas,
-        uint256 startBlock,
-        uint256 endBlock,
         string description,
-        ProposalType proposalType
+        uint8 proposalType,
+        uint256 voteStart,
+        uint256 voteEnd
     );
     
     event ProposalCanceled(uint256 indexed proposalId);
@@ -74,11 +92,10 @@ interface ITerraStakeGovernance {
     event ProposalExecuted(uint256 indexed proposalId);
     
     event VoteCast(
-        address indexed voter,
         uint256 indexed proposalId,
-        uint8 support,
-        uint256 weight,
-        string reason
+        address indexed voter,
+        bool support,
+        uint256 weight
     );
     
     event ValidatorSupport(
@@ -87,8 +104,44 @@ interface ITerraStakeGovernance {
         bool support
     );
     
-    event GovernanceParameterUpdated(string parameter, uint256 oldValue, uint256 newValue);
+    event GovernanceParametersUpdated(string parameter, uint256 oldValue, uint256 newValue);
     event ModuleUpdated(string moduleName, address oldModule, address newModule);
+    event FeeStructureUpdated(
+        uint256 projectSubmissionFee,
+        uint256 impactReportingFee,
+        uint256 buybackPercentage,
+        uint256 liquidityPairingPercentage,
+        uint256 burnPercentage,
+        uint256 treasuryPercentage
+    );
+    event BuybackExecuted(uint256 amount0, uint256 amount1);
+    event LiquidityAdded(uint256 amount0, uint256 amount1);
+    event TokensBurned(uint256 amount);
+    event TreasuryTransfer(address token, address recipient, uint256 amount);
+    event HalvingInitiated(uint256 halvingEpoch);
+    event ValidatorRewardRateUpdated(uint256 newRewardRate);
+    event TreasuryWalletUpdated(address newTreasuryWallet);
+    event LiquidityPairingToggled(bool enabled);
+    event GovernorPenalized(address governor, string reason);
+    event GovernorRestored(address governor);
+    event EmergencyPauseActivated(address[] addresses);
+    event EmergencyPauseDeactivated(address[] addresses);
+    event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
+    event TStakeReceived(address sender, uint256 amount);
+
+    // Validator safety events
+    event GovernanceTierUpdated(uint8 tier, uint256 validatorCount);
+    event BootstrapModeConfigured(uint256 duration);
+    event BootstrapModeExited();
+    event EmergencyThresholdReduction(uint256 newThreshold, uint256 duration);
+    event ThresholdResetScheduled(uint256 resetTime);
+    event ValidatorHealthCheck(uint256 validatorCount, uint256 totalStaked, uint256 avgStakePerValidator, uint8 governanceTier);
+    event GuardianAdded(address guardian);
+    event GuardianRemoved(address guardian);
+    event GuardianOverrideExecuted(address executor, bytes4 operation, address target);
+    event ValidatorProposalCreated(uint256 proposalId, uint256 newThreshold);
+    event ValidatorRecruitmentInitiated(uint256 incentiveAmount, uint256 targetCount);
+
     
     // -------------------------------------------
     //  Errors
@@ -105,6 +158,17 @@ interface ITerraStakeGovernance {
     error EmptyProposal();
     error TooManyActions();
     error InvalidState();
+    error GovernanceThresholdNotMet();
+    error ProposalNotReady();
+    error ProposalDoesNotExist();
+    error InvalidVote();
+    error TimelockNotExpired();
+    error ProposalAlreadyExecuted();
+    error GovernanceViolation();
+    error InsufficientValidators();
+    error ProposalTypeNotAllowed();
+    error InvalidGuardianSignatures();
+    error NonceAlreadyExecuted();
     
     // -------------------------------------------
     //  Constants
@@ -130,20 +194,6 @@ interface ITerraStakeGovernance {
     function executionDelay() external view returns (uint256);
     function executionPeriod() external view returns (uint256);
     function proposalCount() external view returns (uint256);
-    
-    function proposals(uint256 proposalId) external view returns (
-        uint256 id,
-        address proposer,
-        ProposalType proposalType,
-        uint256 startBlock,
-        uint256 endBlock,
-        uint256 forVotes,
-        uint256 againstVotes,
-        uint256 abstainVotes,
-        bool canceled,
-        bool executed,
-        uint256 queueTime
-    );
     
     function receipts(uint256 proposalId, address voter) external view returns (
         bool hasVoted,
@@ -174,7 +224,7 @@ interface ITerraStakeGovernance {
         uint256[] memory values,
         bytes[] memory calldatas,
         string memory description,
-        ProposalType proposalType
+        uint8 proposalType
     ) external returns (uint256);
     
     function castVote(
@@ -187,7 +237,7 @@ interface ITerraStakeGovernance {
     
     function queueProposal(uint256 proposalId) external;
     
-    function executeProposal(uint256 proposalId) external payable;
+    function executeProposal(uint256 proposalId) external;
     
     function cancelProposal(uint256 proposalId) external;
     

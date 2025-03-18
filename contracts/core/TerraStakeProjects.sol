@@ -1192,6 +1192,16 @@ function getProjectReportStats(uint256 projectId) external view returns (
         
         emit ProjectTargetsSet(projectId, impactTarget, stakingTarget);
     }
+
+    function incrementStakerCount(uint256 projectId) external override nonReentrant onlyRole(STAKER_ROLE) whenNotPaused {
+        // if (projectMetadata[projectId].exists) revert InvalidProjectId();
+        // projectStakerCount[projectId]++;
+    }
+
+    function decrementStakerCount(uint256 projectId) external override nonReentrant onlyRole(STAKER_ROLE) whenNotPaused {
+        // if (projectMetadata[projectId].exists) revert InvalidProjectId();
+        // projectStakerCount[projectId]--;
+    }
     
     function setMinimumStakeAmount(
         uint256 amount

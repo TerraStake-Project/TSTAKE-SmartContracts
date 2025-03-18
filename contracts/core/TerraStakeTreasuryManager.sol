@@ -563,7 +563,7 @@ contract TerraStakeTreasuryManager is
      * @param amount The amount of USDC received as fees
      * @param feeType 0 for project submission, 1 for impact reporting
      */
-    function processFees(uint256 amount, uint8 feeType) external nonReentrant {
+    function processFees(uint256 amount, uint8 feeType) public nonReentrant {
         // Verify sender has governance role
         if (!hasRole(GOVERNANCE_ROLE, msg.sender)) revert Unauthorized();
         

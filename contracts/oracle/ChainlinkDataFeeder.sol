@@ -44,6 +44,9 @@ contract ChainlinkDataFeeder is
     error Unauthorized();
     error CategoryNotSupported();
     error MetricAlreadyExists();
+    error CircuitBreakerNotTriggered();
+    error AlreadyProcessed();
+    error NoDataAvailable();
 
     // -------------------------------------------
     //  Enums & Data Structures
@@ -106,6 +109,15 @@ contract ChainlinkDataFeeder is
     struct OracleData {
         int256 price;
         uint256 timestamp;
+    }
+
+    struct CrossChainDataPoint {
+        uint256 sourceChainId;
+        int256 value;
+        uint256 timestamp;
+        address validator;
+        uint256 validationTime;
+        bool validated;
     }
 
     struct FeedAnalytics {

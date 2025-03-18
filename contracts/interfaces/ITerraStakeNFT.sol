@@ -108,7 +108,8 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     // ====================================================
     //  Metadata & Query Functions
     // ====================================================
-    
+    function getTokenData(uint256 tokenId) external view returns (uint256 impactValue, ProjectCategory category, bytes32 verificationHash);
+
     function getTokensByCategory(ProjectCategory category) external view returns (uint256[] memory);
     
     function getTokenMetadata(uint256 _tokenID) external view returns (NFTMetadata memory);

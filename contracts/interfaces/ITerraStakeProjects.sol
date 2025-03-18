@@ -781,4 +781,7 @@ interface ITerraStakeProjects {
         bytes32[] calldata permissions,
         bool[] calldata values
     ) external;
+    
+    function incrementStakerCount(uint256 projectId) external;
+    function decrementStakerCount(uint256 projectId) external;
 }
