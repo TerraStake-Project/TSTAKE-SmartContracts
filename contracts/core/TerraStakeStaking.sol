@@ -20,7 +20,7 @@ import "../interfaces/ITerraStakeSlashing.sol";
 /**
  * @title TerraStakeStaking
  * @notice Official staking contract for the TerraStake ecosystem with multi-project (batch) operations,
- *         auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
+ * @auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
  * @dev This contract is upgradeable (UUPS) and uses multiple OpenZeppelin libraries for security.
  */
 contract TerraStakeStaking is 
