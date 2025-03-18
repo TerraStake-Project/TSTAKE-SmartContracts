@@ -1079,6 +1079,17 @@ contract AntiBot is
     function isBuybackActive() external view override returns (bool) {
         return !isBuybackPaused;
     }
+    /**
+     * @notice Validates a transaction from a sender
+     * @param sender Address initiating the transaction
+     * @param amount Transaction amount (unused in current implementation)
+     * @return isValid Whether the transaction passes anti-bot checks
+     */
+    function validateTransaction(address sender, uint256 amount) external override checkThrottle(sender) circuitBreakerCheck returns (bool) {
+        // The modifiers will revert if the transaction fails validation
+        // If we reach here, it means the transaction passed validation
+        return true;
+    }
     
     /**
      * @notice Sets antibot status
