@@ -20,7 +20,7 @@ import "../interfaces/ITerraStakeSlashing.sol";
 /**
  * @title TerraStakeStaking
  * @notice Official staking contract for the TerraStake ecosystem with multi-project (batch) operations,
- * @auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
+ *         auto-compounding, dynamic APR, halving events, early-withdrawal penalties, and validator logic.
  * @dev This contract is upgradeable (UUPS) and uses multiple OpenZeppelin libraries for security.
  */
 contract TerraStakeStaking is 
@@ -1182,61 +1182,74 @@ contract TerraStakeStaking is
         return _tiers;
     }
 
-    /**
-     * @notice Returns the top stakers up to `limit`. 
-     * @dev This uses a naive bubble sort. Large `limit` or many stakers can be expensive. 
-     *      Primarily for demonstration or small sets. 
-     */
-    function getTopStakers(uint256 limit)
-        external
-        view
-        returns (address[] memory stakers, uint256[] memory amounts)
-    {
-        // Cap the limit at the active stakers count to avoid out-of-bounds issues
-        if (limit > _activeStakers.length) {
-            limit = _activeStakers.length;
-        }
-        
-        if (limit == 0) {
-            return (new address[](0), new uint256[](0));
-        }
-
-        address[] memory allStakers = new address[](_activeStakers.length);
-        uint256[] memory allAmounts = new uint256[](_activeStakers.length);
-
-        // Collect all active stakers and their balances
-        for (uint256 i = 0; i < _activeStakers.length; i++) {
-            allStakers[i] = _activeStakers[i];
-            allAmounts[i] = _stakingBalance[_activeStakers[i]];
-        }
-
-        // Bubble sort (naive, O(n^2)) - demonstration only
-        for (uint256 i = 0; i < allStakers.length; i++) {
-            for (uint256 j = i + 1; j < allStakers.length; j++) {
-                if (allAmounts[i] < allAmounts[j]) {
-                    // swap amounts
-                    uint256 tmpAmount = allAmounts[i];
-                    allAmounts[i] = allAmounts[j];
-                    allAmounts[j] = tmpAmount;
-
-                    // swap addresses
-                    address tmpAddr = allStakers[i];
-                    allStakers[i] = allStakers[j];
-                    allStakers[j] = tmpAddr;
-                }
-            }
-        }
-
-        stakers = new address[](limit);
-        amounts = new uint256[](limit);
-
-        for (uint256 i = 0; i < limit; i++) {
-            stakers[i] = allStakers[i];
-            amounts[i] = allAmounts[i];
-        }
-        return (stakers, amounts);
+/**
+ * @notice Returns the top stakers up to `limit`. 
+ * @dev Uses an optimized partial selection sort algorithm that only sorts the top 'limit' elements
+ *      for better performance O(n*limit) instead of O(n²).
+ */
+function getTopStakers(uint256 limit)
+    external
+    view
+    returns (address[] memory stakers, uint256[] memory amounts)
+{
+    uint256 stakerCount = _activeStakers.length;
+    
+    // Cap the limit at the active stakers count
+    if (limit > stakerCount) {
+        limit = stakerCount;
     }
     
+    if (limit == 0) {
+        return (new address[](0), new uint256[](0));
+    }
+
+    // Initialize result arrays
+    stakers = new address[](limit);
+    amounts = new uint256[](limit);
+    
+    // Work with temporary arrays for selection process
+    address[] memory tempStakers = new address[](stakerCount);
+    uint256[] memory tempAmounts = new uint256[](stakerCount);
+
+    // Populate temporary arrays
+    for (uint256 i = 0; i < stakerCount; i++) {
+        tempStakers[i] = _activeStakers[i];
+        tempAmounts[i] = _stakingBalance[_activeStakers[i]];
+    }
+    
+    // Find top 'limit' elements using partial selection sort
+    // This is more efficient because we only sort what we need
+    for (uint256 i = 0; i < limit; i++) {
+        uint256 maxIndex = i;
+        
+        // Find the maximum value in the remaining unsorted portion
+        for (uint256 j = i + 1; j < stakerCount; j++) {
+            if (tempAmounts[j] > tempAmounts[maxIndex]) {
+                maxIndex = j;
+            }
+        }
+        
+        // If we found a new maximum, swap it to the current position
+        if (maxIndex != i) {
+            // Swap amounts
+            uint256 tempAmount = tempAmounts[i];
+            tempAmounts[i] = tempAmounts[maxIndex];
+            tempAmounts[maxIndex] = tempAmount;
+            
+            // Swap addresses
+            address tempAddr = tempStakers[i];
+            tempStakers[i] = tempStakers[maxIndex];
+            tempStakers[maxIndex] = tempAddr;
+        }
+        
+        // Add to result arrays
+        stakers[i] = tempStakers[i];
+        amounts[i] = tempAmounts[i];
+    }
+    
+    return (stakers, amounts);
+}
+   
     /**
      * @notice Basic version info.
      */
