@@ -226,7 +226,7 @@ contract TerraStakeStaking is
     {}
 
     // -------------------------------------------
-    //  🔹 Staking Operations
+    //   Staking Operations
     // -------------------------------------------
 
     /**
@@ -868,6 +868,101 @@ contract TerraStakeStaking is
         _governanceVotes[violator]     = 0;
         emit GovernanceViolatorMarked(violator, block.timestamp);
     }
+
+    /**
+     * @notice Slashes a user's governance voting rights as penalty for governance violations
+     * @param user Address of the user whose governance voting rights will be slashed
+     * @return The amount of voting power that was slashed
+     */
+    function slashGovernanceVote(address user) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        returns (uint256) 
+    {
+        if (_governanceViolators[user]) {
+            return 0; // Already a violator
+        }
+        
+        uint256 slashedAmount = _governanceVotes[user];
+        if (slashedAmount == 0) {
+            return 0; // No voting power to slash
+        }
+        
+        // Mark as violator and remove voting power
+        _governanceViolators[user] = true;
+        _governanceVotes[user] = 0;
+        
+        emit GovernanceViolatorMarked(user, block.timestamp);
+        
+        return slashedAmount;
+    }
+
+    /**
+     * @notice Applies halving to reward rates, reducing them according to the protocol's emission schedule
+     * @dev Can only be called by governance or admin roles
+     * @return The new halving epoch number
+     */
+    function applyHalving() 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        returns (uint256) 
+    {
+        // Store old values for event emission
+        uint256 oldBaseAPR = dynamicBaseAPR;
+        uint256 oldBoostedAPR = dynamicBoostedAPR;
+        
+        // Apply the halving (reducing both APRs by 50%)
+        dynamicBaseAPR = dynamicBaseAPR / 2;
+        dynamicBoostedAPR = dynamicBoostedAPR / 2;
+        
+        // Ensure minimum values
+        if (dynamicBaseAPR < 1) dynamicBaseAPR = 1;
+        if (dynamicBoostedAPR < 2) dynamicBoostedAPR = 2;
+        
+        // Update halving state
+        halvingEpoch++;
+        lastHalvingTime = block.timestamp;
+        
+        emit HalvingApplied(
+            halvingEpoch,
+            oldBaseAPR,
+            dynamicBaseAPR,
+            oldBoostedAPR,
+            dynamicBoostedAPR
+        );
+        
+        return halvingEpoch;
+    }
+}
+
+    /**
+     * @notice Slashes a user's governance voting rights as penalty for governance violations
+     * @param user Address of the user whose governance voting rights will be slashed
+     * @return The amount of voting power that was slashed
+     */
+    function slashGovernanceVote(address user) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        returns (uint256) 
+    {
+        if (_governanceViolators[user]) {
+            return 0; // Already a violator
+        }
+        
+        uint256 slashedAmount = _governanceVotes[user];
+        if (slashedAmount == 0) {
+            return 0; // No voting power to slash
+        }
+        
+        // Mark as violator and remove voting power
+        _governanceViolators[user] = true;
+        _governanceVotes[user] = 0;
+        
+        emit GovernanceViolatorMarked(user, block.timestamp);
+        
+        return slashedAmount;
+    }
+
 
     // -------------------------------------------
     //   Administrative & Emergency
