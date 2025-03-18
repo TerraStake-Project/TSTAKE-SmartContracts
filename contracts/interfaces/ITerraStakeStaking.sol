@@ -83,6 +83,7 @@ interface ITerraStakeStaking {
     function voteOnProposal(uint256 proposalId, bool support) external;
     function createProposal(string calldata description, address[] calldata targets, uint256[] calldata values, bytes[] calldata calldatas) external;
     function markGovernanceViolator(address violator) external;
+    function slashGovernanceVote(address user) external returns (uint256);
     
     // Admin functions
     function updateTiers(uint256[] calldata minDurations, uint256[] calldata multipliers, bool[] calldata votingRights) external;
@@ -100,6 +101,7 @@ interface ITerraStakeStaking {
     function slash(address validator, uint256 amount) external returns (bool);
     function adjustRewardRates() external;
     function applyHalvingIfNeeded() external;
+    function applyHalving() external returns (uint256);
     
     // View functions
     function calculateRewards(address user, uint256 projectId) external view returns (uint256);
