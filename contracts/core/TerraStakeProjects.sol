@@ -85,17 +85,9 @@ contract TerraStakeProjects is
     mapping(uint256 => VerificationData) public projectVerifications;
     mapping(uint256 => mapping(uint256 => ValidationData)) public reportValidations;
     mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
-    
-    // Enhanced storage pattern for comments with pagination
-    mapping(uint256 => mapping(uint256 => Comment[])) public projectCommentsPages;
-    mapping(uint256 => uint256) public projectCommentsPageCount;
-    uint256 public constant COMMENTS_PER_PAGE = 100;
-    
-    // Enhanced storage pattern for documents with pagination
-    mapping(uint256 => mapping(uint256 => string[])) public projectDocumentPages;
-    mapping(uint256 => uint256) public projectDocumentPageCount;
-    uint256 public constant DOCUMENTS_PER_PAGE = 20;
 
+    mapping(uint256 => Comment[]) public projectComments;
+    
     mapping(uint256 => mapping(uint256 => ProjectDocument)) public projectDocuments;
     mapping(uint256 => uint256) public projectDocumentCount;
     mapping(uint256 => uint256[]) private _projectDocumentIndex;
@@ -164,7 +156,7 @@ contract TerraStakeProjects is
     function initialize(
         address admin, 
         address _tstakeToken
-    ) external override initializer {
+    ) external initializer {
         if (admin == address(0) || _tstakeToken == address(0)) revert InvalidAddress();
         
         __AccessControlEnumerable_init();
@@ -651,7 +643,7 @@ contract TerraStakeProjects is
         bytes32 ipfsHash,
         uint48 startBlock,
         uint48 endBlock
-    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+    ) external nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Ensure project isn't in a terminal state
@@ -692,7 +684,7 @@ contract TerraStakeProjects is
     function changeProjectCategory(
         uint256 projectId,
         ProjectCategory newCategory
-    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+    ) external nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         ProjectStateData storage project = projectStateData[projectId];
         
@@ -805,7 +797,7 @@ contract TerraStakeProjects is
     function updateStakingMultiplier(
         uint256 projectId,
         uint32 newMultiplier
-    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+    ) external nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         if (newMultiplier == 0) revert InvalidStakingMultiplier();
         
@@ -832,7 +824,7 @@ contract TerraStakeProjects is
         address verifier,
         string calldata verificationDetails,
         bytes32 documentHash
-    ) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
+    ) external nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Fee handling
@@ -907,7 +899,7 @@ contract TerraStakeProjects is
         uint256 reportId,
         bool isValid,
         string calldata validationNotes
-    ) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
+    ) external nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
         ImpactReport storage report = projectImpactReports[projectId][reportId];
         
         // Check if report exists
@@ -1010,7 +1002,7 @@ contract TerraStakeProjects is
     function stakeOnProject(
         uint256 projectId,
         uint256 amount
-    ) external override nonReentrant whenNotPaused {
+    ) external nonReentrant whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Ensure project is in an active state for staking
@@ -1049,7 +1041,7 @@ contract TerraStakeProjects is
         function unstakeFromProject(
         uint256 projectId,
         uint256 amount
-    ) external override nonReentrant whenNotPaused {
+    ) external nonReentrant whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Check if user has enough staked
@@ -1081,7 +1073,7 @@ contract TerraStakeProjects is
     function calculateRewards(
         address user,
         uint256 projectId
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         uint256 userStake = userStakes[user][projectId];
@@ -1165,7 +1157,7 @@ contract TerraStakeProjects is
     
     function claimRewards(
         uint256 projectId
-    ) external override nonReentrant whenNotPaused {
+    ) external nonReentrant whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Get claimable rewards
@@ -1190,7 +1182,7 @@ contract TerraStakeProjects is
         uint256 projectId,
         uint256 impactTarget,
         uint256 stakingTarget
-    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+    ) external nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         projectTargets[projectId] = ProjectTargets({
@@ -1213,7 +1205,7 @@ contract TerraStakeProjects is
     
     function setMinimumStakeAmount(
         uint256 amount
-    ) external override onlyRole(GOVERNANCE_ROLE) {
+    ) external onlyRole(GOVERNANCE_ROLE) {
         minimumStakeAmount = amount;
         emit MinimumStakeAmountSet(amount);
     }
@@ -1246,7 +1238,7 @@ contract TerraStakeProjects is
     function withdrawFees(
         address recipient, 
         uint256 amount
-    ) external override nonReentrant onlyRole(TREASURY_ROLE) {
+    ) external nonReentrant onlyRole(TREASURY_ROLE) {
         if (recipient == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
         
@@ -1270,21 +1262,21 @@ contract TerraStakeProjects is
     
     function getProjectMetadata(
         uint256 projectId
-    ) external view override returns (ProjectMetaData memory) {
+    ) external view returns (ProjectMetaData memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectMetadata[projectId];
     }
     
     function getProjectState(
         uint256 projectId
-    ) external view override returns (ProjectStateData memory) {
+    ) external view returns (ProjectStateData memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectStateData[projectId];
     }
     
     function getProjectVerification(
         uint256 projectId
-    ) external view override returns (VerificationData memory) {
+    ) external view returns (VerificationData memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectVerifications[projectId];
     }
@@ -1292,14 +1284,14 @@ contract TerraStakeProjects is
     function getImpactReport(
         uint256 projectId,
         uint256 reportId
-    ) external view override returns (ImpactReport memory) {
+    ) external view returns (ImpactReport memory) {
         if (projectImpactReports[projectId][reportId].timestamp == 0) revert InvalidReportId();
         return projectImpactReports[projectId][reportId];
     }
     
     function getProjectImpactReports(
         uint256 projectId
-    ) external view override returns (uint256[] memory) {
+    ) external view returns (uint256[] memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectImpactReports[projectId];
     }
@@ -1307,29 +1299,29 @@ contract TerraStakeProjects is
     function getReportValidation(
         uint256 projectId,
         uint256 reportId
-    ) external view override returns (ValidationData memory) {
+    ) external view returns (ValidationData memory) {
         if (projectImpactReports[projectId][reportId].timestamp == 0) revert InvalidReportId();
         return reportValidations[projectId][reportId];
     }
     
     function getProjectsByCategory(
         ProjectCategory category
-    ) external view override returns (uint256[] memory) {
+    ) external view returns (uint256[] memory) {
         return _projectsByCategory[category];
     }
     
-    function getAllProjectIds() external view override returns (uint256[] memory) {
+    function getAllProjectIds() external view returns (uint256[] memory) {
         return allProjectIds;
     }
     
-    function getProjectCount() external view override returns (uint256) {
+    function getProjectCount() external view returns (uint256) {
         return projectCount;
     }
     
     // Get full category information
     function getCategoryInfo(
         ProjectCategory category
-    ) external view override returns (CategoryInfo memory) {
+    ) external view returns (CategoryInfo memory) {
         return categoryInfo[category];
     }
 
@@ -1352,72 +1344,92 @@ contract TerraStakeProjects is
     function getStakedAmount(
         address user,
         uint256 projectId
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         return userStakes[user][projectId];
     }
     
     function getTotalStakedByUser(
         address user
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         return totalStakedByUser[user];
     }
     
     function getTotalStakedOnProject(
         uint256 projectId
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return totalStakedOnProject[projectId];
     }
     
     function getProjectTargets(
         uint256 projectId
-    ) external view override returns (ProjectTargets memory) {
+    ) external view returns (ProjectTargets memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectTargets[projectId];
     }
     
     function getTotalValidatedImpact(
         uint256 projectId
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return totalValidatedImpact[projectId];
     }
     
     function getTotalWeightedImpact(
         uint256 projectId
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return totalWeightedImpact[projectId];
     }
     
-    function getFeeStructure() external view override returns (FeeStructure memory) {
+    function getFeeStructure() external view returns (FeeStructure memory) {
         return fees;
     }
     
-    function getTotalFeesCollected() external view override returns (uint256) {
+    function getTotalFeesCollected() external view returns (uint256) {
         return totalFeesCollected;
     }
     
-    function getTotalFeesWithdrawn() external view override returns (uint256) {
+    function getTotalFeesWithdrawn() external view returns (uint256) {
         return totalFeesWithdrawn;
     }
     
     function getFeesByType(
         FeeType feeType
-    ) external view override returns (uint256) {
+    ) external view returns (uint256) {
         return feesByType[feeType];
+    }
+
+    /**
+     * @notice Adds a comment to a project
+     * @param projectId ID of the project
+     * @param message Comment content
+     */
+    function addComment(uint256 projectId, string calldata message) external {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        // Create comment
+        Comment memory comment = Comment({
+            commenter: msg.sender,
+            message: message,
+            timestamp: uint48(block.timestamp)
+        });
+        
+        projectComments[projectId].push(comment);
+        
+        emit CommentAdded(projectId, msg.sender, message);
     }
     
     // ====================================================
     // 🔹 Admin & Emergency Functions
     // ====================================================
     
-    function pause() external override onlyRole(GOVERNANCE_ROLE) {
+    function pause() external onlyRole(GOVERNANCE_ROLE) {
         _pause();
         emit ContractPaused(msg.sender);
     }
     
-    function unpause() external override onlyRole(GOVERNANCE_ROLE) {
+    function unpause() external onlyRole(GOVERNANCE_ROLE) {
         _unpause();
         emit ContractUnpaused(msg.sender);
     }
@@ -1426,7 +1438,7 @@ contract TerraStakeProjects is
         address tokenAddress,
         address to,
         uint256 amount
-    ) external override nonReentrant onlyRole(GOVERNANCE_ROLE) {
+    ) external nonReentrant onlyRole(GOVERNANCE_ROLE) {
         // Prevent recovering the primary TSTAKE token
         if (tokenAddress == terraTokenAddress) revert CannotRecoverPrimaryToken();
         
@@ -1440,7 +1452,7 @@ contract TerraStakeProjects is
     function setRoleAdmin(
         bytes32 role,
         bytes32 adminRole
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _setRoleAdmin(role, adminRole);
         emit RoleAdminChanged(role, getRoleAdmin(role), adminRole);
     }

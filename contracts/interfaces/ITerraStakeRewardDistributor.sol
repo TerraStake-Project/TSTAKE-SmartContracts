@@ -38,7 +38,7 @@ interface ITerraStakeRewardDistributor {
      * @notice Request randomness for halving from Chainlink VRF
      * @return requestId The VRF request ID
      */
-    function requestRandomHalving() external returns (bytes32);
+    function requestRandomHalving() external returns (uint256);
     
     /**
      * @notice Manually force a halving (emergency only)

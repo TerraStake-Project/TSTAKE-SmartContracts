@@ -104,6 +104,7 @@ interface ITerraStakeStaking {
     function applyHalving() external returns (uint256);
     
     // View functions
+    function calculateRewards(address user) external view returns (uint256);
     function calculateRewards(address user, uint256 projectId) external view returns (uint256);
     function getApplicableTier(uint256 duration) external view returns (uint256);
     function getUserStake(address user, uint256 projectId) external view returns (uint256);
