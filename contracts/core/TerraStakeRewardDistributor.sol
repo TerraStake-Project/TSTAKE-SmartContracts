@@ -348,7 +348,23 @@ contract TerraStakeRewardDistributor is
         
         emit PenaltyReDistributed(from, amount);
     }
-    
+
+    /**
+     * @notice Add penalty rewards to be distributed
+     * @param amount Amount of penalty rewards to add
+     */
+    function addPenaltyRewards(uint256 amount) external nonReentrant onlyRole(GOVERNANCE_ROLE) {
+        if (amount == 0) revert InvalidParameter("amount");
+        
+        // Transfer penalty tokens from sender
+        IERC20(address(rewardToken)).safeTransferFrom(msg.sender, address(this), amount);
+        
+        // Add to pending penalties for distribution
+        totalPendingPenalties += amount;
+        
+        emit PenaltyRewardsAdded(msg.sender, amount);
+    }
+
     /**
      * @notice Distribute accumulated penalties to active stakers in batches
      * @param startIndex Start index in the stakers array
