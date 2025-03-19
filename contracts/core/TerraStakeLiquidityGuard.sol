@@ -145,6 +145,295 @@ contract TerraStakeLiquidityGuard is
     uint256 public reinjectionThreshold; // Minimum amount for reinvesting rewards
     uint256 public autoLiquidityInjectionRate; // % of rewards for auto-liquidity
     uint256 public slippageTolerance; // Basis points (0.01%)
+
+    /**
+     * @notice Add liquidity to the protocol
+     * @param amount Amount of tStake tokens to add
+     */
+    function addLiquidity(uint256 amount) external nonReentrant {
+        if (emergencyMode) revert EmergencyModeActive();
+        if (amount == 0) revert InvalidParameter("amount", amount);
+        
+        // Check max liquidity per address if set
+        if (maxLiquidityPerAddress > 0) {
+            if (userLiquidity[msg.sender] + amount > maxLiquidityPerAddress) {
+                revert InvalidParameter("amount", amount);
+            }
+        }
+        
+        // Transfer tokens from user
+        IERC20(address(tStakeToken)).safeTransferFrom(msg.sender, address(this), amount);
+        
+        // Initialize vesting start time if first deposit
+        if (userVestingStart[msg.sender] == 0) {
+            userVestingStart[msg.sender] = block.timestamp;
+        }
+        
+        // Update user's liquidity position
+        userLiquidity[msg.sender] += amount;
+        
+        emit LiquidityDeposited(msg.sender, amount);
+    }
+
+    /**
+     * @notice Validate price impact for a swap/liquidity operation
+     * @param amountIn Input amount
+     * @param amountOutMin Minimum output amount
+     * @param path Token swap path
+     * @return valid True if price impact is acceptable
+     */
+    function validatePriceImpact(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] memory path
+    ) public view returns (bool valid) {
+        if (amountIn == 0) return false;
+        
+        // Get current spot price
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        uint256 spotPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        
+        // Calculate expected output at spot price
+        uint256 expectedOutput = (amountIn * spotPrice) / (1e18);
+        
+        // Calculate price impact
+        uint256 priceImpact = ((expectedOutput - amountOutMin) * 10000) / expectedOutput;
+        
+        // Price impact should not exceed slippage tolerance
+        return priceImpact <= slippageTolerance;
+    }
+
+    /**
+     * @notice Add liquidity to the protocol
+     * @param amount Amount of tStake tokens to add
+     */
+    function addLiquidity(uint256 amount) external nonReentrant {
+        if (emergencyMode) revert EmergencyModeActive();
+        if (amount == 0) revert InvalidParameter("amount", amount);
+        
+        // Check max liquidity per address if set
+        if (maxLiquidityPerAddress > 0) {
+            if (userLiquidity[msg.sender] + amount > maxLiquidityPerAddress) {
+                revert InvalidParameter("amount", amount);
+            }
+        }
+        
+        // Transfer tokens from user
+        IERC20(address(tStakeToken)).safeTransferFrom(msg.sender, address(this), amount);
+        
+        // Initialize vesting start time if first deposit
+        if (userVestingStart[msg.sender] == 0) {
+            userVestingStart[msg.sender] = block.timestamp;
+        }
+        
+        // Update user's liquidity position
+        userLiquidity[msg.sender] += amount;
+        
+        emit LiquidityDeposited(msg.sender, amount);
+    }
+
+    /**
+     * @notice Validate price impact for a swap/liquidity operation
+     * @param amountIn Input amount
+     * @param amountOutMin Minimum output amount
+     * @param path Token swap path
+     * @return valid True if price impact is acceptable
+     */
+    function validatePriceImpact(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] memory path
+    ) public view returns (bool valid) {
+        if (amountIn == 0) return false;
+        
+        // Get current spot price
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        uint256 spotPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        
+        // Calculate expected output at spot price
+        uint256 expectedOutput = (amountIn * spotPrice) / (1e18);
+        
+        // Calculate price impact
+        uint256 priceImpact = ((expectedOutput - amountOutMin) * 10000) / expectedOutput;
+        
+        // Price impact should not exceed slippage tolerance
+        return priceImpact <= slippageTolerance;
+    }
+
+
+    /**
+     * @notice Add liquidity to the protocol
+     * @param amount Amount of tStake tokens to add
+     */
+    function addLiquidity(uint256 amount) external nonReentrant {
+        if (emergencyMode) revert EmergencyModeActive();
+        if (amount == 0) revert InvalidParameter("amount", amount);
+        
+        // Check max liquidity per address if set
+        if (maxLiquidityPerAddress > 0) {
+            if (userLiquidity[msg.sender] + amount > maxLiquidityPerAddress) {
+                revert InvalidParameter("amount", amount);
+            }
+        }
+        
+        // Transfer tokens from user
+        IERC20(address(tStakeToken)).safeTransferFrom(msg.sender, address(this), amount);
+        
+        // Initialize vesting start time if first deposit
+        if (userVestingStart[msg.sender] == 0) {
+            userVestingStart[msg.sender] = block.timestamp;
+        }
+        
+        // Update user's liquidity position
+        userLiquidity[msg.sender] += amount;
+        
+        emit LiquidityDeposited(msg.sender, amount);
+    }
+
+    /**
+     * @notice Validate price impact for a swap/liquidity operation
+     * @param amountIn Input amount
+     * @param amountOutMin Minimum output amount
+     * @param path Token swap path
+     * @return valid True if price impact is acceptable
+     */
+    function validatePriceImpact(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] memory path
+    ) public view returns (bool valid) {
+        if (amountIn == 0) return false;
+        
+        // Get current spot price
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        uint256 spotPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        
+        // Calculate expected output at spot price
+        uint256 expectedOutput = (amountIn * spotPrice) / (1e18);
+        
+        // Calculate price impact
+        uint256 priceImpact = ((expectedOutput - amountOutMin) * 10000) / expectedOutput;
+        
+        // Price impact should not exceed slippage tolerance
+        return priceImpact <= slippageTolerance;
+    }
+
+
+    /**
+     * @notice Add liquidity to the protocol
+     * @param amount Amount of tStake tokens to add
+     */
+    function addLiquidity(uint256 amount) external nonReentrant {
+        if (emergencyMode) revert EmergencyModeActive();
+        if (amount == 0) revert InvalidParameter("amount", amount);
+        
+        // Check max liquidity per address if set
+        if (maxLiquidityPerAddress > 0) {
+            if (userLiquidity[msg.sender] + amount > maxLiquidityPerAddress) {
+                revert InvalidParameter("amount", amount);
+            }
+        }
+        
+        // Transfer tokens from user
+        IERC20(address(tStakeToken)).safeTransferFrom(msg.sender, address(this), amount);
+        
+        // Initialize vesting start time if first deposit
+        if (userVestingStart[msg.sender] == 0) {
+            userVestingStart[msg.sender] = block.timestamp;
+        }
+        
+        // Update user's liquidity position
+        userLiquidity[msg.sender] += amount;
+        
+        emit LiquidityDeposited(msg.sender, amount);
+    }
+
+    /**
+     * @notice Validate price impact for a swap/liquidity operation
+     * @param amountIn Input amount
+     * @param amountOutMin Minimum output amount
+     * @param path Token swap path
+     * @return valid True if price impact is acceptable
+     */
+    function validatePriceImpact(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] memory path
+    ) public view returns (bool valid) {
+        if (amountIn == 0) return false;
+        
+        // Get current spot price
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        uint256 spotPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        
+        // Calculate expected output at spot price
+        uint256 expectedOutput = (amountIn * spotPrice) / (1e18);
+        
+        // Calculate price impact
+        uint256 priceImpact = ((expectedOutput - amountOutMin) * 10000) / expectedOutput;
+        
+        // Price impact should not exceed slippage tolerance
+        return priceImpact <= slippageTolerance;
+    }
+
+
+    /**
+     * @notice Add liquidity to the protocol
+     * @param amount Amount of tStake tokens to add
+     */
+    function addLiquidity(uint256 amount) external nonReentrant {
+        if (emergencyMode) revert EmergencyModeActive();
+        if (amount == 0) revert InvalidParameter("amount", amount);
+        
+        // Check max liquidity per address if set
+        if (maxLiquidityPerAddress > 0) {
+            if (userLiquidity[msg.sender] + amount > maxLiquidityPerAddress) {
+                revert InvalidParameter("amount", amount);
+            }
+        }
+        
+        // Transfer tokens from user
+        IERC20(address(tStakeToken)).safeTransferFrom(msg.sender, address(this), amount);
+        
+        // Initialize vesting start time if first deposit
+        if (userVestingStart[msg.sender] == 0) {
+            userVestingStart[msg.sender] = block.timestamp;
+        }
+        
+        // Update user's liquidity position
+        userLiquidity[msg.sender] += amount;
+        
+        emit LiquidityDeposited(msg.sender, amount);
+    }
+
+    /**
+     * @notice Validate price impact for a swap/liquidity operation
+     * @param amountIn Input amount
+     * @param amountOutMin Minimum output amount
+     * @param path Token swap path
+     * @return valid True if price impact is acceptable
+     */
+    function validatePriceImpact(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] memory path
+    ) public view returns (bool valid) {
+        if (amountIn == 0) return false;
+        
+        // Get current spot price
+        (uint160 sqrtPriceX96,,,,,,) = uniswapPool.slot0();
+        uint256 spotPrice = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> (96 * 2);
+        
+        // Calculate expected output at spot price
+        uint256 expectedOutput = (amountIn * spotPrice) / (1e18);
+        
+        // Calculate price impact
+        uint256 priceImpact = ((expectedOutput - amountOutMin) * 10000) / expectedOutput;
+        
+        // Price impact should not exceed slippage tolerance
+        return priceImpact <= slippageTolerance;
+    }
+
     
     // User data
     mapping(address => uint256) public userLiquidity;
@@ -944,4 +1233,3 @@ function getSqrtRatioAtTick(int24 tick) internal pure returns (uint160) {
         // Implementation for VRF callback - can be used for stochastic mechanisms
     }
 }                
-
