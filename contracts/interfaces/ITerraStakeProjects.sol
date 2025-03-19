@@ -36,10 +36,11 @@ interface ITerraStakeProjects {
      */
     enum ProjectState {
         Proposed,
-        UnderReview,
+        Pending,
         Active,
-        Suspended,
+        Paused,
         Completed,
+        Cancelled,
         Archived,
         Rejected
     }
@@ -87,15 +88,8 @@ interface ITerraStakeProjects {
         ProjectCategory category;
         ProjectState state;
         uint32 stakingMultiplier;
-        uint256 totalStaked;
-        uint256 rewardPool;
-        bool isActive;
         uint48 startBlock;
         uint48 endBlock;
-        address owner;
-        int256 lastReportedValue;
-        uint256 lastRewardUpdate;
-        uint256 accumulatedRewards;
     }
 
     struct ProjectTargets {
@@ -140,7 +134,6 @@ interface ITerraStakeProjects {
         address verifier;
         uint256 verificationDate;
         bytes32 verificationDocumentHash;
-        bool isVerified;
         string verifierNotes;
     }
     
@@ -158,17 +151,14 @@ interface ITerraStakeProjects {
      * @notice Impact report structure
      */
     struct ImpactReport {
-        uint256 timestamp;
+        uint256 projectId;
         address reporter;
-        bytes32 reportDataHash;
-        string reportURI;
-        string description;
-        uint256 measuredValue;
-        string measurement;
-        ReportStatus status;
-        address validator;
-        string validatorNotes;
-        uint256 validationTime;
+        uint48 timestamp;
+        string title;
+        string details;
+        bytes32 ipfsHash;
+        uint256 metricValue;
+        bool validated;
     }
     
     /**
@@ -244,11 +234,11 @@ interface ITerraStakeProjects {
     struct CategoryInfo {
         string name;
         string description;
-        string[4] standardBodies;
-        string[3] metricUnits;
+        string[] standardBodies;
+        string[] metricUnits;
         string verificationStandard;
         uint256 impactWeight;
-        string[5] keyMetrics;
+        string[] keyMetrics;
         string esgFocus;
     }
 
@@ -345,7 +335,7 @@ interface ITerraStakeProjects {
     /**
      * @notice Emitted when an impact report is submitted
      */
-    event ImpactReportSubmitted(uint256 indexed projectId, bytes32 reportHash);
+    event ImpactReportSubmitted(uint256 indexed projectId, uint256 indexed reportId, address reporter, bytes32 reportHash, uint256 impactMetricValue);
     
     /**
      * @notice Emitted when a REC report is submitted
@@ -412,7 +402,7 @@ interface ITerraStakeProjects {
         ProjectCategory newCategory
     );
 
-    event ProjectStakingFinalized(uint256 indexed projectId);
+    event ProjectStakingFinalized(uint256 indexed projectId, bool isCompleted, uint256 timestamp);
     event StakingMultiplierUpdated(uint256 indexed projectId, uint32 oldMultiplier, uint32 newMultiplier);
     event MinimumStakeAmountSet(uint256 amount);
     event FeesWithdrawn(address recipient, uint256 amount);
@@ -428,19 +418,19 @@ interface ITerraStakeProjects {
     event EmergencyModeDeactivated(address operator);
     
     // Fee updates
-    event FeeCollected(address payer, uint256 amount, uint256 burnAmount, uint256 treasuryAmount, uint256 buybackAmount);
+    event FeeCollected(uint256 projectId, FeeType feeType, uint256 feeAmount);
     event BuybackExecuted(uint256 amount);
     
     // Project events
     event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
-    event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, bool approved, address validator);
+    event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, address validator, bool approved);
     event RewardsDistributed(uint256 indexed projectId, uint256 amount);
-    event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
-    event ProjectUnstaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
+    event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount);
+    event ProjectUnstaked(uint256 indexed projectId, address indexed staker, uint256 amount);
     event RewardsClaimed(uint256 indexed projectId, address indexed staker, uint256 amount);
     event ProjectDocumentAdded(uint256 indexed projectId, uint256 documentId, string name, bytes32 ipfsHash);
     event TokenRecovered(address tokenAddress, address to, uint256 amount);
-    event ProjectVerified(uint256 indexed projectId, bool approved, address verifier, bytes32 verificationDataHash);
+    event ProjectVerified(uint256 indexed projectId, address verifier, bytes32 verificationDataHash);
     event ImpactRequirementsUpdated(uint256 indexed projectId);
     event CategoryRequirementsUpdated(ProjectCategory indexed category);
     event TreasuryAddressChanged(address oldTreasury, address newTreasury);

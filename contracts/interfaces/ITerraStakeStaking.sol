@@ -66,6 +66,8 @@ interface ITerraStakeStaking {
     event SlashedTokensDistributed(uint256 amount);
     event SlashedTokensBurned(uint256 amount);
     event SlashedTokensSentToTreasury(uint256 amount, address treasury);
+    event ProjectStakingCompleted(uint256 projectId, uint256 timestamp);
+    event ProjectStakingCancelled(uint256 projectId, uint256 timestamp);
     
     // Core staking functions
     function stake(uint256 projectId, uint256 amount, uint256 duration, bool isLP, bool autoCompound) external;
@@ -102,6 +104,7 @@ interface ITerraStakeStaking {
     function adjustRewardRates() external;
     function applyHalvingIfNeeded() external;
     function applyHalving() external returns (uint256);
+    function finalizeProjectStaking(uint256 projectId, bool isCompleted) external;
     
     // View functions
     function calculateRewards(address user) external view returns (uint256);

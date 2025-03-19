@@ -507,35 +507,6 @@ contract TerraStakeStaking is
             StakingPosition storage position = _stakingPositions[msg.sender][projectId];
             if (position.amount == 0) {
                 revert NoActiveStakingPosition(msg.sender, projectId);
-    /**
-     * @notice Finalizes staking for a specific project, processing final rewards distribution
-     * @dev Can only be called by an account with GOVERNANCE_ROLE
-     * @param projectId The unique identifier of the project to finalize staking for
-     * @param isCompleted Boolean indicating whether the project was completed successfully
-     * @custom:revert ProjectDoesNotExist If the specified project does not exist
-     */
-    function finalizeProjectStaking(uint256 projectId, bool isCompleted) external onlyRole(GOVERNANCE_ROLE) {
-        if (!projectsContract.projectExists(projectId)) {
-            revert ProjectDoesNotExist(projectId);
-        }
-
-        // Process final rewards distribution
-        address[] memory stakers = getActiveStakers();
-        for (uint256 i = 0; i < stakers.length; i++) {
-            StakingPosition storage position = _stakingPositions[stakers[i]][projectId];
-            if (position.amount > 0) {
-                _claimRewards(stakers[i], projectId);
-            }
-        }
-
-        // Update project status
-        if (isCompleted) {
-            emit ProjectStakingCompleted(projectId, block.timestamp);
-        } else {
-            emit ProjectStakingCancelled(projectId, block.timestamp);
-        }
-    }
-
             }
             // Claim up to date
             _claimRewards(msg.sender, projectId);
@@ -640,6 +611,35 @@ contract TerraStakeStaking is
         if (_stakingBalance[msg.sender] == 0) {
             _isActiveStaker[msg.sender] = false;
             _removeInactiveStaker(msg.sender);
+        }
+    }
+
+    /**
+     * @notice Finalizes staking for a specific project, processing final rewards distribution
+     * @dev Can only be called by an account with GOVERNANCE_ROLE
+     * @param projectId The unique identifier of the project to finalize staking for
+     * @param isCompleted Boolean indicating whether the project was completed successfully
+     * @custom:revert ProjectDoesNotExist If the specified project does not exist
+     */
+    function finalizeProjectStaking(uint256 projectId, bool isCompleted) external onlyRole(GOVERNANCE_ROLE) {
+        if (!projectsContract.projectExists(projectId)) {
+            revert ProjectDoesNotExist(projectId);
+        }
+
+        // Process final rewards distribution
+        address[] memory stakers = getActiveStakers();
+        for (uint256 i = 0; i < stakers.length; i++) {
+            StakingPosition storage position = _stakingPositions[stakers[i]][projectId];
+            if (position.amount > 0) {
+                _claimRewards(stakers[i], projectId);
+            }
+        }
+
+        // Update project status
+        if (isCompleted) {
+            emit ProjectStakingCompleted(projectId, block.timestamp);
+        } else {
+            emit ProjectStakingCancelled(projectId, block.timestamp);
         }
     }
 
@@ -805,7 +805,7 @@ contract TerraStakeStaking is
     /**
      * @notice Get the list of active stakers
      */
-    function getActiveStakers() external view returns (address[] memory) {
+    function getActiveStakers() public view returns (address[] memory) {
         return _activeStakers;
     }
     // -------------------------------------------

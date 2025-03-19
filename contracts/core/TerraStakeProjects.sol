@@ -15,6 +15,7 @@ import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "../interfaces/ITerraStakeProjects.sol";
 import "../interfaces/ITerraStakeNFT.sol";
 import "../interfaces/ITerraStakeMarketplace.sol";
+import "../interfaces/ITerraStakeStaking.sol";
 
 
 /**
@@ -124,14 +125,6 @@ contract TerraStakeProjects is
     mapping(address => uint256) public totalStakedByUser;
     uint256 public totalStaked;
 
-    
-    // Project report tracking
-    mapping(uint256 => mapping(uint256 => ImpactReport)) public projectReports;
-    mapping(uint256 => uint256) public projectReportCount;
-    mapping(uint256 => uint256[]) private _projectReportIndex;
-    mapping(uint256 => uint256) public projectLastReportTime;
-    mapping(uint256 => uint256) public projectLastValidationTime;
-
     // Project impact metrics tracking
     mapping(uint256 => uint256) public totalValidatedImpact;
     mapping(uint256 => uint256) public totalWeightedImpact;
@@ -210,91 +203,102 @@ contract TerraStakeProjects is
         categoryInfo[ProjectCategory.CarbonCredit] = CategoryInfo({
             name: "Carbon Credit",
             description: "Projects that reduce or remove greenhouse gas emissions",
-            standardBodies: ["Verra", "Gold Standard", "American Carbon Registry", "Climate Action Reserve"],
-            metricUnits: ["tCO2e", "Carbon Offset Tons", "Carbon Removal Tons"],
+            standardBodies: new string[](4),
+            metricUnits: new string[](3),
             verificationStandard: "ISO 14064-3",
             impactWeight: 100,
-            keyMetrics: [
-                "Direct CO2e measurements",
-                "Satellite-verified forest coverage",
-                "Industrial emissions monitoring",
-                "Methane capture quantification",
-                "Third-party offset verification"
-            ],
+            keyMetrics: new string[](5),
             esgFocus: "Climate Change Mitigation"
         });
+        categoryInfo[ProjectCategory.CarbonCredit].standardBodies = ["Verra", "Gold Standard", "American Carbon Registry", "Climate Action Reserve"];
+        categoryInfo[ProjectCategory.CarbonCredit].metricUnits = ["tCO2e", "Carbon Offset Tons", "Carbon Removal Tons"];
+        categoryInfo[ProjectCategory.CarbonCredit].keyMetrics = [
+            "Direct CO2e measurements",
+            "Satellite-verified forest coverage",
+            "Industrial emissions monitoring",
+            "Methane capture quantification",
+            "Third-party offset verification"
+        ];
         
         // 2. Renewable Energy projects
         categoryInfo[ProjectCategory.RenewableEnergy] = CategoryInfo({
             name: "Renewable Energy",
             description: "Solar, wind, hydro, and other renewable energy generation projects",
-            standardBodies: ["I-REC Standard", "Green-e Energy", "EKOenergy", ""],
-            metricUnits: ["MWh", "kWh", "Installed Capacity (MW)"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "ISO 50001",
             impactWeight: 90,
-            keyMetrics: [
-                "Real-time MWh and kWh tracking",
-                "Grid integration and storage efficiency",
-                "Transmission loss calculations",
-                "Peak load reduction impact",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Clean Energy Transition"
         });
+        categoryInfo[ProjectCategory.RenewableEnergy].standardBodies = ["I-REC Standard", "Green-e Energy", "EKOenergy"];
+        categoryInfo[ProjectCategory.RenewableEnergy].metricUnits = ["MWh", "kWh", "Installed Capacity (MW)"];
+        categoryInfo[ProjectCategory.RenewableEnergy].keyMetrics = [
+            "Real-time MWh and kWh tracking",
+            "Grid integration and storage efficiency",
+            "Transmission loss calculations",
+            "Peak load reduction impact"
+        ];
         
         // 3. Ocean Cleanup projects
         categoryInfo[ProjectCategory.OceanCleanup] = CategoryInfo({
             name: "Ocean Cleanup",
             description: "Marine conservation and plastic removal initiatives",
-            standardBodies: ["Ocean Cleanup Foundation", "Plastic Bank", "Ocean Conservancy", ""],
-            metricUnits: ["Tons of Plastic Removed", unicode"Area Protected (km²)", "Marine Species Protected"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "UNEP Clean Seas Protocol",
             impactWeight: 85,
-            keyMetrics: [
-                "Tons of marine debris removed",
-                "Ocean current plastic concentration",
-                "Microplastic density and marine ecosystem health",
-                "Coastal cleanup impact and species recovery",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Marine Ecosystem Protection"
         });
+        categoryInfo[ProjectCategory.OceanCleanup].standardBodies = ["Ocean Cleanup Foundation", "Plastic Bank", "Ocean Conservancy"];
+        categoryInfo[ProjectCategory.OceanCleanup].metricUnits = ["Tons of Plastic Removed", unicode"Area Protected (km²)", "Marine Species Protected"];
+        categoryInfo[ProjectCategory.OceanCleanup].keyMetrics = [
+            "Tons of marine debris removed",
+            "Ocean current plastic concentration",
+            "Microplastic density and marine ecosystem health",
+            "Coastal cleanup impact and species recovery"
+        ];
         
         // 4. Reforestation projects
         categoryInfo[ProjectCategory.Reforestation] = CategoryInfo({
             name: "Reforestation",
             description: "Tree planting and forest protection initiatives",
-            standardBodies: ["Forest Stewardship Council", "Rainforest Alliance", "One Tree Planted", ""],
-            metricUnits: ["Trees Planted", "Area Reforested (ha)", "Biomass Added (tons)"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "ISO 14001",
             impactWeight: 95,
-            keyMetrics: [
-                "Satellite-tracked tree planting",
-                "Reforested area in hectares",
-                "Soil quality and biodiversity assessments",
-                "Carbon sequestration rates",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Carbon Sequestration and Biodiversity"
         });
+        categoryInfo[ProjectCategory.Reforestation].standardBodies = ["Forest Stewardship Council", "Rainforest Alliance", "One Tree Planted"];
+        categoryInfo[ProjectCategory.Reforestation].metricUnits = ["Trees Planted", "Area Reforested (ha)", "Biomass Added (tons)"];
+        categoryInfo[ProjectCategory.Reforestation].keyMetrics = [
+            "Satellite-tracked tree planting",
+            "Reforested area in hectares",
+            "Soil quality and biodiversity assessments",
+            "Carbon sequestration rates"
+        ];
         
         // 5. Biodiversity projects
         categoryInfo[ProjectCategory.Biodiversity] = CategoryInfo({
             name: "Biodiversity",
             description: "Species and ecosystem protection initiatives",
-            standardBodies: ["IUCN", "WWF", "The Nature Conservancy", ""],
-            metricUnits: ["Species Protected", "Habitat Area (ha)", "Biodiversity Index"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "Convention on Biological Diversity",
             impactWeight: 85,
-            keyMetrics: [
-                "Species population tracking",
-                "Habitat quality and ecosystem service valuations",
-                "Migration pattern analysis",
-                "Invasive species control",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Ecosystem and Wildlife Protection"
         });
+        categoryInfo[ProjectCategory.Biodiversity].standardBodies = ["IUCN", "WWF", "The Nature Conservancy"];
+        categoryInfo[ProjectCategory.Biodiversity].metricUnits = ["Species Protected", "Habitat Area (ha)", "Biodiversity Index"];
+        categoryInfo[ProjectCategory.Biodiversity].keyMetrics = [
+            "Species population tracking",
+            "Habitat quality and ecosystem service valuations",
+            "Migration pattern analysis",
+            "Invasive species control"
+        ];
 
         // Initialize remaining categories
         _initializeRemainingCategories();
@@ -305,145 +309,158 @@ contract TerraStakeProjects is
         categoryInfo[ProjectCategory.SustainableAg] = CategoryInfo({
             name: "Sustainable Agriculture",
             description: "Regenerative farming and sustainable agricultural practices",
-            standardBodies: ["Regenerative Organic Certified", "USDA Organic", "Rainforest Alliance", ""],
-            metricUnits: ["Organic Produce (tons)", "Soil Carbon Added (tons)", unicode"Water Saved (m³)"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "Global G.A.P.",
             impactWeight: 80,
-            keyMetrics: [
-                "Soil organic carbon content",
-                "Water use efficiency",
-                "Chemical input reduction",
-                "Sustainable yield data",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Food Security and Land Regeneration"
         });
+        categoryInfo[ProjectCategory.SustainableAg].standardBodies = ["Regenerative Organic Certified", "USDA Organic", "Rainforest Alliance"];
+        categoryInfo[ProjectCategory.SustainableAg].metricUnits = ["Organic Produce (tons)", "Soil Carbon Added (tons)", unicode"Water Saved (m³)"];
+        categoryInfo[ProjectCategory.SustainableAg].keyMetrics = [
+            "Soil organic carbon content",
+            "Water use efficiency",
+            "Chemical input reduction",
+            "Sustainable yield data"
+        ];
         
         // 7. Waste Management projects
         categoryInfo[ProjectCategory.WasteManagement] = CategoryInfo({
             name: "Waste Management",
             description: "Recycling and waste reduction initiatives",
-            standardBodies: ["Zero Waste International Alliance", "ISO 14001", "Cradle to Cradle", ""],
-            metricUnits: ["Waste Diverted (tons)", "Recycling Rate (%)", unicode"Landfill Reduction (m³)"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "ISO 14001",
             impactWeight: 75,
-            keyMetrics: [
-                "Recycling and landfill diversion rates",
-                "Hazardous waste management",
-                "Composting volumes and resource recovery",
-                "",
-                ""
-            ],
+            keyMetrics: new string[](3),
             esgFocus: "Circular Economy and Pollution Reduction"
         });
+        categoryInfo[ProjectCategory.WasteManagement].standardBodies = ["Zero Waste International Alliance", "ISO 14001", "Cradle to Cradle"];
+        categoryInfo[ProjectCategory.WasteManagement].metricUnits = ["Waste Diverted (tons)", "Recycling Rate (%)", unicode"Landfill Reduction (m³)"];
+        categoryInfo[ProjectCategory.WasteManagement].keyMetrics = [
+            "Recycling and landfill diversion rates",
+            "Hazardous waste management",
+            "Composting volumes and resource recovery"
+        ];
         
         // 8. Water Conservation projects
         categoryInfo[ProjectCategory.WaterConservation] = CategoryInfo({
             name: "Water Conservation",
             description: "Water efficiency and protection initiatives",
-            standardBodies: ["Alliance for Water Stewardship", "Water Footprint Network", "LEED", ""],
-            metricUnits: [unicode"Water Saved (m³)", "Area Protected (ha)", "People Served"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "ISO 14046",
             impactWeight: 85,
-            keyMetrics: [
-                "Groundwater recharge rates",
-                "Water quality indicators",
-                "Usage efficiency and ecosystem impact",
-                "",
-                ""
-            ],
+            keyMetrics: new string[](3),
             esgFocus: "Sustainable Water Use"
         });
+        categoryInfo[ProjectCategory.WaterConservation].standardBodies = ["Alliance for Water Stewardship", "Water Footprint Network", "LEED"];
+        categoryInfo[ProjectCategory.WaterConservation].metricUnits = [unicode"Water Saved (m³)", "Area Protected (ha)", "People Served"];
+        categoryInfo[ProjectCategory.WaterConservation].keyMetrics = [
+            "Groundwater recharge rates",
+            "Water quality indicators",
+            "Usage efficiency and ecosystem impact"
+        ];
         
         // 9. Pollution Control projects
         categoryInfo[ProjectCategory.PollutionControl] = CategoryInfo({
             name: "Pollution Control",
             description: "Air and environmental quality improvement initiatives",
-            standardBodies: ["ISO 14001", "Clean Air Act", "EPA Standards", ""],
-            metricUnits: ["Emissions Reduced (tons)", "AQI Improvement", "Area Remediated (ha)"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "ISO 14001",
             impactWeight: 80,
-            keyMetrics: [
-                "Air quality and particulate matter levels",
-                "Chemical contamination data",
-                "Noise and soil pollution mitigation",
-                "",
-                ""
-            ],
+            keyMetrics: new string[](3),
             esgFocus: "Air and Soil Quality Improvement"
         });
+        categoryInfo[ProjectCategory.PollutionControl].standardBodies = ["ISO 14001", "Clean Air Act", "EPA Standards"];
+        categoryInfo[ProjectCategory.PollutionControl].metricUnits = ["Emissions Reduced (tons)", "AQI Improvement", "Area Remediated (ha)"];
+        categoryInfo[ProjectCategory.PollutionControl].keyMetrics = [
+            "Air quality and particulate matter levels",
+            "Chemical contamination data",
+            "Noise and soil pollution mitigation"
+        ];
         
         // 10. Habitat Restoration projects
         categoryInfo[ProjectCategory.HabitatRestoration] = CategoryInfo({
             name: "Habitat Restoration",
             description: "Ecosystem recovery projects",
-            standardBodies: ["Society for Ecological Restoration", "IUCN", "Land Life Company", ""],
-            metricUnits: ["Area Restored (ha)", "Species Reintroduced", "Ecological Health Index"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "SER International Standards",
             impactWeight: 90,
-            keyMetrics: [
-                "Native species reintroduction",
-                "Ecosystem function restoration",
-                "Habitat connectivity improvements",
-                "Ecological resilience measurements",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Ecosystem Recovery and Biodiversity"
         });
+        categoryInfo[ProjectCategory.HabitatRestoration].standardBodies = ["Society for Ecological Restoration", "IUCN", "Land Life Company"];
+        categoryInfo[ProjectCategory.HabitatRestoration].metricUnits = ["Area Restored (ha)", "Species Reintroduced", "Ecological Health Index"];
+        categoryInfo[ProjectCategory.HabitatRestoration].keyMetrics = [
+            "Native species reintroduction",
+            "Ecosystem function restoration",
+            "Habitat connectivity improvements",
+            "Ecological resilience measurements"
+        ];
         
         // 11. Green Building projects
         categoryInfo[ProjectCategory.GreenBuilding] = CategoryInfo({
             name: "Green Building",
             description: "Energy-efficient infrastructure & sustainable construction",
-            standardBodies: ["LEED", "BREEAM", "Passive House", "Living Building Challenge"],
-            metricUnits: ["Energy Saved (kWh)", "CO2 Reduced (tons)", unicode"Water Saved (m³)"],
+            standardBodies: new string[](4),
+            metricUnits: new string[](3),
             verificationStandard: "LEED Certification",
             impactWeight: 70,
-            keyMetrics: [
-                "Energy efficiency ratings",
-                "Sustainable material usage",
-                "Water conservation systems",
-                "Indoor environmental quality",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Sustainable Infrastructure"
         });
+        categoryInfo[ProjectCategory.GreenBuilding].standardBodies = ["LEED", "BREEAM", "Passive House", "Living Building Challenge"];
+        categoryInfo[ProjectCategory.GreenBuilding].metricUnits = ["Energy Saved (kWh)", "CO2 Reduced (tons)", unicode"Water Saved (m³)"];
+        categoryInfo[ProjectCategory.GreenBuilding].keyMetrics = [
+            "Energy efficiency ratings",
+            "Sustainable material usage",
+            "Water conservation systems",
+            "Indoor environmental quality"
+        ];
         
         // 12. Circular Economy projects
         categoryInfo[ProjectCategory.CircularEconomy] = CategoryInfo({
             name: "Circular Economy",
             description: "Waste-to-energy, recycling loops, regenerative economy",
-            standardBodies: ["Ellen MacArthur Foundation", "Cradle to Cradle", "Circle Economy", ""],
-            metricUnits: ["Material Reused (tons)", "Product Lifecycle Extension", "Virgin Material Avoided (tons)"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "BS 8001:2017",
             impactWeight: 85,
-            keyMetrics: [
-                "Material circularity index",
-                "Product lifecycle extension",
-                "Waste stream conversion rates",
-                "Resource productivity improvements",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Resource Efficiency"
         });
+        categoryInfo[ProjectCategory.CircularEconomy].standardBodies = ["Ellen MacArthur Foundation", "Cradle to Cradle", "Circle Economy"];
+        categoryInfo[ProjectCategory.CircularEconomy].metricUnits = ["Material Reused (tons)", "Product Lifecycle Extension", "Virgin Material Avoided (tons)"];
+        categoryInfo[ProjectCategory.CircularEconomy].keyMetrics = [
+            "Material circularity index",
+            "Product lifecycle extension",
+            "Waste stream conversion rates",
+            "Resource productivity improvements"
+        ];
         
         // 13. Community Development projects
         categoryInfo[ProjectCategory.CommunityDevelopment] = CategoryInfo({
             name: "Community Development",
             description: "Local sustainability initiatives and social impact projects",
-            standardBodies: ["B Corp", "Social Value International", "Community Development Financial Institutions", ""],
-            metricUnits: ["People Impacted", "Jobs Created", "Community Resources Generated"],
+            standardBodies: new string[](3),
+            metricUnits: new string[](3),
             verificationStandard: "Social Return on Investment Framework",
             impactWeight: 75,
-            keyMetrics: [
-                "Community engagement levels",
-                "Quality of life improvements",
-                "Local economic development",
-                "Equitable resource distribution",
-                ""
-            ],
+            keyMetrics: new string[](4),
             esgFocus: "Social Sustainability"
         });
+        categoryInfo[ProjectCategory.CommunityDevelopment].standardBodies = ["B Corp", "Social Value International", "Community Development Financial Institutions"];
+        categoryInfo[ProjectCategory.CommunityDevelopment].metricUnits = ["People Impacted", "Jobs Created", "Community Resources Generated"];
+        categoryInfo[ProjectCategory.CommunityDevelopment].keyMetrics = [
+            "Community engagement levels",
+            "Quality of life improvements",
+            "Local economic development",
+            "Equitable resource distribution"
+        ];
     }
 
     // ====================================================
@@ -556,7 +573,7 @@ contract TerraStakeProjects is
     function _finalizeProjectStaking(uint256 projectId, bool isCompleted) internal {
         // Notify staking contract about project completion
         // This allows for special handling of staked tokens
-        stakingContract.finalizeProjectStaking(projectId, isCompleted);
+        ITerraStakeStaking(stakingContract).finalizeProjectStaking(projectId, isCompleted);
             
         emit ProjectStakingFinalized(projectId, isCompleted, block.timestamp);
     }
@@ -777,21 +794,13 @@ contract TerraStakeProjects is
         // Terminal state logic
         if (newState == ProjectState.Completed || newState == ProjectState.Cancelled) {
             // Process final staking and cleanup logic
-            _finalizeProjectStaking(projectId);
+            _finalizeProjectStaking(projectId, newState == ProjectState.Completed);
         }
         
         // Update project state
         project.state = newState;
         
         emit ProjectStateChanged(projectId, currentState, newState);
-    }
-    
-    function _finalizeProjectStaking(uint256 projectId) internal {
-        // Handle any final staking logic, rewards, etc.
-        // This could distribute final rewards or clean up staking positions
-        
-        // For now, we'll just emit an event
-        emit ProjectStakingFinalized(projectId);
     }
 
     function updateStakingMultiplier(
@@ -891,7 +900,7 @@ contract TerraStakeProjects is
         projectImpactReports[projectId].push(impactReport);
         
         uint256 reportId = projectImpactReports[projectId].length;
-        emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
+        emit ImpactReportSubmitted(projectId, reportId, msg.sender, ipfsReportHash, impactMetricValue);
     }
 
     function validateImpactReport(
@@ -912,7 +921,7 @@ contract TerraStakeProjects is
         report.validated = isValid;
         
         // Store validation
-        reportValidations[reportId] = ValidationData({
+        reportValidations[projectId][reportId] = ValidationData({
             validator: msg.sender,
             validationTime: uint48(block.timestamp),
             validationNotes: validationNotes,
@@ -932,7 +941,7 @@ contract TerraStakeProjects is
             totalWeightedImpact[projectId] += weightedImpact;
         }
         
-        emit ImpactReportValidated(reportId, report.projectId, msg.sender, isValid);
+        emit ImpactReportValidated(report.projectId, reportId, msg.sender, isValid);
     }
 
     function getProjectReportStats(uint256 projectId) external view returns (
@@ -945,8 +954,8 @@ contract TerraStakeProjects is
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Get all reports for this project
-        uint256[] memory reportIds = projectImpactReports[projectId];
-        totalReports = reportIds.length;
+        ImpactReport[] memory reports = projectImpactReports[projectId];
+        totalReports = reports.length;
         
         // Initialize counters
         validatedReports = 0;
@@ -959,11 +968,10 @@ contract TerraStakeProjects is
         
         // Iterate through all reports
         for (uint256 i = 0; i < totalReports; i++) {
-            uint256 reportId = reportIds[i];
-            ImpactReport memory report = projectReports[projectId][reportId];
+            ImpactReport memory report = reports[i];
             
             // Check validation status
-            ValidationData memory validation = reportValidations[reportId];
+            ValidationData memory validation = reportValidations[projectId][i];
             
             if (validation.validationTime > 0) {
                 // Report has been validated
@@ -1291,7 +1299,7 @@ contract TerraStakeProjects is
     
     function getProjectImpactReports(
         uint256 projectId
-    ) external view returns (uint256[] memory) {
+    ) external view returns (ImpactReport[] memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         return projectImpactReports[projectId];
     }
@@ -1532,17 +1540,19 @@ contract TerraStakeProjects is
     // Function to get validated impact reports for a project
     function getValidatedReports(
         uint256 projectId
-    ) external view returns (uint256[] memory) {
+    ) external view returns (ImpactReport[] memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
         // Create result array
-        uint256[] memory validatedReports;
+        ImpactReport[] memory validatedReports;
+        uint256 validatedCount = 0;
         
-        uint256[] memory allReports = projectImpactReports[projectId];
+        ImpactReport[] memory allReports = projectImpactReports[projectId];
 
         for (uint256 i = 0; i < allReports.length; i++) {
             if (allReports[i].validated) {
-                validatedReports.push(allReports[i]);
+                validatedReports[validatedCount] = allReports[i];
+                validatedCount = validatedCount + 1;
             }
         }
         
@@ -1693,7 +1703,9 @@ contract TerraStakeProjects is
         string[] calldata standardBodies,
         string[] calldata metricUnits,
         string calldata verificationStandard,
-        uint8 impactWeight
+        uint8 impactWeight,
+        string[] calldata keyMetrics,
+        string calldata esgFocus
     ) external onlyRole(GOVERNANCE_ROLE) {
         // Validate impact weight
         if (impactWeight == 0 || impactWeight > 100) revert InvalidImpactWeight();
@@ -1705,7 +1717,9 @@ contract TerraStakeProjects is
             standardBodies: standardBodies,
             metricUnits: metricUnits,
             verificationStandard: verificationStandard,
-            impactWeight: impactWeight
+            impactWeight: impactWeight,
+            keyMetrics: keyMetrics,
+            esgFocus: esgFocus
         });
         
         emit CategoryInfoUpdated(category, name, impactWeight);
