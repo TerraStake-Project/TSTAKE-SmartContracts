@@ -1089,15 +1089,16 @@ contract AntiBot is
         return !isBuybackPaused;
     }
     /**
-     * @notice Validates a transaction from a sender
-     * @param sender Address initiating the transaction
+     * @notice Validates a token transfer
+     * @param from Address sending the token
+     * @param to Address receiving the token
      * @param amount Transaction amount (unused in current implementation)
      * @return isValid Whether the transaction passes anti-bot checks
      */
-    function validateTransaction(address sender, uint256 amount) external override checkThrottle(sender) circuitBreakerCheck returns (bool) {
+    function validateTransfer(address from, address to, uint256 amount) external override checkThrottle(from) circuitBreakerCheck returns (bool) {
         // The modifiers will revert if the transaction fails validation
         // If we reach here, it means the transaction passed validation
-        return true;
+        return false;
     }
     
     /**

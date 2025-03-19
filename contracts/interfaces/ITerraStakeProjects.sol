@@ -27,7 +27,8 @@ interface ITerraStakeProjects {
         PollutionControl,
         HabitatRestoration,
         GreenBuilding,
-        CircularEconomy
+        CircularEconomy,
+        CommunityDevelopment
     }
     
     /**
@@ -239,23 +240,16 @@ interface ITerraStakeProjects {
         uint256 lastVerificationTime;
     }
 
-    struct UserStake {
-        uint256 amount;
-        uint256 adjustedAmount;
-        uint256 stakedAt;
-        uint256 lastRewardUpdate;
-        uint256 claimedRewards;
-        bool isStaking;
-    }
-
     // Custom data structure to store real-world category information
     struct CategoryInfo {
         string name;
         string description;
-        string[] standardBodies;
-        string[] metricUnits;
+        string[4] standardBodies;
+        string[3] metricUnits;
         string verificationStandard;
         uint256 impactWeight;
+        string[5] keyMetrics;
+        string esgFocus;
     }
 
     struct StakingAction {
@@ -420,6 +414,102 @@ interface ITerraStakeProjects {
 
     event ProjectStakingFinalized(uint256 indexed projectId);
     event StakingMultiplierUpdated(uint256 indexed projectId, uint32 oldMultiplier, uint32 newMultiplier);
+    event MinimumStakeAmountSet(uint256 amount);
+    event FeesWithdrawn(address recipient, uint256 amount);
+    
+    // Project metadata update event
+    event ProjectMetadataUpdated(uint256 indexed projectId, string name, bytes32 ipfsHash);
+    
+    // Fee management events
+    event TokensBurned(uint256 amount);
+    
+    // Emergency events
+    event EmergencyModeActivated(address operator);
+    event EmergencyModeDeactivated(address operator);
+    
+    // Fee updates
+    event FeeCollected(address payer, uint256 amount, uint256 burnAmount, uint256 treasuryAmount, uint256 buybackAmount);
+    event BuybackExecuted(uint256 amount);
+    
+    // Project events
+    event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
+    event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, bool approved, address validator);
+    event RewardsDistributed(uint256 indexed projectId, uint256 amount);
+    event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
+    event ProjectUnstaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
+    event RewardsClaimed(uint256 indexed projectId, address indexed staker, uint256 amount);
+    event ProjectDocumentAdded(uint256 indexed projectId, uint256 documentId, string name, bytes32 ipfsHash);
+    event TokenRecovered(address tokenAddress, address to, uint256 amount);
+    event ProjectVerified(uint256 indexed projectId, bool approved, address verifier, bytes32 verificationDataHash);
+    event ImpactRequirementsUpdated(uint256 indexed projectId);
+    event CategoryRequirementsUpdated(ProjectCategory indexed category);
+    event TreasuryAddressChanged(address oldTreasury, address newTreasury);
+    event RewardPoolIncreased(uint256 indexed projectId, uint256 amount, address contributor);
+    event CategoryInfoUpdated(ProjectCategory category, string name, uint8 impactWeight);
+
+    // NFT related events
+    event ImpactNFTMinted(uint256 indexed projectId, bytes32 indexed reportHash, address recipient);
+    event NFTContractSet(address indexed nftContract);
+
+    // Governance events
+    event ContractPaused(address admin);
+    event ContractUnpaused(address admin);
+
+    // ====================================================
+    //  Errors
+    // ====================================================
+    error InvalidAddress();
+    error NameRequired();
+    error InvalidProjectId();
+    error StateUnchanged();
+    error NotAuthorized();
+    error FeeTransferFailed();
+    error PageDoesNotExist();
+    error InvalidCategory();
+    error ProjectNotActive();
+    error ProjectNotVerified();
+    error RECNotFound();
+    error RECNotActive();
+    error NotRECOwner();
+    error CannotRevokeOwnerPermissions();
+    error EmergencyModeActive();
+    error CallerNotStakingContract();
+    error InvalidReportId();
+    error ReportAlreadyVerified();
+    error ZeroAmount();
+    error TokenNotConfigured();
+    error TokenTransferFailed();
+    error InsufficientStake();
+    error NoRewardsAvailable();
+    error NoBuybackFunds();
+    error ExceedsRecoverableAmount();
+    error InvalidPermission();
+    error InvalidAmount();
+    error StakeTransferFailed();
+    error NotStaking();
+    error MinStakingPeriodNotMet();
+    error UnstakeTransferFailed();
+    error NoRewardsToClaim();
+    error RewardTransferFailed();
+    error ProjectEndingTooSoon();
+    error ReportingTooFrequent();
+    error InvalidReportStatus();
+    error TransferFailed();
+    error InvalidPermissionType();
+    error EmptyProjectName();
+    error EmptyProjectDescription();
+    error EmptyProjectLocation();
+    error EmptyImpactMetrics();
+    error InvalidIpfsHash();
+    error InvalidStakingMultiplier();
+    error InvalidBlockRange();
+    error ProjectInTerminalState();
+    error InvalidStateTransition();
+    error ReportAlreadyValidated();
+    error StakeTooSmall();
+    error InsufficientFees();
+    error CannotRecoverPrimaryToken();
+    error InvalidImpactWeight();
     
     // ====================================================
     //  Core Functions
