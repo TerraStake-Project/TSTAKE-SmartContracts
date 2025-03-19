@@ -2,7 +2,7 @@
 
 pragma solidity 0.8.28; 
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -23,12 +23,12 @@ import "../interfaces/ITerraStakeMarketplace.sol";
  * @dev Implements UUPS upgradeable pattern and comprehensive role-based access control
  */
 contract TerraStakeProjects is 
-    Initializable, 
-    AccessControlUpgradeable, 
-    ReentrancyGuardUpgradeable, 
+    ITerraStakeProjects,
+    Initializable,
+    AccessControlEnumerableUpgradeable,
+    ReentrancyGuardUpgradeable,
     PausableUpgradeable,
-    UUPSUpgradeable,
-    ITerraStakeProjects 
+    UUPSUpgradeable
 {
     using SafeERC20 for IERC20;
     
@@ -69,6 +69,8 @@ contract TerraStakeProjects is
     uint256 private totalFeesWithdrawn;
     mapping(FeeType => uint256) private feesByType;
 
+    uint256 public minimumStakeAmount;
+
     // NFT Integration
     address public nftContract;
     mapping(ProjectCategory => string) private categoryImageURI;
@@ -81,10 +83,9 @@ contract TerraStakeProjects is
     mapping(uint256 => ProjectStateData) public projectStateData;
 
     mapping(uint256 => VerificationData) public projectVerifications;
-    mapping(uint256 => ValidationData) public reportValidations;
-    mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
     mapping(uint256 => mapping(uint256 => ValidationData)) public reportValidations;
-
+    mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
+    
     // Enhanced storage pattern for comments with pagination
     mapping(uint256 => mapping(uint256 => Comment[])) public projectCommentsPages;
     mapping(uint256 => uint256) public projectCommentsPageCount;
@@ -125,10 +126,12 @@ contract TerraStakeProjects is
     bool public emergencyMode;
     
     // Staking tracking
-    mapping(uint256 => mapping(address => UserStake)) public projectStakes;
-    mapping(uint256 => address[]) public _projectStakers;
-    mapping(address => uint256[]) public userStakedProjects;
     StakingAction[] public stakingHistory;
+    mapping(address => mapping(uint256 => uint256)) public userStakes;
+    mapping(uint256 => uint256) public totalStakedOnProject;
+    mapping(address => uint256) public totalStakedByUser;
+    uint256 public totalStaked;
+
     
     // Project report tracking
     mapping(uint256 => mapping(uint256 => ImpactReport)) public projectReports;
@@ -136,116 +139,19 @@ contract TerraStakeProjects is
     mapping(uint256 => uint256[]) private _projectReportIndex;
     mapping(uint256 => uint256) public projectLastReportTime;
     mapping(uint256 => uint256) public projectLastValidationTime;
-    
+
+    // Project impact metrics tracking
+    mapping(uint256 => uint256) public totalValidatedImpact;
+    mapping(uint256 => uint256) public totalWeightedImpact;
+
+    // Project rewards tracking
+    mapping(address => mapping(uint256 => uint48)) public lastRewardClaim;
+    uint256 public totalRewardsClaimed;
+    mapping(address => uint256) public userRewardsClaimed;
+
     // Verification comments
     mapping(uint256 => mapping(uint256 => string)) public projectVerificationComments;
 
-    // ====================================================
-    //  Enhanced Events
-    // ====================================================
-    // NFT related events
-    event ImpactNFTMinted(uint256 indexed projectId, bytes32 indexed reportHash, address recipient);
-    event NFTContractSet(address indexed nftContract);
-    
-    // Additional events for REC management
-    event RECVerified(uint256 indexed projectId, bytes32 indexed recId, address verifier);
-    event RECRetired(uint256 indexed projectId, bytes32 indexed recId, address retirer, string purpose);
-    event RECTransferred(uint256 indexed projectId, bytes32 indexed recId, address from, address to);
-    event RECRegistrySync(uint256 indexed projectId, bytes32 indexed recId, string externalRegistryId);
-    
-    // Project permission events
-    event ProjectPermissionUpdated(
-        uint256 indexed projectId, 
-        address indexed user, 
-        bytes32 permission, 
-        bool granted
-    );
-    
-    // Project metadata update event
-    event ProjectMetadataUpdated(uint256 indexed projectId, string name, bytes32 ipfsHash);
-    
-    // Fee management events
-    event TokensBurned(uint256 amount);
-    
-    // Emergency events
-    event EmergencyModeActivated(address operator);
-    event EmergencyModeDeactivated(address operator);
-    
-    // Initialization event
-    event Initialized(address admin, address tstakeToken);
-    
-    // Fee updates
-    event FeeStructureUpdated(uint256 projectFee, uint256 reportingFee, uint256 verificationFee, uint256 categoryChangeFee);
-    event FeeCollected(address payer, uint256 amount, uint256 burnAmount, uint256 treasuryAmount, uint256 buybackAmount);
-    event BuybackExecuted(uint256 amount);
-    
-    // Project events
-    event ProjectStateChanged(uint256 indexed projectId, ProjectState oldState, ProjectState newState);
-    event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
-    event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, bool approved, address validator);
-    event RewardsDistributed(uint256 indexed projectId, uint256 amount);
-    event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
-    event ProjectUnstaked(uint256 indexed projectId, address indexed staker, uint256 amount, uint256 adjustedAmount);
-    event RewardsClaimed(uint256 indexed projectId, address indexed staker, uint256 amount);
-    event ProjectDocumentAdded(uint256 indexed projectId, uint256 documentId, string name, bytes32 ipfsHash);
-    event TokensRecovered(address tokenAddress, uint256 amount);
-    event ProjectVerified(uint256 indexed projectId, bool approved, address verifier, bytes32 verificationDataHash);
-    event ImpactRequirementsUpdated(uint256 indexed projectId);
-    event CategoryRequirementsUpdated(ProjectCategory indexed category);
-    event TreasuryAddressChanged(address oldTreasury, address newTreasury);
-    event RewardPoolIncreased(uint256 indexed projectId, uint256 amount, address contributor);
-
-    // ====================================================
-    //  Errors
-    // ====================================================
-    error InvalidAddress();
-    error NameRequired();
-    error InvalidProjectId();
-    error StateUnchanged();
-    error NotAuthorized();
-    error FeeTransferFailed();
-    error PageDoesNotExist();
-    error InvalidCategory();
-    error ProjectNotActive();
-    error ProjectNotVerified();
-    error RECNotFound();
-    error RECNotActive();
-    error NotRECOwner();
-    error CannotRevokeOwnerPermissions();
-    error EmergencyModeActive();
-    error CallerNotStakingContract();
-    error InvalidReportId();
-    error ReportAlreadyVerified();
-    error ZeroAmount();
-    error TokenNotConfigured();
-    error TokenTransferFailed();
-    error InsufficientStake();
-    error NoRewardsAvailable();
-    error NoBuybackFunds();
-    error ExceedsRecoverableAmount();
-    error InvalidPermission();
-    error InvalidAmount();
-    error StakeTransferFailed();
-    error NotStaking();
-    error MinStakingPeriodNotMet();
-    error UnstakeTransferFailed();
-    error NoRewardsToClaim();
-    error RewardTransferFailed();
-    error ProjectEndingTooSoon();
-    error ReportingTooFrequent();
-    error InvalidReportStatus();
-    error TransferFailed();
-    error InvalidPermissionType();
-    error EmptyProjectName();
-    error EmptyProjectDescription();
-    error EmptyProjectLocation();
-    error EmptyImpactMetrics();
-    error InvalidIpfsHash();
-    error InvalidStakingMultiplier();
-    error InvalidBlockRange();
-    error ProjectInTerminalState();
-    error InvalidStateTransition();
-    error ReportAlreadyValidated();
 
     // ====================================================
     //  Initialization & Upgrades
@@ -261,7 +167,7 @@ contract TerraStakeProjects is
     ) external override initializer {
         if (admin == address(0) || _tstakeToken == address(0)) revert InvalidAddress();
         
-        __AccessControl_init();
+        __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
         __UUPSUpgradeable_init();
@@ -286,8 +192,10 @@ contract TerraStakeProjects is
             verificationFee: 3000 * 10**18       // $3,000 in TSTAKE
         });
         
+        minimumStakeAmount = 1_000_000 * 10**18; // 1,000,000 TSTAKE
+        
         // Initialize category information with real-world data
-        _initializeCategoryData();
+        _initializeCategories();
         
         emit Initialized(admin, _tstakeToken);
         emit FeeStructureUpdated(
@@ -304,141 +212,245 @@ contract TerraStakeProjects is
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
-    // Initialize category data with real-world standards and requirements
-    function _initializeCategoryData() internal {
-        // Carbon Credit projects
+    // Initialize all categories with complete metadata
+    function _initializeCategories() internal {
+        // 1. Carbon Credit projects
         categoryInfo[ProjectCategory.CarbonCredit] = CategoryInfo({
             name: "Carbon Credit",
             description: "Projects that reduce or remove greenhouse gas emissions",
             standardBodies: ["Verra", "Gold Standard", "American Carbon Registry", "Climate Action Reserve"],
             metricUnits: ["tCO2e", "Carbon Offset Tons", "Carbon Removal Tons"],
             verificationStandard: "ISO 14064-3",
-            impactWeight: 100
+            impactWeight: 100,
+            keyMetrics: [
+                "Direct CO2e measurements",
+                "Satellite-verified forest coverage",
+                "Industrial emissions monitoring",
+                "Methane capture quantification",
+                "Third-party offset verification"
+            ],
+            esgFocus: "Climate Change Mitigation"
         });
         
-        // Renewable Energy projects
+        // 2. Renewable Energy projects
         categoryInfo[ProjectCategory.RenewableEnergy] = CategoryInfo({
             name: "Renewable Energy",
             description: "Solar, wind, hydro, and other renewable energy generation projects",
-            standardBodies: ["I-REC Standard", "Green-e Energy", "EKOenergy"],
+            standardBodies: ["I-REC Standard", "Green-e Energy", "EKOenergy", ""],
             metricUnits: ["MWh", "kWh", "Installed Capacity (MW)"],
             verificationStandard: "ISO 50001",
-            impactWeight: 90
+            impactWeight: 90,
+            keyMetrics: [
+                "Real-time MWh and kWh tracking",
+                "Grid integration and storage efficiency",
+                "Transmission loss calculations",
+                "Peak load reduction impact",
+                ""
+            ],
+            esgFocus: "Clean Energy Transition"
         });
         
-        // Ocean Cleanup projects
+        // 3. Ocean Cleanup projects
         categoryInfo[ProjectCategory.OceanCleanup] = CategoryInfo({
             name: "Ocean Cleanup",
             description: "Marine conservation and plastic removal initiatives",
-            standardBodies: ["Ocean Cleanup Foundation", "Plastic Bank", "Ocean Conservancy"],
-            metricUnits: ["Tons of Plastic Removed", "Area Protected (km2)", "Marine Species Protected"],
+            standardBodies: ["Ocean Cleanup Foundation", "Plastic Bank", "Ocean Conservancy", ""],
+            metricUnits: ["Tons of Plastic Removed", unicode"Area Protected (km²)", "Marine Species Protected"],
             verificationStandard: "UNEP Clean Seas Protocol",
-            impactWeight: 85
+            impactWeight: 85,
+            keyMetrics: [
+                "Tons of marine debris removed",
+                "Ocean current plastic concentration",
+                "Microplastic density and marine ecosystem health",
+                "Coastal cleanup impact and species recovery",
+                ""
+            ],
+            esgFocus: "Marine Ecosystem Protection"
         });
         
-        // Reforestation projects
+        // 4. Reforestation projects
         categoryInfo[ProjectCategory.Reforestation] = CategoryInfo({
             name: "Reforestation",
             description: "Tree planting and forest protection initiatives",
-            standardBodies: ["Forest Stewardship Council", "Rainforest Alliance", "One Tree Planted"],
+            standardBodies: ["Forest Stewardship Council", "Rainforest Alliance", "One Tree Planted", ""],
             metricUnits: ["Trees Planted", "Area Reforested (ha)", "Biomass Added (tons)"],
             verificationStandard: "ISO 14001",
-            impactWeight: 95
+            impactWeight: 95,
+            keyMetrics: [
+                "Satellite-tracked tree planting",
+                "Reforested area in hectares",
+                "Soil quality and biodiversity assessments",
+                "Carbon sequestration rates",
+                ""
+            ],
+            esgFocus: "Carbon Sequestration and Biodiversity"
         });
         
-        // Biodiversity projects
+        // 5. Biodiversity projects
         categoryInfo[ProjectCategory.Biodiversity] = CategoryInfo({
             name: "Biodiversity",
             description: "Species and ecosystem protection initiatives",
-            standardBodies: ["IUCN", "WWF", "The Nature Conservancy"],
+            standardBodies: ["IUCN", "WWF", "The Nature Conservancy", ""],
             metricUnits: ["Species Protected", "Habitat Area (ha)", "Biodiversity Index"],
             verificationStandard: "Convention on Biological Diversity",
-            impactWeight: 85
+            impactWeight: 85,
+            keyMetrics: [
+                "Species population tracking",
+                "Habitat quality and ecosystem service valuations",
+                "Migration pattern analysis",
+                "Invasive species control",
+                ""
+            ],
+            esgFocus: "Ecosystem and Wildlife Protection"
         });
-        
+
         // Initialize remaining categories
         _initializeRemainingCategories();
     }
-    
+
     function _initializeRemainingCategories() internal {
-        // Sustainable Agriculture projects
+        // 6. Sustainable Agriculture projects
         categoryInfo[ProjectCategory.SustainableAg] = CategoryInfo({
             name: "Sustainable Agriculture",
             description: "Regenerative farming and sustainable agricultural practices",
-            standardBodies: ["Regenerative Organic Certified", "USDA Organic", "Rainforest Alliance"],
-            metricUnits: ["Organic Produce (tons)", "Soil Carbon Added (tons)", "Water Saved (m3)"],
+            standardBodies: ["Regenerative Organic Certified", "USDA Organic", "Rainforest Alliance", ""],
+            metricUnits: ["Organic Produce (tons)", "Soil Carbon Added (tons)", unicode"Water Saved (m³)"],
             verificationStandard: "Global G.A.P.",
-            impactWeight: 80
+            impactWeight: 80,
+            keyMetrics: [
+                "Soil organic carbon content",
+                "Water use efficiency",
+                "Chemical input reduction",
+                "Sustainable yield data",
+                ""
+            ],
+            esgFocus: "Food Security and Land Regeneration"
         });
         
-        // Waste Management projects
+        // 7. Waste Management projects
         categoryInfo[ProjectCategory.WasteManagement] = CategoryInfo({
             name: "Waste Management",
             description: "Recycling and waste reduction initiatives",
-            standardBodies: ["Zero Waste International Alliance", "ISO 14001", "Cradle to Cradle"],
-            metricUnits: ["Waste Diverted (tons)", "Recycling Rate (%)", "Landfill Reduction (m3)"],
+            standardBodies: ["Zero Waste International Alliance", "ISO 14001", "Cradle to Cradle", ""],
+            metricUnits: ["Waste Diverted (tons)", "Recycling Rate (%)", unicode"Landfill Reduction (m³)"],
             verificationStandard: "ISO 14001",
-            impactWeight: 75
+            impactWeight: 75,
+            keyMetrics: [
+                "Recycling and landfill diversion rates",
+                "Hazardous waste management",
+                "Composting volumes and resource recovery",
+                "",
+                ""
+            ],
+            esgFocus: "Circular Economy and Pollution Reduction"
         });
         
-        // Water Conservation projects
+        // 8. Water Conservation projects
         categoryInfo[ProjectCategory.WaterConservation] = CategoryInfo({
             name: "Water Conservation",
             description: "Water efficiency and protection initiatives",
-            standardBodies: ["Alliance for Water Stewardship", "Water Footprint Network", "LEED"],
-            metricUnits: ["Water Saved (m3)", "Area Protected (ha)", "People Served"],
+            standardBodies: ["Alliance for Water Stewardship", "Water Footprint Network", "LEED", ""],
+            metricUnits: [unicode"Water Saved (m³)", "Area Protected (ha)", "People Served"],
             verificationStandard: "ISO 14046",
-            impactWeight: 85
+            impactWeight: 85,
+            keyMetrics: [
+                "Groundwater recharge rates",
+                "Water quality indicators",
+                "Usage efficiency and ecosystem impact",
+                "",
+                ""
+            ],
+            esgFocus: "Sustainable Water Use"
         });
         
-        // Pollution Control projects
+        // 9. Pollution Control projects
         categoryInfo[ProjectCategory.PollutionControl] = CategoryInfo({
             name: "Pollution Control",
             description: "Air and environmental quality improvement initiatives",
-            standardBodies: ["ISO 14001", "Clean Air Act", "EPA Standards"],
+            standardBodies: ["ISO 14001", "Clean Air Act", "EPA Standards", ""],
             metricUnits: ["Emissions Reduced (tons)", "AQI Improvement", "Area Remediated (ha)"],
             verificationStandard: "ISO 14001",
-            impactWeight: 80
+            impactWeight: 80,
+            keyMetrics: [
+                "Air quality and particulate matter levels",
+                "Chemical contamination data",
+                "Noise and soil pollution mitigation",
+                "",
+                ""
+            ],
+            esgFocus: "Air and Soil Quality Improvement"
         });
         
-        // Habitat Restoration projects
+        // 10. Habitat Restoration projects
         categoryInfo[ProjectCategory.HabitatRestoration] = CategoryInfo({
             name: "Habitat Restoration",
             description: "Ecosystem recovery projects",
-            standardBodies: ["Society for Ecological Restoration", "IUCN", "Land Life Company"],
+            standardBodies: ["Society for Ecological Restoration", "IUCN", "Land Life Company", ""],
             metricUnits: ["Area Restored (ha)", "Species Reintroduced", "Ecological Health Index"],
             verificationStandard: "SER International Standards",
-            impactWeight: 90
+            impactWeight: 90,
+            keyMetrics: [
+                "Native species reintroduction",
+                "Ecosystem function restoration",
+                "Habitat connectivity improvements",
+                "Ecological resilience measurements",
+                ""
+            ],
+            esgFocus: "Ecosystem Recovery and Biodiversity"
         });
         
-        // Green Building projects
+        // 11. Green Building projects
         categoryInfo[ProjectCategory.GreenBuilding] = CategoryInfo({
             name: "Green Building",
             description: "Energy-efficient infrastructure & sustainable construction",
             standardBodies: ["LEED", "BREEAM", "Passive House", "Living Building Challenge"],
-            metricUnits: ["Energy Saved (kWh)", "CO2 Reduced (tons)", "Water Saved (m3)"],
+            metricUnits: ["Energy Saved (kWh)", "CO2 Reduced (tons)", unicode"Water Saved (m³)"],
             verificationStandard: "LEED Certification",
-            impactWeight: 70
+            impactWeight: 70,
+            keyMetrics: [
+                "Energy efficiency ratings",
+                "Sustainable material usage",
+                "Water conservation systems",
+                "Indoor environmental quality",
+                ""
+            ],
+            esgFocus: "Sustainable Infrastructure"
         });
         
-        // Circular Economy projects
+        // 12. Circular Economy projects
         categoryInfo[ProjectCategory.CircularEconomy] = CategoryInfo({
             name: "Circular Economy",
             description: "Waste-to-energy, recycling loops, regenerative economy",
-            standardBodies: ["Ellen MacArthur Foundation", "Cradle to Cradle", "Circle Economy"],
+            standardBodies: ["Ellen MacArthur Foundation", "Cradle to Cradle", "Circle Economy", ""],
             metricUnits: ["Material Reused (tons)", "Product Lifecycle Extension", "Virgin Material Avoided (tons)"],
             verificationStandard: "BS 8001:2017",
-            impactWeight: 85
+            impactWeight: 85,
+            keyMetrics: [
+                "Material circularity index",
+                "Product lifecycle extension",
+                "Waste stream conversion rates",
+                "Resource productivity improvements",
+                ""
+            ],
+            esgFocus: "Resource Efficiency"
         });
         
-        // Community Development projects
+        // 13. Community Development projects
         categoryInfo[ProjectCategory.CommunityDevelopment] = CategoryInfo({
             name: "Community Development",
             description: "Local sustainability initiatives and social impact projects",
-            standardBodies: ["B Corp", "Social Value International", "Community Development Financial Institutions"],
+            standardBodies: ["B Corp", "Social Value International", "Community Development Financial Institutions", ""],
             metricUnits: ["People Impacted", "Jobs Created", "Community Resources Generated"],
             verificationStandard: "Social Return on Investment Framework",
-            impactWeight: 75
+            impactWeight: 75,
+            keyMetrics: [
+                "Community engagement levels",
+                "Quality of life improvements",
+                "Local economic development",
+                "Equitable resource distribution",
+                ""
+            ],
+            esgFocus: "Social Sustainability"
         });
     }
 
@@ -553,11 +565,6 @@ contract TerraStakeProjects is
         // Notify staking contract about project completion
         // This allows for special handling of staked tokens
         stakingContract.finalizeProjectStaking(projectId, isCompleted);
-        
-        // Update project staking status
-        projectStakingStatus[projectId] = isCompleted ? 
-            StakingStatus.Completed : 
-            StakingStatus.Cancelled;
             
         emit ProjectStakingFinalized(projectId, isCompleted, block.timestamp);
     }
@@ -788,213 +795,213 @@ contract TerraStakeProjects is
     }
     
     function _finalizeProjectStaking(uint256 projectId) internal {
-    // Handle any final staking logic, rewards, etc.
-    // This could distribute final rewards or clean up staking positions
-    
-    // For now, we'll just emit an event
-    emit ProjectStakingFinalized(projectId);
-}
-
-function updateStakingMultiplier(
-    uint256 projectId,
-    uint32 newMultiplier
-) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
-    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-    if (newMultiplier == 0) revert InvalidStakingMultiplier();
-    
-    ProjectStateData storage project = projectStateData[projectId];
-    
-    // Ensure project isn't in a terminal state
-    if (project.state == ProjectState.Completed || 
-        project.state == ProjectState.Cancelled) {
-        revert ProjectInTerminalState();
+        // Handle any final staking logic, rewards, etc.
+        // This could distribute final rewards or clean up staking positions
+        
+        // For now, we'll just emit an event
+        emit ProjectStakingFinalized(projectId);
     }
-    
-    // Update multiplier
-    uint32 oldMultiplier = project.stakingMultiplier;
-    project.stakingMultiplier = newMultiplier;
-    
-    emit StakingMultiplierUpdated(projectId, oldMultiplier, newMultiplier);
-}
 
-// ====================================================
-//  Verification, Validation & Impact Reporting
-// ====================================================
-function verifyProject(
-    uint256 projectId,
-    address verifier,
-    string calldata verificationDetails,
-    bytes32 documentHash
-) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
-    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-    
-    // Fee handling
-    uint256 verificationFee = fees.verificationFee;
-    if (verificationFee > 0) {
-        bool success = tStakeToken.transferFrom(msg.sender, address(this), verificationFee);
-        if (!success) revert TokenTransferFailed();
+    function updateStakingMultiplier(
+        uint256 projectId,
+        uint32 newMultiplier
+    ) external override nonReentrant onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        if (newMultiplier == 0) revert InvalidStakingMultiplier();
         
-        // Update fee collections
-        totalFeesCollected += verificationFee;
-        feesByType[FeeType.Verification] += verificationFee;
+        ProjectStateData storage project = projectStateData[projectId];
         
-        emit FeeCollected(projectId, FeeType.Verification, verificationFee);
-    }
-    
-    // Create or update verification record
-    projectVerifications[projectId] = VerificationData({
-        verifier: verifier,
-        verificationDate: uint48(block.timestamp),
-        verificationDocumentHash: documentHash,
-        verifierNotes: verificationDetails
-    });
-    
-    emit ProjectVerified(projectId, verifier, documentHash);
-}
-
-function submitImpactReport(
-    uint256 projectId,
-    string calldata reportTitle,
-    string calldata reportDetails,
-    bytes32 ipfsReportHash,
-    uint256 impactMetricValue
-) external override nonReentrant whenNotPaused {
-    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-    
-    // Ensure project is active
-    if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
-    
-    // Fee handling
-    uint256 reportingFee = fees.impactReportingFee;
-    if (reportingFee > 0) {
-        bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
-        if (!success) revert TokenTransferFailed();
-        
-        // Update fee collections
-        totalFeesCollected += reportingFee;
-        feesByType[FeeType.ImpactReporting] += reportingFee;
-        
-        emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
-    }
-    
-    // Create impact report
-    ImpactReport memory impactReport = ImpactReport({
-        projectId: projectId,
-        reporter: msg.sender,
-        timestamp: uint48(block.timestamp),
-        title: reportTitle,
-        details: reportDetails,
-        ipfsHash: ipfsReportHash,
-        metricValue: impactMetricValue,
-        validated: false
-    });
-    
-    projectImpactReports[projectId].push(impactReport);
-    
-    uint256 reportId = projectImpactReports[projectId].length;
-    emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
-}
-
-function validateImpactReport(
-    uint256 projectId,
-    uint256 reportId,
-    bool isValid,
-    string calldata validationNotes
-) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
-    ImpactReport storage report = projectImpactReports[projectId][reportId];
-    
-    // Check if report exists
-    if (report.timestamp == 0) revert InvalidReportId();
-    
-    // Check if already validated
-    if (report.validated) revert ReportAlreadyValidated();
-    
-    // Update validation status
-    report.validated = isValid;
-    
-    // Store validation
-    reportValidations[reportId] = ValidationData({
-        validator: msg.sender,
-        validationTime: uint48(block.timestamp),
-        validationNotes: validationNotes,
-        isValid: isValid
-    });
-    
-    // Update project impact metrics if valid
-    if (isValid) {
-        uint256 projectId = report.projectId;
-        totalValidatedImpact[projectId] += report.metricValue;
-        
-        // Apply category weight to the impact value for weighted metrics
-        ProjectCategory category = projectStateData[projectId].category;
-        uint256 weight = categoryInfo[category].impactWeight;
-        uint256 weightedImpact = (report.metricValue * weight) / 100;
-        
-        totalWeightedImpact[projectId] += weightedImpact;
-    }
-    
-    emit ImpactReportValidated(reportId, report.projectId, msg.sender, isValid);
-}
-
-function getProjectReportStats(uint256 projectId) external view returns (
-    uint256 totalReports,
-    uint256 validatedReports,
-    uint256 rejectedReports,
-    uint256 pendingReports,
-    uint256 averageValidationTime
-) {
-    if (!projectMetadata[projectId].exists) revert InvalidProjectId();
-    
-    // Get all reports for this project
-    uint256[] memory reportIds = projectImpactReports[projectId];
-    totalReports = reportIds.length;
-    
-    // Initialize counters
-    validatedReports = 0;
-    rejectedReports = 0;
-    pendingReports = 0;
-    
-    // Track validation times for average calculation
-    uint256 totalValidationTime = 0;
-    uint256 validationTimeCount = 0;
-    
-    // Iterate through all reports
-    for (uint256 i = 0; i < totalReports; i++) {
-        uint256 reportId = reportIds[i];
-        ImpactReport memory report = projectReports[projectId][reportId];
-        
-        // Check validation status
-        ValidationData memory validation = reportValidations[reportId];
-        
-        if (validation.validationTime > 0) {
-            // Report has been validated
-            if (validation.isValid) {
-                validatedReports++;
-            } else {
-                rejectedReports++;
-            }
-            
-            // Calculate validation time (time between report submission and validation)
-            uint256 validationDuration = validation.validationTime - report.timestamp;
-            totalValidationTime += validationDuration;
-            validationTimeCount++;
-        } else {
-            // Report is pending validation
-            pendingReports++;
+        // Ensure project isn't in a terminal state
+        if (project.state == ProjectState.Completed || 
+            project.state == ProjectState.Cancelled) {
+            revert ProjectInTerminalState();
         }
+        
+        // Update multiplier
+        uint32 oldMultiplier = project.stakingMultiplier;
+        project.stakingMultiplier = newMultiplier;
+        
+        emit StakingMultiplierUpdated(projectId, oldMultiplier, newMultiplier);
     }
-    
-    // Calculate average validation time (in seconds)
-    averageValidationTime = validationTimeCount > 0 ? totalValidationTime / validationTimeCount : 0;
-    
-    return (
-        totalReports,
-        validatedReports,
-        rejectedReports,
-        pendingReports,
-        averageValidationTime
-    );
-}
+
+    // ====================================================
+    //  Verification, Validation & Impact Reporting
+    // ====================================================
+    function verifyProject(
+        uint256 projectId,
+        address verifier,
+        string calldata verificationDetails,
+        bytes32 documentHash
+    ) external override nonReentrant onlyRole(VERIFIER_ROLE) whenNotPaused {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        // Fee handling
+        uint256 verificationFee = fees.verificationFee;
+        if (verificationFee > 0) {
+            bool success = tStakeToken.transferFrom(msg.sender, address(this), verificationFee);
+            if (!success) revert TokenTransferFailed();
+            
+            // Update fee collections
+            totalFeesCollected += verificationFee;
+            feesByType[FeeType.Verification] += verificationFee;
+            
+            emit FeeCollected(projectId, FeeType.Verification, verificationFee);
+        }
+        
+        // Create or update verification record
+        projectVerifications[projectId] = VerificationData({
+            verifier: verifier,
+            verificationDate: uint48(block.timestamp),
+            verificationDocumentHash: documentHash,
+            verifierNotes: verificationDetails
+        });
+        
+        emit ProjectVerified(projectId, verifier, documentHash);
+    }
+
+    function submitImpactReport(
+        uint256 projectId,
+        string calldata reportTitle,
+        string calldata reportDetails,
+        bytes32 ipfsReportHash,
+        uint256 impactMetricValue
+    ) external override nonReentrant whenNotPaused {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        // Ensure project is active
+        if (projectStateData[projectId].state != ProjectState.Active) revert ProjectNotActive();
+        
+        // Fee handling
+        uint256 reportingFee = fees.impactReportingFee;
+        if (reportingFee > 0) {
+            bool success = tStakeToken.transferFrom(msg.sender, address(this), reportingFee);
+            if (!success) revert TokenTransferFailed();
+            
+            // Update fee collections
+            totalFeesCollected += reportingFee;
+            feesByType[FeeType.ImpactReporting] += reportingFee;
+            
+            emit FeeCollected(projectId, FeeType.ImpactReporting, reportingFee);
+        }
+        
+        // Create impact report
+        ImpactReport memory impactReport = ImpactReport({
+            projectId: projectId,
+            reporter: msg.sender,
+            timestamp: uint48(block.timestamp),
+            title: reportTitle,
+            details: reportDetails,
+            ipfsHash: ipfsReportHash,
+            metricValue: impactMetricValue,
+            validated: false
+        });
+        
+        projectImpactReports[projectId].push(impactReport);
+        
+        uint256 reportId = projectImpactReports[projectId].length;
+        emit ImpactReportSubmitted(reportId, projectId, msg.sender, ipfsReportHash, impactMetricValue);
+    }
+
+    function validateImpactReport(
+        uint256 projectId,
+        uint256 reportId,
+        bool isValid,
+        string calldata validationNotes
+    ) external override nonReentrant onlyRole(VALIDATOR_ROLE) whenNotPaused {
+        ImpactReport storage report = projectImpactReports[projectId][reportId];
+        
+        // Check if report exists
+        if (report.timestamp == 0) revert InvalidReportId();
+        
+        // Check if already validated
+        if (report.validated) revert ReportAlreadyValidated();
+        
+        // Update validation status
+        report.validated = isValid;
+        
+        // Store validation
+        reportValidations[reportId] = ValidationData({
+            validator: msg.sender,
+            validationTime: uint48(block.timestamp),
+            validationNotes: validationNotes,
+            isValid: isValid
+        });
+        
+        // Update project impact metrics if valid
+        if (isValid) {
+            uint256 projectId = report.projectId;
+            totalValidatedImpact[projectId] += report.metricValue;
+            
+            // Apply category weight to the impact value for weighted metrics
+            ProjectCategory category = projectStateData[projectId].category;
+            uint256 weight = categoryInfo[category].impactWeight;
+            uint256 weightedImpact = (report.metricValue * weight) / 100;
+            
+            totalWeightedImpact[projectId] += weightedImpact;
+        }
+        
+        emit ImpactReportValidated(reportId, report.projectId, msg.sender, isValid);
+    }
+
+    function getProjectReportStats(uint256 projectId) external view returns (
+        uint256 totalReports,
+        uint256 validatedReports,
+        uint256 rejectedReports,
+        uint256 pendingReports,
+        uint256 averageValidationTime
+    ) {
+        if (!projectMetadata[projectId].exists) revert InvalidProjectId();
+        
+        // Get all reports for this project
+        uint256[] memory reportIds = projectImpactReports[projectId];
+        totalReports = reportIds.length;
+        
+        // Initialize counters
+        validatedReports = 0;
+        rejectedReports = 0;
+        pendingReports = 0;
+        
+        // Track validation times for average calculation
+        uint256 totalValidationTime = 0;
+        uint256 validationTimeCount = 0;
+        
+        // Iterate through all reports
+        for (uint256 i = 0; i < totalReports; i++) {
+            uint256 reportId = reportIds[i];
+            ImpactReport memory report = projectReports[projectId][reportId];
+            
+            // Check validation status
+            ValidationData memory validation = reportValidations[reportId];
+            
+            if (validation.validationTime > 0) {
+                // Report has been validated
+                if (validation.isValid) {
+                    validatedReports++;
+                } else {
+                    rejectedReports++;
+                }
+                
+                // Calculate validation time (time between report submission and validation)
+                uint256 validationDuration = validation.validationTime - report.timestamp;
+                totalValidationTime += validationDuration;
+                validationTimeCount++;
+            } else {
+                // Report is pending validation
+                pendingReports++;
+            }
+        }
+        
+        // Calculate average validation time (in seconds)
+        averageValidationTime = validationTimeCount > 0 ? totalValidationTime / validationTimeCount : 0;
+        
+        return (
+            totalReports,
+            validatedReports,
+            rejectedReports,
+            pendingReports,
+            averageValidationTime
+        );
+    }
     
     // ====================================================
     //  Staking & Rewards
@@ -1283,10 +1290,11 @@ function getProjectReportStats(uint256 projectId) external view returns (
     }
     
     function getImpactReport(
+        uint256 projectId,
         uint256 reportId
     ) external view override returns (ImpactReport memory) {
-        if (impactReports[reportId].timestamp == 0) revert InvalidReportId();
-        return impactReports[reportId];
+        if (projectImpactReports[projectId][reportId].timestamp == 0) revert InvalidReportId();
+        return projectImpactReports[projectId][reportId];
     }
     
     function getProjectImpactReports(
@@ -1297,10 +1305,11 @@ function getProjectReportStats(uint256 projectId) external view returns (
     }
     
     function getReportValidation(
+        uint256 projectId,
         uint256 reportId
     ) external view override returns (ValidationData memory) {
-        if (impactReports[reportId].timestamp == 0) revert InvalidReportId();
-        return reportValidations[reportId];
+        if (projectImpactReports[projectId][reportId].timestamp == 0) revert InvalidReportId();
+        return reportValidations[projectId][reportId];
     }
     
     function getProjectsByCategory(
@@ -1317,10 +1326,27 @@ function getProjectReportStats(uint256 projectId) external view returns (
         return projectCount;
     }
     
+    // Get full category information
     function getCategoryInfo(
         ProjectCategory category
     ) external view override returns (CategoryInfo memory) {
         return categoryInfo[category];
+    }
+
+    // Function to update category metrics (admin only)
+    function updateCategoryKeyMetrics(
+        ProjectCategory category,
+        string[] calldata newKeyMetrics
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        categoryInfo[category].keyMetrics = newKeyMetrics;
+    }
+
+    // Function to update category ESG focus (admin only)
+    function updateCategoryESGFocus(
+        ProjectCategory category,
+        string calldata newESGFocus
+    ) external onlyRole(GOVERNANCE_ROLE) {
+        categoryInfo[category].esgFocus = newESGFocus;
     }
     
     function getStakedAmount(
@@ -1497,27 +1523,14 @@ function getProjectReportStats(uint256 projectId) external view returns (
     ) external view returns (uint256[] memory) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
-        uint256[] memory allReportIds = projectImpactReports[projectId];
-        
-        // Count validated reports
-        uint256 validatedCount = 0;
-        for (uint256 i = 0; i < allReportIds.length; i++) {
-            uint256 reportId = allReportIds[i];
-            if (impactReports[reportId].validated) {
-                validatedCount++;
-            }
-        }
-        
         // Create result array
-        uint256[] memory validatedReports = new uint256[](validatedCount);
+        uint256[] memory validatedReports;
         
-        // Fill the result array
-        uint256 index = 0;
-        for (uint256 i = 0; i < allReportIds.length; i++) {
-            uint256 reportId = allReportIds[i];
-            if (impactReports[reportId].validated) {
-                validatedReports[index] = reportId;
-                index++;
+        uint256[] memory allReports = projectImpactReports[projectId];
+
+        for (uint256 i = 0; i < allReports.length; i++) {
+            if (allReports[i].validated) {
+                validatedReports.push(allReports[i]);
             }
         }
         

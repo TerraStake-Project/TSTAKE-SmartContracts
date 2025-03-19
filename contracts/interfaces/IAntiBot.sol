@@ -7,12 +7,13 @@ pragma solidity 0.8.28;
  */
 interface IAntiBot {
     /**
-     * @notice Validates a transaction from a sender
-     * @param sender Address initiating the transaction
+     * @notice Validates a token transfer
+     * @param from Address sending the token
+     * @param to Address receiving the token
      * @param amount Transaction amount (unused in current implementation)
      * @return isValid Whether the transaction passes anti-bot checks
      */
-    function validateTransaction(address sender, uint256 amount) external returns (bool isValid);
+    function validateTransfer(address from, address to, uint256 amount) external returns (bool isValid);
     
     /**
      * @notice Checks if an account is exempt from antibot measures

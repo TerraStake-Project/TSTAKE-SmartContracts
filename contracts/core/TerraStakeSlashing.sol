@@ -177,7 +177,7 @@ contract TerraStakeSlashing is
             revert InvalidSlashingAmount();
         
         // Get validator's staked amount from staking contract
-        uint256 validatorStake = stakingContract.getValidatorStake(validator);
+        uint256 validatorStake = stakingContract.getUserTotalStake(validator);
 
         // Check if validator is active
         if (!isActiveValidator[validator]) {
