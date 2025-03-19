@@ -418,6 +418,15 @@ contract TerraStakeSlashing is
         
         return (totalSlashed, lastSlashed, canBeSlashed);
     }
+
+    function getUserSlashedRewards(address user) external view returns (
+        uint256 totalSlashed,
+        uint256 lastSlashTime
+    ) {
+        totalSlashed = totalSlashedForValidator[user];
+        lastSlashTime = lastSlashTime[user];
+        return (totalSlashed, lastSlashTime);
+    }
     
     /**
      * @notice Get current slashing parameters
