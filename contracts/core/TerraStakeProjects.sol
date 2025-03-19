@@ -83,7 +83,8 @@ contract TerraStakeProjects is
     mapping(uint256 => VerificationData) public projectVerifications;
     mapping(uint256 => ValidationData) public reportValidations;
     mapping(uint256 => GeneralMetadata) public projectMetadataDetails;
-    
+    mapping(uint256 => mapping(uint256 => ValidationData)) public reportValidations;
+
     // Enhanced storage pattern for comments with pagination
     mapping(uint256 => mapping(uint256 => Comment[])) public projectCommentsPages;
     mapping(uint256 => uint256) public projectCommentsPageCount;
