@@ -750,12 +750,39 @@ contract TerraStakeStaking is
     }
 
     /**
+     * @notice Calculate pending rewards for a user
+     * @param user Address of the user
+     * @return totalRewards Total pending rewards
+     */
+    function calculateRewards(address user) external view returns (uint256 totalRewards) {
+        uint256 userStake = _stakingBalance[user];
+        if (userStake == 0) return 0;
+
+        // Get staking duration
+        uint256 stakingDuration = block.timestamp - userStakingStart[user];
+        if (stakingDuration == 0) return 0;
+
+        // Calculate base rewards
+        uint256 baseRewards = (userStake * BASE_APR * stakingDuration) / (365 days * 100);
+
+        // Apply boosts
+        if (nftContract.balanceOf(user, 1) > 0) {
+            baseRewards += (baseRewards * NFT_APR_BOOST) / 100;
+        }
+
+        // Apply tier multipliers
+        uint256 tierId = getApplicableTier(stakingDuration);
+        baseRewards = (baseRewards * _tiers[tierId].multiplier) / 100;
+
+        return baseRewards;
+    }
+
+    /**
      * @notice Get the list of active stakers
      */
     function getActiveStakers() external view returns (address[] memory) {
         return _activeStakers;
     }
-
     // -------------------------------------------
     //   Validator Operations
     // -------------------------------------------
