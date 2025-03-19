@@ -121,7 +121,7 @@ contract TerraStakeRewardDistributor is
     event LiquidityInjected(uint256 amount);
     event LiquidityInjectionFailed(uint256 amount);
     event PenaltyReDistributed(address indexed from, uint256 amount);
-    event HalvingRequested(bytes32 requestId);
+    event HalvingRequested(uint256 requestId);
     event RandomnessReceived(bytes32 indexed requestId, uint256 randomness);
     event RewardParametersUpdated(string paramName, uint256 oldValue, uint256 newValue);
     event ContractUpdated(string contractName, address oldAddress, address newAddress);
@@ -136,6 +136,7 @@ contract TerraStakeRewardDistributor is
     event DailyDistributionLimitUpdated(uint256 oldLimit, uint256 newLimit);
     event DailyDistributionReset(uint256 timestamp);
     event EmergencyCircuitBreakerActivated(address activator, string reason);
+    event PenaltyRewardsAdded(address sender, uint256 amount);
 
     // -------------------------------------------
     //  Constructor & Initializer
@@ -302,7 +303,7 @@ contract TerraStakeRewardDistributor is
 
         rewardAmount = stakingContract.calculateRewards(user);
         
-        uint256 slashedReward = slashingContract.getUserSlashedRewards(user);
+        (uint256 slashedReward, ) = slashingContract.getUserSlashedRewards(user);
         rewardAmount += slashedReward;
 
         if (rewardAmount == 0) return 0;
@@ -397,7 +398,7 @@ contract TerraStakeRewardDistributor is
         // Calculate total staked for this batch
         uint256 batchStaked = 0;
         for (uint256 i = startIndex; i <= endIndex; i++) {
-            batchStaked += stakingContract.getTotalStakedByUser(stakers[i]);
+            batchStaked += stakingContract.getUserTotalStake(stakers[i]);
         }
         
         if (batchStaked == 0) return; // No stake in this batch
@@ -409,7 +410,7 @@ contract TerraStakeRewardDistributor is
         // Distribute penalties for this batch
         for (uint256 i = startIndex; i <= endIndex; i++) {
             address staker = stakers[i];
-            uint256 stakerAmount = stakingContract.getTotalStakedByUser(staker);
+            uint256 stakerAmount = stakingContract.getUserTotalStake(staker);
             
             if (stakerAmount > 0) {
                 uint256 penaltyShare = (batchPenaltyShare * stakerAmount) / batchStaked;
@@ -443,7 +444,7 @@ contract TerraStakeRewardDistributor is
         uint256 newTotal = 0;
         
         for (uint256 i = 0; i < stakers.length; i++) {
-            newTotal += stakingContract.getTotalStakedByUser(stakers[i]);
+            newTotal += stakingContract.getUserTotalStake(stakers[i]);
         }
         
         totalStakedCache = newTotal;
@@ -507,14 +508,14 @@ contract TerraStakeRewardDistributor is
      * @notice Request randomness for halving from Chainlink VRF
      * @return requestId The VRF request ID
      */
-    function requestRandomHalving() external onlyRole(GOVERNANCE_ROLE) returns (bytes32) {
+    function requestRandomHalving() external onlyRole(GOVERNANCE_ROLE) returns (uint256) {
         // Ensure we're not already processing a VRF request
         if (pendingRandomnessRequest) revert HalvingAlreadyRequested();
         
         // Set flag and request randomness
         pendingRandomnessRequest = true;
         
-        bytes32 requestId = vrfCoordinator.requestRandomWords(
+        uint256 requestId = vrfCoordinator.requestRandomWords(
             keyHash,
             subscriptionId,
             3, // requestConfirmations
@@ -522,7 +523,7 @@ contract TerraStakeRewardDistributor is
             1  // numWords
         );
         
-        vrfRequests[requestId] = true;
+        vrfRequests[bytes32(requestId)] = true;
         emit HalvingRequested(requestId);
         
         return requestId;
@@ -543,7 +544,7 @@ contract TerraStakeRewardDistributor is
         
         // Use randomness to adjust halving rate within +/-5% of standard rate
         uint256 randomAdjustment = randomWords[0] % 11; // 0-10 range
-        int256 adjustmentDirection = randomAdjustment >= 5 ? 1 : -1;
+        int256 adjustmentDirection = randomAdjustment >= 5 ? int256(1) : int256(-1);
         uint256 adjustmentAmount = randomAdjustment % 6; // 0-5 range
         
         int256 newRateInt = int256(oldRate) + (adjustmentDirection * int256(adjustmentAmount));

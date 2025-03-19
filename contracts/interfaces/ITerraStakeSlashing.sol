@@ -85,6 +85,11 @@ interface ITerraStakeSlashing {
         uint256 totalExecuted,
         uint256 totalAmountSlashed
     );
+
+    function getUserSlashedRewards(address user) external view returns (
+        uint256 totalSlashed,
+        uint256 lastSlashTime
+    );
     
     // -------------------------------------------
     //  Events
