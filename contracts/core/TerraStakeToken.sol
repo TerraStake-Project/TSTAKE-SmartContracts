@@ -15,6 +15,7 @@ import "@uniswap/v3-core/contracts/libraries/TickMath.sol";
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
+import "../interfaces/ITerraStakeNeural.sol";
 
 /**
  * @title TerraStakeToken
@@ -30,7 +31,8 @@ contract TerraStakeToken is
     AccessControlEnumerableUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    ITerraStakeNeural  
 {
     using SafeERC20 for IERC20;
 
@@ -211,6 +213,12 @@ contract TerraStakeToken is
         rebalancingFrequencyTarget = 365; // daily
         lastAdaptiveLearningUpdate = block.timestamp;
         lastRebalanceTime = block.timestamp; // set to now so we wait a full interval
+        
+        // Initialize remaining neural variables
+        diversityIndex = 0;
+        geneticVolatility = 0;
+        selfOptimizationCounter = 0;
+        
         lastTWAPPrice = 0; // Initialize TWAP price
     }
 
@@ -533,11 +541,11 @@ contract TerraStakeToken is
     }
 
     function activateCircuitBreaker() external onlyRole(ADMIN_ROLE) {
-        // liquidityGuard.triggerCircuitBreaker();
+        liquidityGuard.triggerCircuitBreaker();
     }
 
     function resetCircuitBreaker() external onlyRole(ADMIN_ROLE) {
-        // liquidityGuard.resetCircuitBreaker();
+        liquidityGuard.resetCircuitBreaker();
     }
 
     // ================================
@@ -548,13 +556,11 @@ contract TerraStakeToken is
     }
 
     function getLiquiditySettings() external view returns (bool) {
-        // return liquidityGuard.getLiquiditySettings();
-        return true;
+        return liquidityGuard.getLiquiditySettings();
     }
 
     function isCircuitBreakerTriggered() external view returns (bool) {
-        // return liquidityGuard.isCircuitBreakerTriggered();
-        return true;
+        return liquidityGuard.isCircuitBreakerTriggered();
     }
 
     // ================================
@@ -563,7 +569,6 @@ contract TerraStakeToken is
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     // ========== [Neural / DNA Addition: Implementation (Arbitrum optimized)] ==========
-    // (1) Additional data & methods to incorporate Neural Indexing & DNA logic
 
     /**
      * @notice Updates an asset's neural weight using exponential moving average
@@ -601,8 +606,10 @@ contract TerraStakeToken is
 
         emit NeuralWeightUpdated(asset, assetNeuralWeights[asset].currentWeight, smoothingFactor);
 
-        // Recompute diversity if you'd like
-        _updateDiversityIndex();
+        // Recompute diversity if constituent is active
+        if (constituents[asset].isActive) {
+            _updateDiversityIndex();
+        }
     }
 
     /**
@@ -680,101 +687,95 @@ contract TerraStakeToken is
         geneticVolatility = (geneticVolatility * 90 + newScore * 10) / 100;
     }
 
-    // Recompute the diversity index (Herfindahl-Hirschman or similar)
-    function _updateDiversityIndex() internal {
+    /**
+     * @notice Get count of active constituents
+     * @return count The number of active constituents
+     */
+    function getActiveConstituentsCount() external view returns (uint256 count) {
         uint256 activeCount = 0;
-        uint256 totalWeight = 0;
-        uint256 sumSquared = 0;
         for (uint256 i = 0; i < constituentList.length; i++) {
-            address a = constituentList[i];
-            if (constituents[a].isActive) {
+            if (constituents[constituentList[i]].isActive) {
                 activeCount++;
-                totalWeight += assetNeuralWeights[a].currentWeight;
             }
         }
-
-        require(
-            activeCount >= MIN_CONSTITUENTS || 
-            constituentList.length < MIN_CONSTITUENTS, 
-            "Insufficient genetic diversity"
-        );
-
-        if (totalWeight > 0) {
-            for (uint256 i = 0; i < constituentList.length; i++) {
-                address a = constituentList[i];
-                if (constituents[a].isActive) {
-                    uint256 w = assetNeuralWeights[a].currentWeight;
-                    uint256 share = (w * 10000) / totalWeight;
-                    sumSquared += (share * share);
-                }
-            }
-            diversityIndex = sumSquared;
-        } else {
-            // fallback
-            diversityIndex = 10000 / (activeCount == 0 ? 1 : activeCount);
-        }
-
-        emit DiversityIndexUpdated(diversityIndex);
+        return activeCount;
     }
 
-    // ========== [Adaptive Rebalancing] ==========
     /**
-     * @notice Check if we should rebalance
-     * @dev Gas-optimized for Arbitrum's pricing model
+     * @notice Get evolution score for a constituent
+     * @param asset Address of the asset
+     * @return score The evolution score
+     */
+    function getEvolutionScore(address asset) external view returns (uint256 score) {
+        return constituents[asset].evolutionScore;
+    }
+
+    /**
+     * @notice Check if rebalance should be triggered
+     * @return shouldRebalance Whether rebalance is needed
+     * @return reason Human-readable reason
      */
     function shouldAdaptiveRebalance() public view returns (bool, string memory) {
-        // time-based
+        // Time-based rebalance
         if (block.timestamp >= lastRebalanceTime + rebalanceInterval) {
             return (true, "Time-based rebalance");
         }
-        // diversity-based
+
+        // Concentration-based rebalance
         if (diversityIndex > MAX_DIVERSITY_INDEX) {
-            return (true, "Diversity too low");
+            return (true, "Diversity too concentrated");
         }
+
+        // Dispersion-based rebalance
         if (diversityIndex < MIN_DIVERSITY_INDEX && diversityIndex > 0) {
-            return (true, "Diversity too high");
+            return (true, "Diversity too dispersed");
         }
-        // volatility-based
+
+        // Volatility-based rebalance
+        if (geneticVolatility > adaptiveVolatilityThreshold) {
+            return (true, "Volatility threshold breach");
+        }
+
+        // TWAP-based calculation
         uint256 currentPrice = lastTWAPPrice;
         uint256 priceChange;
-        if (currentPrice > lastTWAPPrice) {
-            priceChange = ((currentPrice - lastTWAPPrice) * 100) / lastTWAPPrice;
-        } else {
-            priceChange = ((lastTWAPPrice - currentPrice) * 100) / lastTWAPPrice;
+        if (currentPrice > 0 && lastTWAPPrice > 0) {
+            if (currentPrice > lastTWAPPrice) {
+                priceChange = ((currentPrice - lastTWAPPrice) * 100) / lastTWAPPrice;
+            } else {
+                priceChange = ((lastTWAPPrice - currentPrice) * 100) / lastTWAPPrice;
+            }
+            
+            if (priceChange > adaptiveVolatilityThreshold) {
+                return (true, "Market volatility trigger");
+            }
         }
-        if (priceChange > adaptiveVolatilityThreshold) {
-            return (true, "Market volatility trigger");
-        }
-        // genetic volatility
-        if (geneticVolatility > adaptiveVolatilityThreshold * 2) {
-            return (true, "Genetic volatility trigger");
-        }
+
         return (false, "No rebalance needed");
     }
 
     /**
-     * @notice Triggers an adaptive rebalance if conditions are met
-     * @dev Optimized for Arbitrum to minimize L1 calldata costs
+     * @notice Trigger adaptive rebalance
+     * @return reason The reason for rebalance
      */
     function triggerAdaptiveRebalance() external onlyRole(NEURAL_INDEXER_ROLE) returns (string memory reason) {
-        (bool doRebalance, string memory r) = shouldAdaptiveRebalance();
+        (bool doRebalance, string memory rebalanceReason) = shouldAdaptiveRebalance();
         require(doRebalance, "Rebalance not needed");
+
         lastRebalanceTime = block.timestamp;
-        lastTWAPPrice = getTWAPPrice(MIN_TWAP_PERIOD);
+        try this.getTWAPPrice(MIN_TWAP_PERIOD) returns (uint256 price) {
+            lastTWAPPrice = price;
+        } catch {
+            // If TWAP fails, continue anyway
+        }
 
-        emit AdaptiveRebalanceTriggered(r, block.timestamp);
-
-        // Optionally notify other ecosystem
-        // try stakingContract.notifyRebalance() {} catch {}
-        // try governanceContract.notifyRebalance() {} catch {}
-        // try liquidityGuard.notifyRebalance() {} catch {}
-
-        return r;
+        emit AdaptiveRebalanceTriggered(rebalanceReason, block.timestamp);
+        
+        return rebalanceReason;
     }
 
     /**
-     * @notice Self-optimization mechanism that adjusts parameters based on historical data
-     * @dev Arbitrum-optimized implementation
+     * @notice Execute self-optimization routine
      */
     function executeSelfOptimization() external onlyRole(ADMIN_ROLE) {
         require(block.timestamp >= lastAdaptiveLearningUpdate + 30 days, "Too soon to optimize");
@@ -784,7 +785,7 @@ contract TerraStakeToken is
         uint256 rebalancesExecuted = (lastRebalanceTime - lastAdaptiveLearningUpdate) / rebalanceInterval;
         uint256 annualizedRebalances = (rebalancesExecuted * 365) / (daysSinceLast == 0 ? 1 : daysSinceLast);
 
-        // if more frequent than 120% of target
+        // If more frequent than 120% of target
         if (annualizedRebalances > (rebalancingFrequencyTarget * 12 / 10)) {
             rebalanceInterval = (rebalanceInterval * 110) / 100; // slow it down
         } else if (annualizedRebalances < (rebalancingFrequencyTarget * 8 / 10)) {
@@ -792,12 +793,17 @@ contract TerraStakeToken is
         }
 
         // Adjust volatility threshold
-        uint256 p = getTWAPPrice(30 days);
-        if (p > lastTWAPPrice) {
-            adaptiveVolatilityThreshold = (adaptiveVolatilityThreshold * 105) / 100;
-        } else {
-            adaptiveVolatilityThreshold = (adaptiveVolatilityThreshold * 95) / 100;
+        uint256 p = lastTWAPPrice;
+        try this.getTWAPPrice(30 days) returns (uint256 newPrice) {
+            if (newPrice > p) {
+                adaptiveVolatilityThreshold = (adaptiveVolatilityThreshold * 105) / 100;
+            } else {
+                adaptiveVolatilityThreshold = (adaptiveVolatilityThreshold * 95) / 100;
+            }
+        } catch {
+            // If TWAP fails, keep current threshold
         }
+        
         if (adaptiveVolatilityThreshold < 5) {
             adaptiveVolatilityThreshold = 5;
         }
@@ -809,31 +815,6 @@ contract TerraStakeToken is
         selfOptimizationCounter++;
 
         emit SelfOptimizationExecuted(selfOptimizationCounter, block.timestamp);
-    }
-
-    /**
-     * @notice Returns active constituents count
-     * @return count The number of active constituents
-     * @dev Read-only function optimized for Arbitrum
-     */
-    function getActiveConstituentsCount() external view returns (uint256 count) {
-        uint256 active = 0;
-        for (uint256 i = 0; i < constituentList.length; i++) {
-            if (constituents[constituentList[i]].isActive) {
-                active++;
-            }
-        }
-        return active;
-    }
-
-    /**
-     * @notice Gets the evolution score for an asset
-     * @param asset The asset to check
-     * @return score The evolution score
-     */
-    function getEvolutionScore(address asset) external view returns (uint256 score) {
-        require(constituents[asset].isActive, "Not an active constituent");
-        return constituents[asset].evolutionScore;
     }
 
     /**
@@ -892,5 +873,48 @@ contract TerraStakeToken is
         }
         
         return (weights, signals, updateTimes);
+    }
+
+    /**
+     * @notice Recompute the diversity index (Herfindahl-Hirschman Index)
+     * @dev Internal function to update the diversity metric
+     */
+    function _updateDiversityIndex() internal {
+        uint256 activeCount = 0;
+        uint256 totalWeight = 0;
+        uint256 sumSquared = 0;
+        
+        // First pass - get active count and total weight
+        for (uint256 i = 0; i < constituentList.length; i++) {
+            address a = constituentList[i];
+            if (constituents[a].isActive) {
+                activeCount++;
+                totalWeight += assetNeuralWeights[a].currentWeight;
+            }
+        }
+
+        // Check minimum constituents requirement
+        // Allow if we haven't reached minimum yet
+        if (activeCount < MIN_CONSTITUENTS && constituentList.length >= MIN_CONSTITUENTS) {
+            revert("Insufficient genetic diversity");
+        }
+
+        // Second pass - calculate HHI
+        if (totalWeight > 0) {
+            for (uint256 i = 0; i < constituentList.length; i++) {
+                address a = constituentList[i];
+                if (constituents[a].isActive) {
+                    uint256 w = assetNeuralWeights[a].currentWeight;
+                    uint256 share = (w * 10000) / totalWeight;
+                    sumSquared += (share * share);
+                }
+            }
+            diversityIndex = sumSquared;
+        } else {
+            // Fallback - equal distribution
+            diversityIndex = activeCount > 0 ? 10000 / activeCount : 0;
+        }
+
+        emit DiversityIndexUpdated(diversityIndex);
     }
 }
