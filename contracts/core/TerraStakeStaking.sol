@@ -98,6 +98,10 @@ contract TerraStakeStaking is
     uint256 public validatorThreshold;
 
     // Mappings must remain unchanged:
+    /**
+         * @dev Private mapping to track individual staking positions for each user
+         * @notice Maps user addresses to their multiple staking positions, indexed by a unique position ID
+         */
     mapping(address => mapping(uint256 => StakingPosition)) private _stakingPositions;
     mapping(address => uint256) private _governanceVotes;
     mapping(address => uint256) private _stakingBalance;
@@ -111,17 +115,7 @@ contract TerraStakeStaking is
     address[] private _activeStakers;
     mapping(address => bool) private _isActiveStaker;
 
-    // Additional state
-    mapping(address => PenaltyEvent[]) private _penaltyHistory;
-    mapping(address => uint256)         private _validatorCommission;
-    mapping(uint256 => uint256)         private _projectVotes;
-    uint256 public validatorRewardPool;
-    uint256 public governanceQuorum;
-    bool    public dynamicRewardsEnabled;
-    uint256 public lastRewardAdjustmentTime;
-    uint256 public dynamicBaseAPR;
-    uint256 public dynamicBoostedAPR;
-
+ // Track governance proposals
     /**
      * @dev Reserved storage space to avoid layout collisions during upgrades.
      *      Always keep this at the end of state variables.
@@ -131,16 +125,45 @@ contract TerraStakeStaking is
     // -------------------------------------------
     //   Constructor & Initializer
     // -------------------------------------------
+    /**
+     * @notice Prevents initialization of the implementation contract
+     * @dev Disables initializers to ensure the contract cannot be initialized directly, 
+     *      following the UUPS upgradeable pattern
+     */
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    /**
+/**
+     * @notice Initializes the contract with essential configurations and roles.
+     * @dev Performs one-time initialization for the upgradeable contract, setting up contracts, roles, and initial parameters.
+     * @param _nftContract Address of the NFT contract
+     * @param _stakingToken Address of the staking token contract
+     * @param _rewardDistributor Address of the reward distributor contract
+     * @param _liquidityPool Address of the liquidity pool
+     * @param _projectsContract Address of the projects contract
+     * @param _governanceContract Address of the governance contract
+     * @param _admin Address of the contract administrator
+     * @custom:security Only callable once during proxy deployment
+     */
+        /**
      * @notice Initializes the contract (UUPS + OpenZeppelin upgradeable pattern).
      * @dev Must only be called once (by proxy deployment).
      */
-    function initialize(
+/**
+     * @notice Initializes the TerraStake staking contract with core configurations
+     * @dev One-time initializer for the upgradeable contract that sets up contracts, roles, and initial staking parameters
+     * @param _nftContract Address of the NFT contract used for staking boosts
+     * @param _stakingToken Address of the token used for staking
+     * @param _rewardDistributor Address of the contract responsible for reward distribution
+     * @param _liquidityPool Address of the liquidity pool
+     * @param _projectsContract Address of the projects management contract
+     * @param _governanceContract Address of the governance contract
+     * @param _admin Address of the contract administrator with privileged roles
+     * @custom:security Only callable once during proxy deployment, with zero-address checks for all parameters
+     */
+        function initialize(
         address _nftContract,
         address _stakingToken,
         address _rewardDistributor,
@@ -1405,16 +1428,33 @@ contract TerraStakeStaking is
     }
 
     /**
-     * @dev See {ERC165Upgradeable-supportsInterface}.
-     */
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(AccessControlEnumerableUpgradeable, ERC165Upgradeable)
-        returns (bool)
-    {
-        return
-            interfaceId == type(ITerraStakeStaking).interfaceId ||
-            super.supportsInterface(interfaceId);
-    }
+ * @dev Implements ERC165 interface detection with comprehensive support
+ * @notice Explicitly declares all interfaces supported by this contract
+ * @param interfaceId The interface identifier to check
+ * @return bool True if the interface is supported
+ */
+function supportsInterface(bytes4 interfaceId)
+    public
+    view
+    override(AccessControlEnumerableUpgradeable, ERC165Upgradeable)
+    returns (bool)
+{
+    return
+        interfaceId == type(ITerraStakeStaking).interfaceId ||
+        // Add any other custom interfaces from your project
+        interfaceId == type(IPausableUpgradeable).interfaceId ||
+        interfaceId == type(IReentrancyGuardUpgradeable).interfaceId ||
+        interfaceId == type(IERC165Upgradeable).interfaceId ||
+        interfaceId == type(IAccessControlEnumerableUpgradeable).interfaceId ||
+        interfaceId == type(IAccessControlUpgradeable).interfaceId ||
+        super.supportsInterface(interfaceId);
+}
+
+/**
+ * @dev Internal function to register a new interface
+ * @notice Use this in future upgrades when adding new interfaces
+ * @param interfaceId The interface identifier to register
+ */
+function _registerInterfaceImplementation(bytes4 interfaceId) internal {
+    _registerInterface(interfaceId);
 }
