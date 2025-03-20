@@ -1,8 +1,15 @@
 {
-	"folders": [
-		{
-			"path": "../.."
-		}
-	],
-	"settings": {}
+    "folders": [
+        {
+            "path": "../.."
+        }
+    ],
+    "settings": {
+        "solidity.compileUsingRemoteVersion": "0.8.28",
+        "solidity.defaultCompiler": "remote",
+        "editor.formatOnSave": true,
+        "editor.tabSize": 2,
+        "solidity.formatter": "prettier",
+        "hardhat.telemetry": false
+    }
 }
