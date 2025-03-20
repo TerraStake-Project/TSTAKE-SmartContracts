@@ -16,6 +16,7 @@ import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeNeural.sol";
+import "../interfaces/ITerraStakeToken.sol";
 
 /**
  * @title TerraStakeToken
@@ -32,7 +33,8 @@ contract TerraStakeToken is
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
     UUPSUpgradeable,
-    ITerraStakeNeural  
+    ITerraStakeNeural
+    ITerraStakeToken,
 {
     using SafeERC20 for IERC20;
 
@@ -567,6 +569,13 @@ contract TerraStakeToken is
     //  Upgradeability (Arbitrum considerations)
     // ================================
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+   /**
+ * @notice Get the implementation contract address
+ * @return The implementation address
+ */
+function getImplementation() external view returns (address) {
+    return _getImplementation();
+}
 
     // ========== [Neural / DNA Addition: Implementation (Arbitrum optimized)] ==========
 
