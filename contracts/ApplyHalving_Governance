@@ -1,0 +1,26 @@
+/**
+ * @notice Initiate token halving for reward emissions
+ * @dev This function reduces the reward emission rate by half and updates the halving epoch.
+ * It can only be called once every two years.
+ */
+function applyHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+    // Ensure that the required time has passed since the last halving
+    require(block.timestamp >= lastHalvingTime + TWO_YEARS, "Halving not due yet");
+
+    // Update the last halving timestamp and increment the halving epoch
+    lastHalvingTime = block.timestamp;
+    halvingEpoch++;
+
+    // Call the reward distributor to update the emission rate
+    rewardDistributor.updateEmissionRate();
+
+    // Emit an event to log the halving action
+    emit HalvingInitiated(halvingEpoch);
+}
+*********************************************
+
+/**
+ * @notice Emitted when a token halving is initiated
+ * @param epoch The current halving epoch
+ */
+event HalvingInitiated(uint256 indexed epoch);
