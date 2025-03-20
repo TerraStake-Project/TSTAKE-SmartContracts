@@ -421,11 +421,11 @@ contract TerraStakeSlashing is
 
     function getUserSlashedRewards(address user) external view returns (
         uint256 totalSlashed,
-        uint256 lastSlashTime
+        uint256 lastSlashTimeByUser
     ) {
         totalSlashed = totalSlashedForValidator[user];
-        lastSlashTime = lastSlashTime[user];
-        return (totalSlashed, lastSlashTime);
+        lastSlashTimeByUser = lastSlashTime[user];
+        return (totalSlashed, lastSlashTimeByUser);
     }
     
     /**

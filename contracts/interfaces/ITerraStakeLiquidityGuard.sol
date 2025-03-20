@@ -151,4 +151,5 @@ interface ITerraStakeLiquidityGuard {
     function getActivePositionsCount() external view returns (uint256);
     function getAllActivePositions() external view returns (uint256[] memory);
     function removePositionFromActive(uint256 _tokenID) external;
+    function getLiquidityPool() external view returns (address);
 }

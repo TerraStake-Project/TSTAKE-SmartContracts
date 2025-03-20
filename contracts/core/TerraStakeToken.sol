@@ -97,22 +97,7 @@ contract TerraStakeToken is
     // Introduce a new role for updating neural indexing
     bytes32 public constant NEURAL_INDEXER_ROLE = keccak256("NEURAL_INDEXER_ROLE");
 
-    // Neural index data
-    struct NeuralWeight {
-        uint256 currentWeight;      // EMA-based value (1e18 scale)
-        uint256 rawSignal;          // raw input signal
-        uint256 lastUpdateTime;     // track update time
-        uint256 emaSmoothingFactor; // e.g. 1-100
-    }
-
     mapping(address => NeuralWeight) public assetNeuralWeights;
-
-    // DNA / Constituent data
-    struct ConstituentData {
-        bool isActive;
-        uint256 activationTime;
-        uint256 evolutionScore;
-    }
 
     mapping(address => ConstituentData) public constituents;
     address[] public constituentList;
@@ -145,14 +130,6 @@ contract TerraStakeToken is
     event TransferBlocked(address indexed from, address indexed to, uint256 amount, string reason);
     event StakingOperationExecuted(address indexed user, uint256 amount, bool isStake);
     event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
-
-    // ========== [Neural / DNA Addition: Extra Events] ==========
-    event NeuralWeightUpdated(address indexed asset, uint256 weight, uint256 smoothingFactor);
-    event ConstituentAdded(address indexed asset, uint256 timestamp);
-    event ConstituentRemoved(address indexed asset, uint256 timestamp);
-    event DiversityIndexUpdated(uint256 newIndex);
-    event AdaptiveRebalanceTriggered(string reason, uint256 timestamp);
-    event SelfOptimizationExecuted(uint256 counter, uint256 timestamp);
 
     // ================================
     //  Upgradeable Contract Initialization

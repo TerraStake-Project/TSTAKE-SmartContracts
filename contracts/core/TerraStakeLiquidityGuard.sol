@@ -46,10 +46,6 @@ contract TerraStakeLiquidityGuard is
     ERC20Upgradeable public usdcToken;
     INonfungiblePositionManager public positionManager;
     IUniswapV3Pool public uniswapPool;
-    uint256 public tokenID;
-    uint128 public liquidity;
-    uint256 public amount0;
-    uint256 public amount1;
     uint256 public tStakeAmount;
     uint256 public usdcAmount;
     uint256 public totalLiquidityInjected;
@@ -326,7 +322,7 @@ contract TerraStakeLiquidityGuard is
         // Get equivalent USDC from TreasuryManager
         if (address(treasuryManager) == address(0)) revert InvalidZeroAddress("treasuryManager");
         
-        uint256 usdcAmount = treasuryManager.withdrawUSDCEquivalent(amount);
+        usdcAmount = treasuryManager.withdrawUSDCEquivalent(amount);
         if (usdcAmount == 0) revert InvalidParameter("usdcAmount", usdcAmount);
         
         // Get current tick from pool
@@ -787,6 +783,14 @@ function getSqrtRatioAtTick(int24 tick) internal pure returns (uint160) {
      */
     function getAllActivePositions() external view returns (uint256[] memory positions) {
         return activePositions;
+    }
+
+    /**
+     * @notice Get the address of the Uniswap V3 pool
+     * @return pool Address of the Uniswap pool
+     */
+    function getLiquidityPool() external view returns (address) {
+        return address(uniswapPool);
     }
     
     // -------------------------------------------

@@ -930,7 +930,7 @@ contract TerraStakeProjects is
         
         // Update project impact metrics if valid
         if (isValid) {
-            uint256 projectId = report.projectId;
+            projectId = report.projectId;
             totalValidatedImpact[projectId] += report.metricValue;
             
             // Apply category weight to the impact value for weighted metrics
@@ -1563,28 +1563,28 @@ contract TerraStakeProjects is
     function getProjectPerformance(
         uint256 projectId
     ) external view returns (
-        uint256 totalStaked,
+        uint256 _totalStaked,
         uint256 totalImpact,
         uint256 stakingTargetPercentage,
         uint256 impactTargetPercentage
     ) {
         if (!projectMetadata[projectId].exists) revert InvalidProjectId();
         
-        totalStaked = totalStakedOnProject[projectId];
+        _totalStaked = totalStakedOnProject[projectId];
         totalImpact = totalValidatedImpact[projectId];
         
         ProjectTargets memory targets = projectTargets[projectId];
         
         // Calculate percentages (100% = 10000 for precision)
         stakingTargetPercentage = targets.stakingTarget > 0 
-            ? (totalStaked * 10000) / targets.stakingTarget 
+            ? (_totalStaked * 10000) / targets.stakingTarget 
             : 0;
             
         impactTargetPercentage = targets.impactTarget > 0 
             ? (totalImpact * 10000) / targets.impactTarget 
             : 0;
             
-        return (totalStaked, totalImpact, stakingTargetPercentage, impactTargetPercentage);
+        return (_totalStaked, totalImpact, stakingTargetPercentage, impactTargetPercentage);
     }
     
     // Function to get project leaderboard by impact
@@ -1732,13 +1732,13 @@ contract TerraStakeProjects is
     function getUserAnalytics(
         address user
     ) external view returns (
-        uint256 totalStaked,
-        uint256 totalRewardsClaimed,
+        uint256 userTotalStaked,
+        uint256 userTotalRewardsClaimed,
         uint256 projectsStaked,
         uint256 averageStakePerProject
     ) {
-        totalStaked = totalStakedByUser[user];
-        totalRewardsClaimed = userRewardsClaimed[user];
+        userTotalStaked = totalStakedByUser[user];
+        userTotalRewardsClaimed = userRewardsClaimed[user];
         
         // Count projects with active stakes
         for (uint256 i = 0; i < allProjectIds.length; i++) {
@@ -1749,11 +1749,11 @@ contract TerraStakeProjects is
         }
         
         // Calculate average stake per project
-        averageStakePerProject = projectsStaked > 0 ? totalStaked / projectsStaked : 0;
+        averageStakePerProject = projectsStaked > 0 ? userTotalStaked / projectsStaked : 0;
         
         return (
-            totalStaked,
-            totalRewardsClaimed,
+            userTotalStaked,
+            userTotalRewardsClaimed,
             projectsStaked,
             averageStakePerProject
         );

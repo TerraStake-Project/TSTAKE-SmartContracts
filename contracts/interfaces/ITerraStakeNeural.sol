@@ -10,14 +10,14 @@ interface ITerraStakeNeural {
     // ===============================
     // Structs
     // ===============================
-    
+    // Neural index data
     struct NeuralWeight {
         uint256 currentWeight;      // EMA-based value (1e18 scale)
         uint256 rawSignal;          // raw input signal
         uint256 lastUpdateTime;     // track update time
         uint256 emaSmoothingFactor; // e.g. 1-100
     }
-
+    // DNA / Constituent data
     struct ConstituentData {
         bool isActive;
         uint256 activationTime;
@@ -27,7 +27,7 @@ interface ITerraStakeNeural {
     // ===============================
     // Events
     // ===============================
-    
+    // ========== [Neural / DNA Addition: Extra Events] ==========
     event NeuralWeightUpdated(address indexed asset, uint256 weight, uint256 smoothingFactor);
     event ConstituentAdded(address indexed asset, uint256 timestamp);
     event ConstituentRemoved(address indexed asset, uint256 timestamp);
@@ -56,8 +56,6 @@ interface ITerraStakeNeural {
     // State Variables
     // ===============================
     
-    function assetNeuralWeights(address asset) external view returns (NeuralWeight memory);
-    function constituents(address asset) external view returns (ConstituentData memory);
     function constituentList(uint256 index) external view returns (address);
     function diversityIndex() external view returns (uint256);
     function geneticVolatility() external view returns (uint256);

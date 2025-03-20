@@ -843,27 +843,27 @@ contract TerraStakeTreasuryManager is
     /**
      * @notice Calculate fee distribution for a given amount
      * @param amount Amount to calculate distribution for
-     * @return buyback Buyback amount
-     * @return liquidity Liquidity amount
-     * @return treasury Treasury amount
-     * @return burn Burn amount
+     * @return buybackAmount Buyback amount
+     * @return liquidityAmount Liquidity amount
+     * @return treasuryAmount Treasury amount
+     * @return burnAmount Burn amount
      */
     function calculateFeeDistribution(uint256 amount) 
         external 
         view 
         returns (
-            uint256 buyback, 
-            uint256 liquidity, 
-            uint256 treasury, 
-            uint256 burn
+            uint256 buybackAmount, 
+            uint256 liquidityAmount, 
+            uint256 treasuryAmount, 
+            uint256 burnAmount
         ) 
     {
-        buyback = amount * currentFeeStructure.buybackPercentage / 100;
-        liquidity = amount * currentFeeStructure.liquidityPairingPercentage / 100;
-        treasury = amount * currentFeeStructure.treasuryPercentage / 100;
-        burn = amount * currentFeeStructure.burnPercentage / 100;
+        buybackAmount = amount * currentFeeStructure.buybackPercentage / 100;
+        liquidityAmount = amount * currentFeeStructure.liquidityPairingPercentage / 100;
+        treasuryAmount = amount * currentFeeStructure.treasuryPercentage / 100;
+        burnAmount = amount * currentFeeStructure.burnPercentage / 100;
         
-        return (buyback, liquidity, treasury, burn);
+        return (buybackAmount, liquidityAmount, treasuryAmount, burnAmount);
     }
     
     /**

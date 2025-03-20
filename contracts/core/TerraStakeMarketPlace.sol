@@ -964,14 +964,13 @@ contract TerraStakeMarketplace is
         string memory fractionName = string(abi.encodePacked("Fractional ", nftName, " #", uint2str(tokenId)));
         
         // Deploy new fraction token with special metadata
-        // address fractionToken = fractionContract.createFractionToken(
-        //     fractionName,
-        //     fractionSymbol,
-        //     fractionCount,
-        //     tokenId,
-        //     msg.sender
-        // );
-        address fractionToken;
+        address fractionToken = fractionContract.createFractionToken(
+            tokenId,
+            fractionName,
+            fractionSymbol,
+            fractionCount,
+            expiry
+        );
         
         // Record fraction token address
         fractionalTokens[tokenId] = fractionToken;
