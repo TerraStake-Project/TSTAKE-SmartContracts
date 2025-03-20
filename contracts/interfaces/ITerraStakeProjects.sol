@@ -580,6 +580,7 @@ interface ITerraStakeProjects {
      * @return bool True if the project exists, false otherwise
      */
     function projectExists(uint256 projectId) external view returns (bool);
+    function getProjectCount() external view returns (uint256);
     
     function incrementStakerCount(uint256 projectId) external;
     function decrementStakerCount(uint256 projectId) external;

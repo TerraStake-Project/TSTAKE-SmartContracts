@@ -202,19 +202,9 @@ interface ITerraStakeGovernance {
     );
     
     function latestProposalIds(address proposer) external view returns (uint256);
-    
-    // -------------------------------------------
-    //  Initialization
-    // -------------------------------------------
-    
-    function initialize(
-        address _treasuryManager,
-        address _validatorSafety,
-        address _guardianCouncil,
-        address _tStakeToken,
-        address _initialAdmin
-    ) external;
-    
+
+    function applyHalving() external;
+
     // -------------------------------------------
     //  Proposal Creation and Management
     // -------------------------------------------

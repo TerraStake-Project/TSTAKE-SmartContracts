@@ -1017,19 +1017,24 @@ contract TerraStakeGovernance is
     // -------------------------------------------
     //  Reward Distribution Functions
     // -------------------------------------------
-    
+
     /**
-     * @notice Initiate token halving
+     * @notice Initiate token halving for reward emissions
+     * @dev This function reduces the reward emission rate by half and updates the halving epoch.
+     * It can only be called once every two years.
      */
-    function initiateHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+    function applyHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        // Ensure that the required time has passed since the last halving
         require(block.timestamp >= lastHalvingTime + TWO_YEARS, "Halving not due yet");
-        
+
+        // Update the last halving timestamp and increment the halving epoch
         lastHalvingTime = block.timestamp;
         halvingEpoch++;
-        
-        // Update emission rate in the reward distributor
+
+        // Call the reward distributor to update the emission rate
         rewardDistributor.updateEmissionRate();
-        
+
+        // Emit an event to log the halving action
         emit HalvingInitiated(halvingEpoch);
     }
     
