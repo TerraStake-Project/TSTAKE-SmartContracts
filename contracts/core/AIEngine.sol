@@ -12,8 +12,8 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 
 /**
  * @title AIEngine
- * @notice AI-driven asset management with TStake governance on Arbitrum, updated for TerraStakeStaking compatibility
- * @dev Upgradeable contract optimized for Arbitrum with Chainlink integration
+ * @notice AI-driven asset management contract with TStake governance, optimized for Arbitrum
+ * @dev Upgradeable contract integrating Chainlink for price feeds and automation, designed to work with TerraStakeStaking
  */
 contract AIEngine is
     Initializable,
@@ -24,93 +24,83 @@ contract AIEngine is
     AutomationCompatibleInterface
 {
     // Constants
-    uint256 public constant MAX_SIGNAL_VALUE = 1e30;
-    uint256 public constant MAX_EMA_SMOOTHING = 100;
-    uint256 public constant DEFAULT_REBALANCE_INTERVAL = 1 days;
-    uint256 public constant MIN_DIVERSITY_INDEX = 500;
-    uint256 public constant MAX_DIVERSITY_INDEX = 2500;
-    uint256 public constant MAX_PRICE_STALENESS = 24 hours;
-    uint256 public constant MAX_PRICE_DEVIATION = 2000; // 20% in basis points
-    uint256 public constant MAX_TIMELOCK = 7 days;
-    uint256 public constant VOTING_PERIOD = 3 days;
-    uint256 public constant MIN_PROPOSAL_THRESHOLD = 1000 * 10**18; // 1000 TSTK tokens
+    uint256 public constant MAX_SIGNAL_VALUE = 1e30; // Maximum raw signal value for neural weights
+    uint256 public constant MAX_EMA_SMOOTHING = 100; // Maximum EMA smoothing factor (100%)
+    uint256 public constant DEFAULT_REBALANCE_INTERVAL = 1 days; // Default rebalance interval
+    uint256 public constant MIN_DIVERSITY_INDEX = 500; // Minimum diversity index (basis points)
+    uint256 public constant MAX_DIVERSITY_INDEX = 2500; // Maximum diversity index (basis points)
+    uint256 public constant MAX_PRICE_STALENESS = 24 hours; // Maximum price staleness for Chainlink feeds
+    uint256 public constant MAX_PRICE_DEVIATION = 2000; // 20% max price deviation (basis points)
+    uint256 public constant MAX_TIMELOCK = 7 days; // Maximum timelock for operations
+    uint256 public constant VOTING_PERIOD = 3 days; // Voting period for governance proposals
+    uint256 public constant MIN_PROPOSAL_THRESHOLD = 1000 * 10**18; // Minimum TStake tokens for proposal execution
 
     // Roles
-    bytes32 public constant AI_ADMIN_ROLE = 0x6e3f2c4c4e6e4c2e4f1b2e4e6e4c2e4e6e4c2e4e6e4c2e4e6e4c2e4e6e4c2e4e;
-    bytes32 public constant EMERGENCY_ROLE = 0x7e4f3c5d5e7f5d3e5g2c3e5e7f5d3e5g2c3e5e7f5d3e5g2c3e5e7f5d3e5g2c3e5e;
-    bytes32 public constant UPGRADER_ROLE = 0x8f5g4d6e6f8g6e4f6h3d4f6e8g6e4f6h3d4f6e8g6e4f6h3d4f6e8g6e4f6h3d4f6e;
-    bytes32 public constant KEEPER_ROLE = 0x9g6h5e7f7g9h7f5g7i4e5g7f9h7f5g7i4e5g7f9h7f5g7i4e5g7f9h7f5g7i4e5g7f;
+    bytes32 public constant AI_ADMIN_ROLE = keccak256("AI_ADMIN_ROLE"); // Role for AI-related operations
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE"); // Role for emergency actions
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE"); // Role for contract upgrades
+    bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE"); // Role for Chainlink keepers
 
     // Data Structures
     struct NeuralWeight {
-        uint128 currentWeight;
-        uint128 rawSignal;
-        uint64 lastUpdateTime;
-        uint8 emaSmoothingFactor;
+        uint128 currentWeight; // Current EMA-adjusted weight
+        uint128 rawSignal; // Raw input signal
+        uint64 lastUpdateTime; // Timestamp of last update
+        uint8 emaSmoothingFactor; // EMA smoothing factor (0-100)
     }
 
     struct Constituent {
-        bool isActive;
-        uint64 activationTime;
-        uint64 evolutionScore;
-        uint32 index;
-        uint128 lastPrice;
-        uint64 lastPriceUpdateTime;
+        bool isActive; // Whether the asset is active
+        uint64 activationTime; // Timestamp of activation
+        uint64 evolutionScore; // Score for genetic evolution
+        uint32 index; // Index in constituentList
+        uint128 lastPrice; // Last recorded price
+        uint64 lastPriceUpdateTime; // Timestamp of last price update
     }
 
     struct Feedback {
-        address submitter;
-        string description;
-        uint64 timestamp;
-        bool resolved;
+        address submitter; // Address submitting feedback
+        string description; // Feedback description
+        uint64 timestamp; // Submission timestamp
+        bool resolved; // Whether feedback is resolved
     }
 
     struct Proposal {
-        bytes32 id;
-        address proposer;
-        string description;
-        uint64 startTime;
-        uint64 endTime;
-        uint256 forVotes;
-        uint256 againstVotes;
-        bool executed;
-        bytes callData;
+        bytes32 id; // Unique proposal ID
+        address proposer; // Proposer address
+        string description; // Proposal description
+        uint64 startTime; // Voting start time
+        uint64 endTime; // Voting end time
+        uint256 forVotes; // Votes in favor
+        uint256 againstVotes; // Votes against
+        bool executed; // Whether executed
+        bytes callData; // Call data for execution
     }
 
     // State Variables
-    mapping(address => NeuralWeight) public assetNeuralWeights;
-    mapping(address => Constituent) public constituents;
-    address[] public constituentList;
-    uint32 public activeConstituentCount;
-   
-    uint32 public diversityIndex;
-    uint32 public geneticVolatility;
-   
-    uint64 public rebalanceInterval;
-    uint64 public lastRebalanceTime;
-    uint32 public adaptiveVolatilityThreshold;
-   
-    uint8 public requiredApprovals;
-    mapping(bytes32 => uint8) public operationApprovals;
-    mapping(bytes32 => mapping(address => bool)) public hasApproved;
-    uint64 public operationTimelock;
-    mapping(bytes32 => uint64) public operationScheduledTime;
-   
-    uint16 public maxPriceDeviation;
-    mapping(address => AggregatorV3Interface) public priceFeeds;
-
-    // TStake Governance
-    IERC20Upgradeable public tStakeToken;
-    mapping(bytes32 => Proposal) public proposals;
-    mapping(bytes32 => mapping(address => bool)) public hasVoted;
-    bytes32[] public proposalIds;
-
-    // Feedback
-    mapping(uint256 => Feedback) public feedbacks;
-    uint256 public feedbackCount;
-
-    // Staking Contract Integration
-    address public stakingContract; // TerraStakeStaking address
+    mapping(address => NeuralWeight) public assetNeuralWeights; // Asset neural weights
+    mapping(address => Constituent) public constituents; // Asset constituent data
+    address[] public constituentList; // List of all constituents
+    uint32 public activeConstituentCount; // Number of active constituents
+    uint32 public diversityIndex; // Diversity index (HHI-style)
+    uint32 public geneticVolatility; // Genetic volatility metric
+    uint64 public rebalanceInterval; // Rebalance interval in seconds
+    uint64 public lastRebalanceTime; // Timestamp of last rebalance
+    uint32 public adaptiveVolatilityThreshold; // Volatility threshold for rebalancing
+    uint8 public requiredApprovals; // Number of approvals needed for operations
+    mapping(bytes32 => uint8) public operationApprovals; // Approvals per operation
+    mapping(bytes32 => mapping(address => bool)) public hasApproved; // Approval status per address
+    uint64 public operationTimelock; // Timelock duration for operations
+    mapping(bytes32 => uint64) public operationScheduledTime; // Scheduled execution time per operation
+    uint16 public maxPriceDeviation; // Maximum allowed price deviation
+    mapping(address => AggregatorV3Interface) public priceFeeds; // Chainlink price feeds
+    IERC20Upgradeable public tStakeToken; // TStake governance token
+    mapping(bytes32 => Proposal) public proposals; // Governance proposals
+    mapping(bytes32 => mapping(address => bool)) public hasVoted; // Voting status per proposal
+    bytes32[] public proposalIds; // List of proposal IDs
+    mapping(uint256 => Feedback) public feedbacks; // User feedback
+    uint256 public feedbackCount; // Total feedback submissions
+    address public stakingContract; // TerraStakeStaking contract address
 
     // Events
     event NeuralWeightUpdated(address indexed asset, uint256 weight, uint256 rawSignal, uint256 smoothingFactor);
@@ -160,13 +150,16 @@ contract AIEngine is
         _;
     }
 
-    // Initialization
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address _tStakeToken) public initializer {
+    /**
+     * @notice Initializes the contract with the TStake token address
+     * @param _tStakeToken Address of the TStake governance token
+     */
+    function initialize(address _tStakeToken) external initializer {
         __AccessControlEnumerable_init();
         __Pausable_init();
         __ReentrancyGuard_init();
@@ -189,42 +182,61 @@ contract AIEngine is
         tStakeToken = IERC20Upgradeable(_tStakeToken);
     }
 
-    // Staking Contract Integration
+    /**
+     * @notice Sets the TerraStakeStaking contract address and grants it AI_ADMIN_ROLE
+     * @param _stakingContract Address of the TerraStakeStaking contract
+     */
     function setStakingContract(address _stakingContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_stakingContract != address(0), "Invalid staking contract address");
         stakingContract = _stakingContract;
-        _grantRole(AI_ADMIN_ROLE, _stakingContract); // Allow TerraStakeStaking to call AI_ADMIN_ROLE functions
+        _grantRole(AI_ADMIN_ROLE, _stakingContract);
         emit StakingContractSet(_stakingContract);
     }
 
     // User Feedback Mechanisms
+    /**
+     * @notice Submits user feedback
+     * @param description Feedback description
+     */
     function submitFeedback(string calldata description) external whenNotPaused {
-        uint256 id = feedbackCount;
+        uint256 id = feedbackCount++;
         feedbacks[id] = Feedback({
             submitter: msg.sender,
             description: description,
             timestamp: uint64(block.timestamp),
             resolved: false
         });
-        unchecked { feedbackCount++; }
         emit FeedbackSubmitted(id, msg.sender, description);
     }
 
+    /**
+     * @notice Resolves a feedback entry
+     * @param feedbackId ID of the feedback to resolve
+     */
     function resolveFeedback(uint256 feedbackId) external onlyRole(AI_ADMIN_ROLE) {
         require(feedbackId < feedbackCount && !feedbacks[feedbackId].resolved, "Invalid or resolved feedback");
         feedbacks[feedbackId].resolved = true;
         emit FeedbackResolved(feedbackId);
     }
 
+    /**
+     * @notice Retrieves a feedback entry
+     * @param feedbackId ID of the feedback
+     * @return Feedback struct
+     */
     function getFeedback(uint256 feedbackId) external view returns (Feedback memory) {
         require(feedbackId < feedbackCount, "Invalid feedback ID");
         return feedbacks[feedbackId];
     }
 
     // TStake Governance
+    /**
+     * @notice Creates a governance proposal
+     * @param description Proposal description
+     * @param callData Call data for execution
+     */
     function createProposal(string calldata description, bytes calldata callData) external whenNotPaused {
-        uint256 balance = tStakeToken.balanceOf(msg.sender);
-        require(balance > 0, "No TStake tokens");
+        require(tStakeToken.balanceOf(msg.sender) > 0, "No TStake tokens");
         bytes32 proposalId = keccak256(abi.encode(msg.sender, description, block.timestamp));
         uint64 timestamp = uint64(block.timestamp);
 
@@ -243,21 +255,31 @@ contract AIEngine is
         emit ProposalCreated(proposalId, msg.sender, description);
     }
 
+    /**
+     * @notice Votes on a governance proposal
+     * @param proposalId ID of the proposal
+     * @param support Whether to support the proposal
+     * @param amount Number of TStake tokens to vote with
+     */
     function vote(bytes32 proposalId, bool support, uint256 amount) external whenNotPaused {
         Proposal storage proposal = proposals[proposalId];
         require(proposal.startTime > 0 && block.timestamp < proposal.endTime && !proposal.executed, "Invalid voting period");
         require(!hasVoted[proposalId][msg.sender], "Already voted");
         require(tStakeToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
-       
+
         hasVoted[proposalId][msg.sender] = true;
         if (support) {
-            unchecked { proposal.forVotes += amount; }
+            proposal.forVotes += amount; // Overflow checked by Solidity 0.8+
         } else {
-            unchecked { proposal.againstVotes += amount; }
+            proposal.againstVotes += amount;
         }
         emit Voted(proposalId, msg.sender, support, amount);
     }
 
+    /**
+     * @notice Executes a passed governance proposal
+     * @param proposalId ID of the proposal
+     */
     function executeProposal(bytes32 proposalId) external nonReentrant {
         Proposal storage proposal = proposals[proposalId];
         require(proposal.startTime > 0 && block.timestamp >= proposal.endTime && !proposal.executed, "Cannot execute");
@@ -269,23 +291,31 @@ contract AIEngine is
         emit ProposalExecuted(proposalId);
     }
 
+    /**
+     * @notice Returns the total number of proposals
+     * @return Number of proposals
+     */
     function getProposalCount() external view returns (uint256) {
         return proposalIds.length;
     }
 
     // Batch Constituent Management
+    /**
+     * @notice Adds multiple constituents with their price feeds
+     * @param assets Array of asset addresses
+     * @param priceFeeds_ Array of corresponding price feed addresses
+     */
     function batchAddConstituents(address[] calldata assets, address[] calldata priceFeeds_)
         external
         onlyRole(AI_ADMIN_ROLE)
         nonReentrant
         whenNotPaused
     {
-        uint256 len = assets.length;
-        require(len == priceFeeds_.length && len > 0, "Invalid arrays");
+        require(assets.length == priceFeeds_.length && assets.length > 0, "Invalid arrays");
         uint32 count = activeConstituentCount;
         uint64 timestamp = uint64(block.timestamp);
 
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < assets.length; ) {
             address asset = assets[i];
             address feed = priceFeeds_[i];
             require(asset != address(0) && feed != address(0), "Invalid address");
@@ -300,7 +330,7 @@ contract AIEngine is
                 c.evolutionScore = 0;
                 priceFeeds[asset] = AggregatorV3Interface(feed);
                 _fetchLatestPrice(asset, timestamp);
-                unchecked { count++; }
+                count++;
                 emit ConstituentAdded(asset, timestamp);
             }
             unchecked { i++; }
@@ -308,23 +338,26 @@ contract AIEngine is
         activeConstituentCount = count;
     }
 
+    /**
+     * @notice Deactivates multiple constituents
+     * @param assets Array of asset addresses
+     */
     function batchDeactivateConstituents(address[] calldata assets)
         external
         onlyRole(AI_ADMIN_ROLE)
         nonReentrant
         whenNotPaused
     {
-        uint256 len = assets.length;
-        require(len > 0, "Empty array");
+        require(assets.length > 0, "Empty array");
         uint32 count = activeConstituentCount;
         uint64 timestamp = uint64(block.timestamp);
 
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < assets.length; ) {
             address asset = assets[i];
             Constituent storage c = constituents[asset];
             if (c.isActive) {
                 c.isActive = false;
-                unchecked { count--; }
+                count--;
                 emit ConstituentDeactivated(asset, timestamp);
             }
             unchecked { i++; }
@@ -333,12 +366,14 @@ contract AIEngine is
         _updateDiversityIndex();
     }
 
+    /**
+     * @notice Returns the list of active constituents
+     * @return Array of active constituent addresses
+     */
     function getActiveConstituents() external view returns (address[] memory) {
-        uint32 count = activeConstituentCount;
-        address[] memory activeAssets = new address[](count);
-        uint256 len = constituentList.length;
+        address[] memory activeAssets = new address[](activeConstituentCount);
         uint256 j;
-        for (uint256 i; i < len && j < count; ) {
+        for (uint256 i; i < constituentList.length && j < activeConstituentCount; ) {
             address asset = constituentList[i];
             if (constituents[asset].isActive) {
                 activeAssets[j] = asset;
@@ -350,8 +385,14 @@ contract AIEngine is
     }
 
     // Neural Weight Management
+    /**
+     * @notice Updates the neural weight for an asset
+     * @param asset Asset address (can be user address for TerraStakeStaking)
+     * @param newRawSignal New raw signal value
+     * @param smoothingFactor EMA smoothing factor (0-100)
+     */
     function updateNeuralWeight(address asset, uint256 newRawSignal, uint256 smoothingFactor)
-        public
+        external
         onlyStakingOrAdmin
         whenNotPaused
     {
@@ -359,15 +400,20 @@ contract AIEngine is
         _updateNeuralWeight(asset, newRawSignal, smoothingFactor, uint64(block.timestamp));
     }
 
+    /**
+     * @notice Batch updates neural weights for multiple assets
+     * @param assets Array of asset addresses
+     * @param newRawSignals Array of new raw signal values
+     * @param smoothingFactors Array of EMA smoothing factors
+     */
     function batchUpdateNeuralWeights(
         address[] calldata assets,
         uint256[] calldata newRawSignals,
         uint256[] calldata smoothingFactors
     ) external onlyRole(AI_ADMIN_ROLE) whenNotPaused {
-        uint256 len = assets.length;
-        require(len == newRawSignals.length && len == smoothingFactors.length && len > 0, "Invalid arrays");
+        require(assets.length == newRawSignals.length && assets.length == smoothingFactors.length && assets.length > 0, "Invalid arrays");
         uint64 timestamp = uint64(block.timestamp);
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < assets.length; ) {
             if (constituents[assets[i]].isActive) {
                 _updateNeuralWeight(assets[i], newRawSignals[i], smoothingFactors[i], timestamp);
             }
@@ -377,39 +423,43 @@ contract AIEngine is
 
     function _updateNeuralWeight(address asset, uint256 newRawSignal, uint256 smoothingFactor, uint64 timestamp) internal {
         NeuralWeight storage w = assetNeuralWeights[asset];
-        w.rawSignal = uint128(newRawSignal);
+        uint128 currentWeight = w.currentWeight;
+        uint128 rawSignal = uint128(newRawSignal);
+        uint8 emaSmoothing = uint8(smoothingFactor);
+
         if (w.lastUpdateTime == 0) {
-            w.currentWeight = uint128(newRawSignal);
+            currentWeight = rawSignal;
         } else {
             unchecked {
-                w.currentWeight = uint128(
-                    (newRawSignal * smoothingFactor + w.currentWeight * (MAX_EMA_SMOOTHING - smoothingFactor)) / MAX_EMA_SMOOTHING
+                currentWeight = uint128(
+                    (rawSignal * emaSmoothing + currentWeight * (MAX_EMA_SMOOTHING - emaSmoothing)) / MAX_EMA_SMOOTHING
                 );
             }
         }
+
+        w.currentWeight = currentWeight;
+        w.rawSignal = rawSignal;
         w.lastUpdateTime = timestamp;
-        w.emaSmoothingFactor = uint8(smoothingFactor);
-        emit NeuralWeightUpdated(asset, w.currentWeight, newRawSignal, smoothingFactor);
+        w.emaSmoothingFactor = emaSmoothing;
+        emit NeuralWeightUpdated(asset, currentWeight, newRawSignal, smoothingFactor);
         _updateDiversityIndex();
     }
 
     // Diversity Index Management
     function _updateDiversityIndex() internal {
-        uint32 count = activeConstituentCount;
-        if (count == 0) {
+        if (activeConstituentCount == 0) {
             diversityIndex = 0;
             emit DiversityIndexUpdated(0);
             return;
         }
 
         uint256 totalWeight;
-        uint256 len = constituentList.length;
-        uint256[] memory weights = new uint256[](len);
-        for (uint256 i; i < len; ) {
+        uint256[] memory weights = new uint256[](constituentList.length);
+        for (uint256 i; i < constituentList.length; ) {
             address asset = constituentList[i];
             if (constituents[asset].isActive) {
                 weights[i] = assetNeuralWeights[asset].currentWeight;
-                unchecked { totalWeight += weights[i]; }
+                totalWeight += weights[i];
             }
             unchecked { i++; }
         }
@@ -421,10 +471,10 @@ contract AIEngine is
         }
 
         uint256 sumSquared;
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < constituentList.length; ) {
             if (weights[i] > 0 && constituents[constituentList[i]].isActive) {
-                uint256 share = (WETH (weights[i] * 10000) / totalWeight;
-                unchecked { sumSquared += share * share; }
+                uint256 share = (weights[i] * 10000) / totalWeight;
+                sumSquared += share * share;
             }
             unchecked { i++; }
         }
@@ -432,12 +482,20 @@ contract AIEngine is
         emit DiversityIndexUpdated(sumSquared);
     }
 
+    /**
+     * @notice Recalculates the diversity index
+     */
     function recalculateDiversityIndex() external onlyStakingOrAdmin whenNotPaused {
         _updateDiversityIndex();
     }
 
-    // Chainlink Integration (Arbitrum-specific)
-    function fetchLatestPrice(address asset) public returns (uint256) {
+    // Chainlink Integration
+    /**
+     * @notice Fetches the latest price for an asset
+     * @param asset Asset address
+     * @return Latest price
+     */
+    function fetchLatestPrice(address asset) external returns (uint256) {
         return _fetchLatestPrice(asset, uint64(block.timestamp));
     }
 
@@ -471,11 +529,14 @@ contract AIEngine is
         return priceUint;
     }
 
+    /**
+     * @notice Batch fetches latest prices for multiple assets
+     * @param assets Array of asset addresses
+     */
     function batchFetchLatestPrices(address[] calldata assets) external onlyRole(AI_ADMIN_ROLE) whenNotPaused {
-        uint256 len = assets.length;
-        require(len > 0, "Empty array");
+        require(assets.length > 0, "Empty array");
         uint64 timestamp = uint64(block.timestamp);
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < assets.length; ) {
             if (constituents[assets[i]].isActive) {
                 _fetchLatestPrice(assets[i], timestamp);
             }
@@ -483,14 +544,25 @@ contract AIEngine is
         }
     }
 
+    /**
+     * @notice Gets the latest price and freshness status for an asset
+     * @param asset Asset address
+     * @return price Latest price
+     * @return isFresh Whether the price is fresh
+     */
     function getLatestPrice(address asset) external view returns (uint256 price, bool isFresh) {
         AggregatorV3Interface feed = priceFeeds[asset];
         if (address(feed) == address(0)) return (0, false);
         (, int256 priceInt, , uint256 updatedAt, ) = feed.latestRoundData();
         price = priceInt > 0 ? uint256(priceInt) : 0;
-        unchecked { isFresh = updatedAt > 0 && block.timestamp - updatedAt <= MAX_PRICE_STALENESS; }
+        isFresh = updatedAt > 0 && block.timestamp - updatedAt <= MAX_PRICE_STALENESS;
     }
 
+    /**
+     * @notice Updates the price feed address for an asset
+     * @param asset Asset address
+     * @param newPriceFeed New price feed address
+     */
     function updatePriceFeedAddress(address asset, address newPriceFeed)
         external
         onlyStakingOrAdmin
@@ -503,10 +575,13 @@ contract AIEngine is
     }
 
     // Rebalancing Logic
-    function shouldAdaptiveRebalance() public view returns (bool, string memory) {
-        unchecked {
-            if (block.timestamp >= lastRebalanceTime + rebalanceInterval) return (true, "Time-based rebalance");
-        }
+    /**
+     * @notice Checks if an adaptive rebalance is needed
+     * @return doRebalance Whether rebalance is needed
+     * @return reason Reason for rebalance
+     */
+    function shouldAdaptiveRebalance() public view returns (bool doRebalance, string memory reason) {
+        if (block.timestamp >= lastRebalanceTime + rebalanceInterval) return (true, "Time-based rebalance");
         uint32 divIndex = diversityIndex;
         if (divIndex > MAX_DIVERSITY_INDEX) return (true, "Diversity too concentrated");
         if (divIndex < MIN_DIVERSITY_INDEX && divIndex > 0) return (true, "Diversity too dispersed");
@@ -514,6 +589,9 @@ contract AIEngine is
         return (false, "No rebalance needed");
     }
 
+    /**
+     * @notice Triggers an adaptive rebalance
+     */
     function triggerAdaptiveRebalance() external onlyStakingOrAdmin nonReentrant whenNotPaused {
         (bool doRebalance, string memory reason) = shouldAdaptiveRebalance();
         require(doRebalance, "Rebalance not needed");
@@ -521,36 +599,33 @@ contract AIEngine is
         emit AdaptiveRebalanceTriggered(reason, block.timestamp);
     }
 
+    /**
+     * @notice Updates the genetic volatility metric
+     * @param newVolatility New volatility value
+     */
     function updateGeneticVolatility(uint256 newVolatility) external onlyRole(AI_ADMIN_ROLE) whenNotPaused {
         geneticVolatility = uint32(newVolatility);
-        if (newVolatility > adaptiveVolatilityThreshold) {
-            unchecked {
-                if (block.timestamp >= lastRebalanceTime + (rebalanceInterval / 4)) {
-                    lastRebalanceTime = uint64(block.timestamp);
-                    emit AdaptiveRebalanceTriggered("Volatility breach", block.timestamp);
-                }
-            }
+        if (newVolatility > adaptiveVolatilityThreshold && block.timestamp >= lastRebalanceTime + (rebalanceInterval / 4)) {
+            lastRebalanceTime = uint64(block.timestamp);
+            emit AdaptiveRebalanceTriggered("Volatility breach", block.timestamp);
         }
     }
 
-    // Chainlink Keeper Methods (Arbitrum-specific)
+    // Chainlink Keeper Methods
     function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {
         if (paused()) return (false, "");
 
         (bool shouldRebalance, ) = shouldAdaptiveRebalance();
-        uint256 len = constituentList.length;
-        address[] memory assetsToUpdate = new address[](len);
+        address[] memory assetsToUpdate = new address[](constituentList.length);
         uint256 updateCount;
 
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < constituentList.length; ) {
             address asset = constituentList[i];
             if (constituents[asset].isActive) {
                 (, , , uint256 updatedAt, ) = priceFeeds[asset].latestRoundData();
-                unchecked {
-                    if (updatedAt == 0 || block.timestamp - updatedAt > MAX_PRICE_STALENESS / 2) {
-                        assetsToUpdate[updateCount] = asset;
-                        updateCount++;
-                    }
+                if (updatedAt == 0 || block.timestamp - updatedAt > MAX_PRICE_STALENESS / 2) {
+                    assetsToUpdate[updateCount] = asset;
+                    updateCount++;
                 }
             }
             unchecked { i++; }
@@ -558,7 +633,6 @@ contract AIEngine is
 
         upkeepNeeded = shouldRebalance || updateCount > 0;
         performData = abi.encode(shouldRebalance, updateCount > 0, updateCount, assetsToUpdate);
-        return (upkeepNeeded, performData);
     }
 
     function performUpkeep(bytes calldata performData) external override nonReentrant {
@@ -590,10 +664,12 @@ contract AIEngine is
         }
     }
 
+    /**
+     * @notice Manually triggers keeper-like maintenance
+     */
     function manualKeeper() external nonReentrant whenNotPaused {
-        uint256 len = constituentList.length;
         uint64 timestamp = uint64(block.timestamp);
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < constituentList.length; ) {
             address asset = constituentList[i];
             if (constituents[asset].isActive) {
                 try this._fetchLatestPrice(asset, timestamp) {} catch {
@@ -616,10 +692,13 @@ contract AIEngine is
         uint256 value;
     }
 
+    /**
+     * @notice Batch updates configuration parameters
+     * @param updates Array of parameter-value pairs
+     */
     function batchSetConfig(ConfigUpdate[] calldata updates) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        uint256 len = updates.length;
-        require(len > 0, "Empty array");
-        for (uint256 i; i < len; ) {
+        require(updates.length > 0, "Empty array");
+        for (uint256 i; i < updates.length; ) {
             ConfigUpdate memory u = updates[i];
             bytes32 paramHash = keccak256(abi.encodePacked(u.parameter));
             if (paramHash == keccak256(abi.encodePacked("rebalanceInterval"))) {
@@ -646,46 +725,72 @@ contract AIEngine is
     }
 
     // Multi-signature Functionality
+    /**
+     * @notice Approves an operation
+     * @param operationId Operation ID
+     */
     function approveOperation(bytes32 operationId) external onlyRole(AI_ADMIN_ROLE) {
         require(!hasApproved[operationId][msg.sender], "Already approved");
         hasApproved[operationId][msg.sender] = true;
-        unchecked { operationApprovals[operationId]++; }
+        operationApprovals[operationId]++;
         emit OperationApproved(operationId, msg.sender, operationApprovals[operationId]);
     }
 
+    /**
+     * @notice Revokes an operation approval
+     * @param operationId Operation ID
+     */
     function revokeApproval(bytes32 operationId) external {
         require(hasApproved[operationId][msg.sender], "Not approved");
         hasApproved[operationId][msg.sender] = false;
-        unchecked { operationApprovals[operationId]--; }
+        operationApprovals[operationId]--;
         emit OperationApproved(operationId, msg.sender, operationApprovals[operationId]);
     }
 
+    /**
+     * @notice Schedules an operation for execution
+     * @param operationId Operation ID
+     */
     function scheduleOperation(bytes32 operationId) external onlyRole(AI_ADMIN_ROLE) {
         require(operationApprovals[operationId] >= requiredApprovals && operationScheduledTime[operationId] == 0, "Invalid operation");
         operationScheduledTime[operationId] = uint64(block.timestamp + operationTimelock);
         emit OperationScheduled(operationId, operationScheduledTime[operationId]);
     }
 
+    /**
+     * @notice Generates an operation ID
+     * @param action Action description
+     * @param data Additional data
+     * @return Operation ID
+     */
     function getOperationId(string calldata action, bytes calldata data) external view returns (bytes32) {
         return keccak256(abi.encode(action, data, block.timestamp));
     }
 
     // Emergency & Safety Controls
+    /**
+     * @notice Pauses the contract
+     */
     function pause() external onlyRole(EMERGENCY_ROLE) {
         _pause();
     }
 
+    /**
+     * @notice Unpauses the contract
+     */
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
+    /**
+     * @notice Resets all neural weights in an emergency
+     */
     function emergencyResetWeights() external nonReentrant {
         bytes32 opId = keccak256(abi.encode("emergencyResetWeights", block.timestamp));
         require(hasRole(EMERGENCY_ROLE, msg.sender) && operationApprovals[opId] >= requiredApprovals, "Insufficient approvals");
         delete operationApprovals[opId];
 
-        uint256 len = constituentList.length;
-        for (uint256 i; i < len; ) {
+        for (uint256 i; i < constituentList.length; ) {
             address asset = constituentList[i];
             if (constituents[asset].isActive) {
                 delete assetNeuralWeights[asset];
@@ -697,6 +802,10 @@ contract AIEngine is
         emit ConfigUpdated("emergencyReset", block.timestamp);
     }
 
+    /**
+     * @notice Clears a price deviation alert
+     * @param asset Asset address
+     */
     function clearPriceDeviationAlert(address asset) external onlyRole(EMERGENCY_ROLE) nonReentrant {
         (, int256 price, , uint256 updatedAt, ) = priceFeeds[asset].latestRoundData();
         require(price > 0 && updatedAt > 0, "Invalid price");
