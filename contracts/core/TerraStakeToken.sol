@@ -16,15 +16,15 @@ import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeNeural.sol";
+import "../interfaces/ITerraStakeITO.sol";
 import "../interfaces/ITerraStakeToken.sol";
-
 /**
  * @title TerraStakeToken
  * @notice Upgradeable ERC20 token for the TerraStake ecosystem with advanced features, optimized for Arbitrum
  * @dev Implements ERC20Permit for gasless approvals, governance integration, staking, and TWAP oracle
  * @custom:optimized-by Emiliano Solazzi 2025 as "T-30" for Arbitrum L2 with gas efficiency considerations
  */
-contract TerraStakeToken is
+ contract TerraStakeToken is
     Initializable,
     ERC20Upgradeable,
     ERC20PermitUpgradeable,
@@ -33,8 +33,8 @@ contract TerraStakeToken is
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
     UUPSUpgradeable,
-    ITerraStakeNeural
     ITerraStakeToken,
+    ITerraStakeNeural,
 {
     using SafeERC20 for IERC20;
 
@@ -59,7 +59,7 @@ contract TerraStakeToken is
     ITerraStakeGovernance public governanceContract;
     ITerraStakeStaking public stakingContract;
     ITerraStakeLiquidityGuard public liquidityGuard;
-
+    address public itoContractAddress;
     // ================================
     //  Blacklist Management
     // ================================
@@ -86,6 +86,7 @@ contract TerraStakeToken is
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant LIQUIDITY_MANAGER_ROLE = keccak256("LIQUIDITY_MANAGER_ROLE");
+    bytes32 public constant ITO_ROLE = keccak256("ITO_ROLE");  
 
     // ========== [Neural / DNA Addition] ==========
     // Additional constants for biologically-inspired systems
@@ -147,7 +148,7 @@ contract TerraStakeToken is
     event TransferBlocked(address indexed from, address indexed to, uint256 amount, string reason);
     event StakingOperationExecuted(address indexed user, uint256 amount, bool isStake);
     event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
-
+    event ITOContractUpdated(address indexed itoContract);
     // ========== [Neural / DNA Addition: Extra Events] ==========
     event NeuralWeightUpdated(address indexed asset, uint256 weight, uint256 smoothingFactor);
     event ConstituentAdded(address indexed asset, uint256 timestamp);
@@ -249,27 +250,38 @@ contract TerraStakeToken is
         emit PermitUsed(owner, spender, amount);
     }
 
-    // ================================
-    //  Blacklist Management
-    // ================================
-    function setBlacklist(address account, bool status) external onlyRole(ADMIN_ROLE) {
-        require(account != address(0), "Cannot blacklist zero address");
-        isBlacklisted[account] = status;
-        emit BlacklistUpdated(account, status);
-    }
+// ================================
+//  Blacklist Management
+// ================================
+function setBlacklist(address account, bool status) external onlyRole(ADMIN_ROLE) {
+    require(account != address(0), "Cannot blacklist zero address");
+    isBlacklisted[account] = status;
+    emit BlacklistUpdated(account, status);
+}
 
-    function batchBlacklist(address[] calldata accounts, bool status) external onlyRole(ADMIN_ROLE) {
-        uint256 length = accounts.length;
-        require(length <= MAX_BATCH_SIZE, "Batch size too large");
-        
-        for (uint256 i = 0; i < length; ) {
-            require(accounts[i] != address(0), "Cannot blacklist zero address");
-            isBlacklisted[accounts[i]] = status;
-            emit BlacklistUpdated(accounts[i], status);
-            unchecked { ++i; }
-        }
+function batchBlacklist(address[] calldata accounts, bool status) external onlyRole(ADMIN_ROLE) {
+    uint256 length = accounts.length;
+    require(length <= MAX_BATCH_SIZE, "Batch size too large");
+    
+    for (uint256 i = 0; i < length; ) {
+        require(accounts[i] != address(0), "Cannot blacklist zero address");
+        isBlacklisted[accounts[i]] = status;
+        emit BlacklistUpdated(accounts[i], status);
+        unchecked { ++i; }
     }
+}
 
+/**
+ * @notice Sync blacklist status with ITO contract
+ * @param account Address to check and sync
+ */
+function syncBlacklistWithITO(address account) external onlyRole(ADMIN_ROLE) {
+    bool itoBlacklisted = ITerraStakeITO(itoContractAddress).blacklist(account);
+    if (isBlacklisted[account] != itoBlacklisted) {
+        isBlacklisted[account] = itoBlacklisted;
+        emit BlacklistUpdated(account, itoBlacklisted);
+    }
+}
     // ================================
     //  Airdrop Function (Gas-optimized for Arbitrum)
     // ================================
@@ -397,6 +409,11 @@ contract TerraStakeToken is
         require(_liquidityGuard != address(0), "Invalid address");
         liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
         emit LiquidityGuardUpdated(_liquidityGuard);
+    }
+    function updateITOContract(address _itoContract) external onlyRole(ADMIN_ROLE) {
+    require(_itoContract != address(0), "Invalid address");
+    itoContractAddress = _itoContract;
+    emit ITOContractUpdated(_itoContract);
     }
 
     // ================================
@@ -568,8 +585,9 @@ contract TerraStakeToken is
     // ================================
     //  Upgradeability (Arbitrum considerations)
     // ================================
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-   /**
+  function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+
+/**
  * @notice Get the implementation contract address
  * @return The implementation address
  */
