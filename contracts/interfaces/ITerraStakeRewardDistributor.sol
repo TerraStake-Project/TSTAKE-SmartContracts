@@ -22,6 +22,12 @@ interface ITerraStakeRewardDistributor {
     function redistributePenalty(address from, uint256 amount) external;
 
     /**
+     * @notice Add penalty rewards to be distributed
+     * @param amount Amount of penalty rewards to add
+     */
+    function addPenaltyRewards(uint256 amount) external;
+
+    /**
      * @notice Distribute accumulated penalties to active stakers in batches
      * @param startIndex Start index in the stakers array
      * @param endIndex End index in the stakers array (inclusive)

@@ -258,7 +258,7 @@ contract TerraStakeSlashing is
             revert SlashingCoolingOffPeriod();
         
         // Calculate slash amount
-        uint256 currentStake = stakingContract.getValidatorStake(proposal.validator);
+        uint256 currentStake = stakingContract.getUserTotalStake(proposal.validator);
         uint256 slashAmount = (currentStake * proposal.slashPercentage) / PERCENTAGE_DENOMINATOR;
         
         if (slashAmount == 0) revert SlashAmountTooSmall();
@@ -421,11 +421,11 @@ contract TerraStakeSlashing is
 
     function getUserSlashedRewards(address user) external view returns (
         uint256 totalSlashed,
-        uint256 lastSlashTime
+        uint256 lastSlashTimeByUser
     ) {
         totalSlashed = totalSlashedForValidator[user];
-        lastSlashTime = lastSlashTime[user];
-        return (totalSlashed, lastSlashTime);
+        lastSlashTimeByUser = lastSlashTime[user];
+        return (totalSlashed, lastSlashTimeByUser);
     }
     
     /**
@@ -490,7 +490,7 @@ contract TerraStakeSlashing is
         
         // If not marked as active, check staking contract
         if (!isActive) {
-            uint256 stake = stakingContract.getValidatorStake(validator);
+            uint256 stake = stakingContract.getUserTotalStake(validator);
             isActive = stake > 0;
         }
         
@@ -513,7 +513,7 @@ contract TerraStakeSlashing is
         uint256 toBurn,
         uint256 toTreasury
     ) {
-        uint256 validatorStake = stakingContract.getValidatorStake(validator);
+        uint256 validatorStake = stakingContract.getUserTotalStake(validator);
         total = (validatorStake * slashPercentage) / PERCENTAGE_DENOMINATOR;
         
         toRedistribute = (total * redistributionPercentage) / PERCENTAGE_DENOMINATOR;

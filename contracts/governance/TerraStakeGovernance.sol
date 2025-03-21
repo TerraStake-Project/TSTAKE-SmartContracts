@@ -767,13 +767,36 @@ contract TerraStakeGovernance is
     // -------------------------------------------
     //  Reward Distribution Functions
     // -------------------------------------------
-    function initiateHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+    function applyHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
         if (block.timestamp < systemState.lastHalvingTime + TWO_YEARS) revert InvalidProposalState();
         
         systemState.lastHalvingTime = uint48(block.timestamp);
         unchecked { systemState.halvingEpoch++; }
         rewardDistributor.updateEmissionRate();
         emit HalvingInitiated(systemState.halvingEpoch);
+    }
+
+    function recordVote(uint256 proposalId, address voter, uint256 votingPower, bool support) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+
+        // Validate proposal existence and voting period
+        require(proposal.voteStart > 0, "Proposal does not exist");
+        require(block.timestamp >= proposal.voteStart && block.timestamp <= proposal.voteEnd, "Not in voting period");
+
+        // Validate voter eligibility
+        require(!proposal.hasVoted[voter], "Already voted");
+        require(votingPower >= govParams.minimumHolding, "Insufficient token balance to vote");
+
+        // Record the vote
+        if (support) {
+            proposal.forVotes += votingPower;
+        } else {
+            proposal.againstVotes += votingPower;
+        }
+
+        // Mark voter as having voted
+        proposal.hasVoted[voter] = true;
+        systemState.totalVotesCast++;
     }
     
     function updateValidatorRewardRate(uint256 newRewardRate) 

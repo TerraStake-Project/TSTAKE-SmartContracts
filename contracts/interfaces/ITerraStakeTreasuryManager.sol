@@ -38,8 +38,6 @@ interface ITerraStakeTreasuryManager {
         uint8 burnPercentage,
         uint8 treasuryPercentage
     );
-    
-    event BuybackExecuted(uint256 usdcAmount, uint256 tStakeReceived);
     event LiquidityAdded(uint256 tStakeAmount, uint256 usdcAmount);
     event TokensBurned(uint256 amount);
     event TreasuryTransfer(address token, address recipient, uint256 amount);
@@ -49,7 +47,40 @@ interface ITerraStakeTreasuryManager {
     event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
     event TreasuryContractUpdated(address newTreasury);
     event RevenueForwardedToTreasury(address token, uint256 amount, string source);
+    event QuoterUpdated(address newQuoter);
+    event FallbackPriceUpdated(uint256 tStakePerUsdc, uint256 timestamp);
+    event QuoterFailure(string reason, uint256 usdcAmount, uint256 timestamp);
+    event SlippageApplied(uint256 originalAmount, uint256 slippageAmount, uint256 finalAmount);
+    event TreasuryAllocationCreated(address token, uint256 amount, uint256 releaseTime);
+
+    /**
+     * @notice Event emitted when a fee is transferred to a specific category (buyback, liquidity, burn, treasury)
+     * @param category The category of the fee (buyback, liquidity, burn, treasury)
+     * @param amount The amount transferred to the category
+     */
+    event FeeTransferred(string category, uint256 amount);
+
+    /**
+     * @notice Event emitted when a buyback is executed
+     * @param amount The amount spent in the buyback
+     * @param tokensBought The number of tokens bought
+     */
+    event BuybackExecuted(uint256 amount, uint256 tokensBought);
     
+    // -------------------------------------------
+    //  Errors
+    // -------------------------------------------
+    
+    error Unauthorized();
+    error InvalidParameters();
+    error InvalidAmount();
+    error InsufficientBalance();
+    error SlippageTooHigh();
+    error QuoterError(string reason);
+    error ZeroAmountQuoted();
+    error ExcessivePriceImpact();
+    error TransferFailed();
+
     // -------------------------------------------
     //  View Functions
     // -------------------------------------------

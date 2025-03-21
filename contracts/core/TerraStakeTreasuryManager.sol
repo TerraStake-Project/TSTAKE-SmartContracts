@@ -22,6 +22,7 @@ import "../interfaces/ITerraStakeGovernance.sol";
  * @dev This contract is upgradeable via UUPS pattern and uses OpenZeppelin's access control
  */
 contract TerraStakeTreasuryManager is 
+    ITerraStakeTreasuryManager,
     Initializable, 
     AccessControlEnumerableUpgradeable, 
     ReentrancyGuardUpgradeable, 
@@ -81,62 +82,6 @@ contract TerraStakeTreasuryManager is
     // Statistics for monitoring
     uint256 public quoterFailureCount;
     uint256 public lastSuccessfulQuoteTimestamp;
-    
-    // -------------------------------------------
-    //  Structs
-    // -------------------------------------------
-    
-    struct FeeStructure {
-        uint256 projectSubmissionFee;
-        uint256 impactReportingFee;
-        uint8 buybackPercentage;
-        uint8 liquidityPairingPercentage;
-        uint8 burnPercentage;
-        uint8 treasuryPercentage;
-    }
-    
-    // -------------------------------------------
-    //  Events
-    // -------------------------------------------
-    
-    event FeeStructureUpdated(
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint8 buybackPercentage,
-        uint8 liquidityPairingPercentage,
-        uint8 burnPercentage,
-        uint8 treasuryPercentage
-    );
-    
-    event BuybackExecuted(uint256 usdcAmount, uint256 tStakeReceived);
-    event LiquidityAdded(uint256 tStakeAmount, uint256 usdcAmount);
-    event TokensBurned(uint256 amount);
-    event TreasuryTransfer(address token, address recipient, uint256 amount);
-    event TreasuryWalletUpdated(address newTreasuryWallet);
-    event LiquidityPairingToggled(bool enabled);
-    event TStakeReceived(address sender, uint256 amount);
-    event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
-    event QuoterUpdated(address newQuoter);
-    event FallbackPriceUpdated(uint256 tStakePerUsdc, uint256 timestamp);
-    event QuoterFailure(string reason, uint256 usdcAmount, uint256 timestamp);
-    event SlippageApplied(uint256 originalAmount, uint256 slippageAmount, uint256 finalAmount);
-    event TreasuryContractUpdated(address newTreasury);
-    event RevenueForwardedToTreasury(address token, uint256 amount, string source);
-    event TreasuryAllocationCreated(address token, uint256 amount, uint256 releaseTime);
-    
-    // -------------------------------------------
-    //  Errors
-    // -------------------------------------------
-    
-    error Unauthorized();
-    error InvalidParameters();
-    error InvalidAmount();
-    error InsufficientBalance();
-    error SlippageTooHigh();
-    error QuoterError(string reason);
-    error ZeroAmountQuoted();
-    error ExcessivePriceImpact();
-    error TransferFailed();
     
     // -------------------------------------------
     //  Initializer & Upgrade Control
@@ -635,6 +580,104 @@ contract TerraStakeTreasuryManager is
             emit TreasuryTransfer(address(usdcToken), treasuryWallet, treasuryAmount);
         }
     }
+
+    /**
+     * @notice Split the fee into categories (buyback, liquidity, burn, treasury)
+     * @param amount The total amount to split (e.g., buyback funds)
+     */
+    function splitFee(uint256 amount)
+        internal
+        returns (
+            uint256 buybackAmount,
+            uint256 liquidityAmount,
+            uint256 burnAmount,
+            uint256 treasuryAmount
+        )
+    {
+        if (amount == 0) revert InvalidAmount();
+
+        // Calculate the split amounts based on percentages
+        buybackAmount = (amount * currentFeeStructure.buybackPercentage) / 100;
+        liquidityAmount = (amount * currentFeeStructure.liquidityPairingPercentage) / 100;
+        burnAmount = (amount * currentFeeStructure.burnPercentage) / 100;
+        treasuryAmount = (amount * currentFeeStructure.treasuryPercentage) / 100;
+
+        // Transfer each category if the amount is greater than zero and emit an event
+        if (buybackAmount > 0) {
+            usdcToken.transfer(address(this), buybackAmount); // Fund buyback
+            emit FeeTransferred("Buyback", buybackAmount);
+        }
+
+        if (liquidityAmount > 0) {
+            usdcToken.transfer(address(this), liquidityAmount); // Fund liquidity pairing
+            emit FeeTransferred("Liquidity", liquidityAmount);
+        }
+
+        if (burnAmount > 0) {
+            usdcToken.transfer(address(0xdead), burnAmount); // Burn tokens
+            emit FeeTransferred("Burn", burnAmount);
+        }
+
+        if (treasuryAmount > 0) {
+            usdcToken.transfer(treasuryWallet, treasuryAmount); // Transfer to treasury
+            emit FeeTransferred("Treasury", treasuryAmount);
+        }
+
+        return (buybackAmount, liquidityAmount, burnAmount, treasuryAmount);
+    }
+
+    /**
+     * @notice Emergency adjustment of fees for governance purposes
+     * @param feeType The type of fee to adjust: 1 for project submission, 2 for impact reporting
+     * @param newValue The new value for the specified fee type
+     */
+    function emergencyAdjustFee(uint8 feeType, uint256 newValue) external onlyRole(GOVERNANCE_ROLE) {
+        if (newValue == 0) revert InvalidAmount();
+
+        // Adjust the specified fee in the current fee structure
+        if (feeType == 1) {
+            currentFeeStructure.projectSubmissionFee = newValue;
+        } else if (feeType == 2) {
+            currentFeeStructure.impactReportingFee = newValue;
+        } else {
+            revert InvalidParameters();
+        }
+
+        emit FeeStructureUpdated(
+            currentFeeStructure.projectSubmissionFee,
+            currentFeeStructure.impactReportingFee,
+            currentFeeStructure.buybackPercentage,
+            currentFeeStructure.liquidityPairingPercentage,
+            currentFeeStructure.burnPercentage,
+            currentFeeStructure.treasuryPercentage
+        );
+    }
+
+    /**
+     * @notice Execute a buyback using the fee mechanism
+     * @param amount The total amount to use for buyback and associated processes
+     */
+    function executeBuyback(uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+
+        // Split the fees into categories
+        (
+            uint256 buybackAmount,
+            uint256 liquidityAmount,
+            uint256 burnAmount,
+            uint256 treasuryAmount
+        ) = splitFee(amount);
+
+        // Perform buyback with the allocated funds
+        performBuyback(buybackAmount);
+
+        // Add liquidity if enabled and funds are available
+        if (liquidityPairingEnabled && liquidityAmount > 0) {
+            addLiquidity(liquidityAmount);
+        }
+
+        emit BuybackExecuted(buybackAmount, /* tokens bought */ buybackAmount);
+    }
     
     /**
      * @notice Estimate minimum TSTAKE output for a given USDC input with slippage
@@ -843,27 +886,27 @@ contract TerraStakeTreasuryManager is
     /**
      * @notice Calculate fee distribution for a given amount
      * @param amount Amount to calculate distribution for
-     * @return buyback Buyback amount
-     * @return liquidity Liquidity amount
-     * @return treasury Treasury amount
-     * @return burn Burn amount
+     * @return buybackAmount Buyback amount
+     * @return liquidityAmount Liquidity amount
+     * @return treasuryAmount Treasury amount
+     * @return burnAmount Burn amount
      */
     function calculateFeeDistribution(uint256 amount) 
         external 
         view 
         returns (
-            uint256 buyback, 
-            uint256 liquidity, 
-            uint256 treasury, 
-            uint256 burn
+            uint256 buybackAmount, 
+            uint256 liquidityAmount, 
+            uint256 treasuryAmount, 
+            uint256 burnAmount
         ) 
     {
-        buyback = amount * currentFeeStructure.buybackPercentage / 100;
-        liquidity = amount * currentFeeStructure.liquidityPairingPercentage / 100;
-        treasury = amount * currentFeeStructure.treasuryPercentage / 100;
-        burn = amount * currentFeeStructure.burnPercentage / 100;
+        buybackAmount = amount * currentFeeStructure.buybackPercentage / 100;
+        liquidityAmount = amount * currentFeeStructure.liquidityPairingPercentage / 100;
+        treasuryAmount = amount * currentFeeStructure.treasuryPercentage / 100;
+        burnAmount = amount * currentFeeStructure.burnPercentage / 100;
         
-        return (buyback, liquidity, treasury, burn);
+        return (buybackAmount, liquidityAmount, treasuryAmount, burnAmount);
     }
     
     /**

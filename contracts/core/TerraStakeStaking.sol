@@ -103,10 +103,11 @@ contract TerraStakeStaking is
      * @notice Maps user addresses to their multiple staking positions, indexed by a unique position ID
      */
     mapping(address => mapping(uint256 => StakingPosition)) private _stakingPositions;
-    mapping(address => uint256) private _governanceVotes;
-    mapping(address => uint256) private _stakingBalance;
-    mapping(address => bool)    private _governanceViolators;
-    mapping(address => bool)    private _validators;
+    mapping(address => uint256[])   private _stakedProjects;
+    mapping(address => uint256)     private _governanceVotes;
+    mapping(address => uint256)     private _stakingBalance;
+    mapping(address => bool)        private _governanceViolators;
+    mapping(address => bool)        private _validators;
 
     uint256 private _totalStaked;
     StakingTier[] private _tiers;
@@ -277,6 +278,9 @@ contract TerraStakeStaking is
         position.hasNFTBoost     = hasNFTBoost;
         position.autoCompounding = autoCompound;
 
+        // Update staked projects by user
+        _stakedProjects[msg.sender].push(projectId);
+
         // Update global stats
         currentTotalStaked += amount;
         _totalStaked        = currentTotalStaked;
@@ -389,6 +393,8 @@ contract TerraStakeStaking is
             position.hasNFTBoost     = hasNFTBoost;
             position.autoCompounding = autoCompound[i];
 
+            _stakedProjects[msg.sender].push(projectIds[i]);
+
             stakedSoFar         += amounts[i];
             _totalStaked        += amounts[i];
             _stakingBalance[msg.sender] += amounts[i];
@@ -464,6 +470,17 @@ contract TerraStakeStaking is
 
         // Clear position
         delete _stakingPositions[msg.sender][projectId];
+
+        // Remove the project from the user's staked projects
+        uint256[] storage userProjects = _stakedProjects[msg.sender];
+
+        for (uint256 i = 0; i < userProjects.length; i++) {
+            if (userProjects[i] == projectId) {
+                userProjects[i] = userProjects[userProjects.length - 1];
+                userProjects.pop();
+                break;
+            }
+        }
 
         // Check if we drop below validator threshold
         if (_validators[msg.sender] && _stakingBalance[msg.sender] < validatorThreshold) {
@@ -554,6 +571,17 @@ contract TerraStakeStaking is
 
             // Clear the position
             delete _stakingPositions[msg.sender][projectId];
+
+            // Remove the project from the user's staked projects
+            uint256[] storage userProjects = _stakedProjects[msg.sender];
+
+            for (uint256 j = 0; j < userProjects.length; j++) {
+                if (userProjects[j] == projectId) {
+                    userProjects[j] = userProjects[userProjects.length - 1];
+                    userProjects.pop();
+                    break;
+                }
+            }
 
             emit Unstaked(msg.sender, projectId, posAmount - penalty, penalty, block.timestamp);
         }
@@ -700,10 +728,7 @@ contract TerraStakeStaking is
 
         // Send the remainder to user
         if (reward > 0) {
-            bool success = rewardDistributor.distributeReward(user, reward);
-            if (!success) {
-                revert DistributionFailed(reward);
-            }
+            rewardDistributor.distributeReward(user, reward);
             emit RewardClaimed(user, projectId, reward, block.timestamp);
         }
     }
@@ -780,26 +805,12 @@ contract TerraStakeStaking is
      * @return totalRewards Total pending rewards
      */
     function calculateRewards(address user) external view returns (uint256 totalRewards) {
-        uint256 userStake = _stakingBalance[user];
-        if (userStake == 0) return 0;
-
-        // Get staking duration
-        uint256 stakingDuration = block.timestamp - userStakingStart[user];
-        if (stakingDuration == 0) return 0;
-
-        // Calculate base rewards
-        uint256 baseRewards = (userStake * BASE_APR * stakingDuration) / (365 days * 100);
-
-        // Apply boosts
-        if (nftContract.balanceOf(user, 1) > 0) {
-            baseRewards += (baseRewards * NFT_APR_BOOST) / 100;
+        uint256[] memory projectIds = _stakedProjects[user];
+        for (uint256 i = 0; i < projectIds.length; i++) {
+            totalRewards += calculateRewards(user, projectIds[i]);
         }
 
-        // Apply tier multipliers
-        uint256 tierId = getApplicableTier(stakingDuration);
-        baseRewards = (baseRewards * _tiers[tierId].multiplier) / 100;
-
-        return baseRewards;
+        return totalRewards;
     }
 
     /**
@@ -849,10 +860,7 @@ contract TerraStakeStaking is
         uint256 rewardPerValidator = validatorRewardPool / validatorCount;
         validatorRewardPool = 0;
 
-        bool success = rewardDistributor.distributeReward(msg.sender, rewardPerValidator);
-        if (!success) {
-            revert DistributionFailed(rewardPerValidator);
-        }
+        rewardDistributor.distributeReward(msg.sender, rewardPerValidator);
         emit ValidatorRewardsDistributed(msg.sender, rewardPerValidator);
     }
 
