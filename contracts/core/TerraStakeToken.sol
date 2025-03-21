@@ -19,14 +19,13 @@ import "../interfaces/ITerraStakeNeural.sol";
 import "../interfaces/IAIEngine.sol";
 import "../interfaces/ITerraStakeITO.sol";
 import "../interfaces/ITerraStakeToken.sol";
-
 /**
  * @title TerraStakeToken
  * @notice Upgradeable ERC20 token for the TerraStake ecosystem with advanced features, optimized for Arbitrum
  * @dev Implements ERC20Permit for gasless approvals, governance integration, staking, and TWAP oracle
  * @custom:optimized-by Emiliano Solazzi 2025 as "T-30" for Arbitrum L2 with gas efficiency considerations
  */
-contract TerraStakeToken is
+ contract TerraStakeToken is
     Initializable,
     ERC20Upgradeable,
     ERC20PermitUpgradeable,
@@ -95,6 +94,7 @@ contract TerraStakeToken is
     bytes32 public constant LIQUIDITY_MANAGER_ROLE = keccak256("LIQUIDITY_MANAGER_ROLE");
     // Add AI Engine specific role
     bytes32 public constant AI_MANAGER_ROLE = keccak256("AI_MANAGER_ROLE");
+    bytes32 public constant ITO_ROLE = keccak256("ITO_ROLE");  
 
     // ========== [Neural / DNA Addition] ==========
     // Additional constants for biologically-inspired systems
@@ -156,7 +156,7 @@ contract TerraStakeToken is
     event TransferBlocked(address indexed from, address indexed to, uint256 amount, string reason);
     event StakingOperationExecuted(address indexed user, uint256 amount, bool isStake);
     event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
-
+    event ITOContractUpdated(address indexed itoContract);
     // ========== [Neural / DNA Addition: Extra Events] ==========
     event NeuralWeightUpdated(address indexed asset, uint256 weight, uint256 smoothingFactor);
     event ConstituentAdded(address indexed asset, uint256 timestamp);
