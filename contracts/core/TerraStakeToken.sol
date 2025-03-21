@@ -73,14 +73,7 @@ import "../interfaces/ITerraStakeToken.sol";
 
     // ================================
     //  Buyback & Token Economics
-    // ================================
-    struct BuybackStats {
-        uint256 totalTokensBought;
-        uint256 totalUSDCSpent;
-        uint256 lastBuybackTime;
-        uint256 buybackCount;
-    }
-    
+    // ================================    
     BuybackStats public buybackStatistics;
     uint256 public currentHalvingEpoch;
     uint256 public lastHalvingTime;
@@ -123,32 +116,6 @@ import "../interfaces/ITerraStakeToken.sol";
     uint256 public rebalancingFrequencyTarget;
     uint256 public lastAdaptiveLearningUpdate;
     uint256 public selfOptimizationCounter;
-
-    // ================================
-    //  Events (Optimized for Arbitrum's logging costs)
-    // ================================
-    event BlacklistUpdated(address indexed account, bool status);
-    event AirdropExecuted(address[] recipients, uint256 amount, uint256 totalAmount);
-    event TWAPPriceQueried(uint32 twapInterval, uint256 price);
-    event EmergencyWithdrawal(address token, address to, uint256 amount);
-    event TokenBurned(address indexed burner, uint256 amount);
-    event GovernanceUpdated(address indexed governanceContract);
-    event StakingUpdated(address indexed stakingContract);
-    event LiquidityGuardUpdated(address indexed liquidityGuard);
-    event BuybackExecuted(uint256 amount, uint256 tokensReceived);
-    event LiquidityInjected(uint256 amount, uint256 tokensUsed);
-    event HalvingTriggered(uint256 epochNumber, uint256 timestamp);
-    event TransferBlocked(address indexed from, address indexed to, uint256 amount, string reason);
-    event StakingOperationExecuted(address indexed user, uint256 amount, bool isStake);
-    event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
-    event ITOContractUpdated(address indexed itoContract);
-    // ========== [Neural / DNA Addition: Extra Events] ==========
-    event NeuralWeightUpdated(address indexed asset, uint256 weight, uint256 smoothingFactor);
-    event ConstituentAdded(address indexed asset, uint256 timestamp);
-    event ConstituentRemoved(address indexed asset, uint256 timestamp);
-    event DiversityIndexUpdated(uint256 newIndex);
-    event AdaptiveRebalanceTriggered(string reason, uint256 timestamp);
-    event SelfOptimizationExecuted(uint256 counter, uint256 timestamp);
     
     // Add AIEngine integration events
     event AIEngineUpdated(address indexed aiEngineAddress);
@@ -299,7 +266,7 @@ import "../interfaces/ITerraStakeToken.sol";
         
         // Check using AIEngine if available
         if (address(aiEngine) != address(0) && useAIEngine) {
-            try aiEngine.shouldAdaptiveRebalance() returns (bool shouldRebalance, ) {
+            try aiEngine.shouldAdaptiveRebalance() returns (bool shouldRebalance, string memory reason) {
                 if (shouldRebalance) {
                     healthy = false;
                 }
@@ -730,14 +697,6 @@ function batchSyncBlacklistWithITO(address[] calldata accounts) external onlyRol
     //  Upgradeability (Arbitrum considerations)
     // ================================
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-    
-    /**
-     * @notice Get the implementation contract address
-     * @return The implementation address
-     */
-    function getImplementation() external view returns (address) {
-        return _getImplementation();
-    }
 
     // ========== [Neural / DNA Addition: Implementation (Arbitrum optimized)] ==========
 

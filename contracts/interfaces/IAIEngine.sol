@@ -187,7 +187,7 @@ interface IAIEngine is AutomationCompatibleInterface {
     /**
      * @notice Manually triggers an adaptive rebalance
      */
-    function triggerAdaptiveRebalance() external;
+    function triggerAdaptiveRebalance() external returns (string memory reason);
     
     /**
      * @notice Updates genetic volatility metric and handles potential rebalancing

@@ -57,6 +57,7 @@ interface ITerraStakeITO {
     //  Blacklist Management
     // ================================
     function updateBlacklist(address account, bool status) external;
+    function blacklist(address account) external view returns(bool);
 
     // ================================
     //  Vesting Management

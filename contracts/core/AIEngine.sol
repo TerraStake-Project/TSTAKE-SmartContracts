@@ -577,6 +577,7 @@ contract AIEngine is
         onlyRole(AI_ADMIN_ROLE) 
         nonReentrant 
         whenNotPaused 
+        returns (string memory)
     {
         (bool doRebalance, string memory reason) = shouldAdaptiveRebalance();
         require(doRebalance, "Rebalance not needed");
@@ -585,6 +586,7 @@ contract AIEngine is
         lastRebalanceTime = block.timestamp;
 
         emit AdaptiveRebalanceTriggered(reason, block.timestamp);
+        return reason;
     }
 
     /**

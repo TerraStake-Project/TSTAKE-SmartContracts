@@ -291,7 +291,7 @@ contract TerraStakeLiquidityGuard is
 
         twapObservationTimeframes = [30 minutes, 1 hours, 4 hours, 24 hours];
 
-        vrfCoordinator = VRFCoordinatorV2Interface(0x41034678D6C63391fFfF650fc6CaB62dF16d2A0); // Arbitrum One
+        vrfCoordinator = VRFCoordinatorV2Interface(0x41034678D6C633D8a95c75e1138A360a28bA15d1); // Arbitrum One
         vrfSubscriptionId = _vrfSubscriptionId;
         vrfKeyHash = _vrfKeyHash;
 
@@ -1179,7 +1179,7 @@ contract TerraStakeLiquidityGuard is
      * @param requestId The ID of the VRF request
      * @param randomWords The array of random values
      */
-    function fulfillRandomWords(uint256, uint256[] memory randomWords) internal override {
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
         if (activePositions.length == 0) return;
 
         uint256 tokenId = activePositions[randomWords[0] % activePositions.length];

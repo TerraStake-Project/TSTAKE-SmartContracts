@@ -209,7 +209,7 @@ interface ITerraStakeGovernance {
     function latestProposalIds(address proposer) external view returns (uint256);
 
     function applyHalving() external;
-    function recordVote(uint256 proposalId, bool support, string calldata reason) external;
+    function recordVote(uint256 proposalId, address voter, uint256 votingPower, bool support) external;
 
     // -------------------------------------------
     //  Proposal Creation and Management

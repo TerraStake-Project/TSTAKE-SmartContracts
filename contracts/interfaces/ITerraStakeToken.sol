@@ -27,25 +27,6 @@ interface ITerraStakeToken {
      * @return The maximum supply value
      */
     function MAX_SUPPLY() external view returns (uint256);
-    
-    /**
-     * @notice Returns the current total supply of tokens
-     * @return The total supply
-     */
-    function totalSupply() external view returns (uint256);
-    
-    /**
-     * @notice Returns the token balance of an account
-     * @param account The address to query the balance of
-     * @return The account balance
-     */
-    function balanceOf(address account) external view returns (uint256);
-    
-    /**
-     * @notice Returns the number of decimals the token uses
-     * @return The decimal places
-     */
-    function decimals() external view returns (uint8);
 
     // ================================
     //  Blacklist Management
@@ -73,7 +54,7 @@ interface ITerraStakeToken {
     function isBlacklisted(address account) external view returns (bool);
 
     // ================================
-    //  Minting & Burning
+    //  Minting
     // ================================
     
     /**
@@ -82,73 +63,11 @@ interface ITerraStakeToken {
      * @param amount Amount to mint
      */
     function mint(address to, uint256 amount) external;
-    
-    /**
-     * @notice Burn tokens from a specific address
-     * @param from Address to burn from
-     * @param amount Amount to burn
-     */
-    function burnFrom(address from, uint256 amount) external;
-    
-    /**
-     * @notice Burn tokens from the caller's address
-     * @param amount Amount to burn
-     */
-    function burn(uint256 amount) external;
-
-    // ================================
-    //  Transfer & Allowance Functions
-    // ================================
-    
-    /**
-     * @notice Transfer tokens to a specified address
-     * @param to The recipient address
-     * @param amount The amount to transfer
-     * @return True if the transfer succeeded
-     */
-    function transfer(address to, uint256 amount) external returns (bool);
-    
-    /**
-     * @notice Transfer tokens from one address to another using allowance
-     * @param from The sender address
-     * @param to The recipient address
-     * @param amount The amount to transfer
-     * @return True if the transfer succeeded
-     */
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-    
-    /**
-     * @notice Approve a spender to spend tokens on behalf of the caller
-     * @param spender The address authorized to spend
-     * @param amount The approval amount
-     * @return True if the approval succeeded
-     */
-    function approve(address spender, uint256 amount) external returns (bool);
-    
-    /**
-     * @notice Returns the remaining allowance of tokens that a spender can transfer
-     * @param owner The token owner
-     * @param spender The authorized spender
-     * @return The remaining allowance
-     */
-    function allowance(address owner, address spender) external view returns (uint256);
 
     // ================================
     //  Permit Functions
     // ================================
-    
-    /**
-     * @notice Approve spender via signature (EIP-2612)
-     * @param owner Token owner
-     * @param spender Token spender
-     * @param value Approval amount
-     * @param deadline Permit deadline
-     * @param v Signature parameter
-     * @param r Signature parameter
-     * @param s Signature parameter
-     */
-    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
-    
+        
     /**
      * @notice Executes a permit operation and transfers tokens in one transaction
      * @param owner Token owner
@@ -198,12 +117,6 @@ interface ITerraStakeToken {
      */
     function unpause() external;
     
-    /**
-     * @notice Checks if the contract is paused
-     * @return True if paused, false otherwise
-     */
-    function paused() external view returns (bool);
-
     // ================================
     //  Ecosystem Integrations
     // ================================
@@ -225,24 +138,6 @@ interface ITerraStakeToken {
      * @param _liquidityGuard New liquidity guard address
      */
     function updateLiquidityGuard(address _liquidityGuard) external;
-    
-    /**
-     * @notice Get the governance contract address
-     * @return The governance contract address
-     */
-    function governanceContract() external view returns (address);
-    
-    /**
-     * @notice Get the staking contract address
-     * @return The staking contract address
-     */
-    function stakingContract() external view returns (address);
-    
-    /**
-     * @notice Get the liquidity guard address
-     * @return The liquidity guard address
-     */
-    function liquidityGuard() external view returns (address);
     
     // ================================
     //  Staking Integration
@@ -281,12 +176,6 @@ interface ITerraStakeToken {
     // ================================
     //  TWAP Oracle & Liquidity
     // ================================
-    
-    /**
-     * @notice Get the Uniswap pool address
-     * @return The pool address
-     */
-    function uniswapPool() external view returns (address);
     
     /**
      * @notice Get the TWAP price from Uniswap
@@ -427,4 +316,5 @@ interface ITerraStakeToken {
     event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
+    event ITOContractUpdated(address indexed itoContract);
 }
