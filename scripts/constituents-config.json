@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Arbitrum",
+    "address": "0x912CE59144191C1204E64559FE8253a0e49E6548",
+    "priceFeed": "0xb2A824043730FE05F3DA2efaFa1CBbe83fa548D6"
+  },
+  {
+    "name": "Wrapped Ether",
+    "address": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    "priceFeed": "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
+  }
+]
