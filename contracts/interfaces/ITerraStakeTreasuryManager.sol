@@ -18,10 +18,10 @@ interface ITerraStakeTreasuryManager {
     struct FeeStructure {
         uint256 projectSubmissionFee;
         uint256 impactReportingFee;
-        uint8 buybackPercentage;
-        uint8 liquidityPairingPercentage;
-        uint8 burnPercentage;
-        uint8 treasuryPercentage;
+        uint256 buybackPercentage;
+        uint256 liquidityPairingPercentage;
+        uint256 burnPercentage;
+        uint256 treasuryPercentage;
     }
 
     struct SlippageConfig {
@@ -35,33 +35,31 @@ interface ITerraStakeTreasuryManager {
     //  Events
     // -------------------------------------------
     
-    event FeeStructureUpdated(
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint8 buybackPercentage,
-        uint8 liquidityPairingPercentage,
-        uint8 burnPercentage,
-        uint8 treasuryPercentage
-    );
-    
-    event BuybackExecuted(uint256 usdcAmount, uint256 tStakeReceived);
-    event LiquidityAdded(uint256 tStakeAmount, uint256 usdcAmount);
+    event FeePercentageUpdated(string feeType, uint256 newValue);
+    event BuybackExecuted(uint256 usdcAmount, uint256 tStakeAmount, uint256 slippageApplied, address quoterUsed);
+    event LiquidityAdded(uint256 tStakeAmount, uint256 usdcAmount, address liquidityGuard);
     event TokensBurned(uint256 amount);
     event TreasuryTransfer(address token, address recipient, uint256 amount);
     event TreasuryWalletUpdated(address newTreasuryWallet);
-    event LiquidityPairingToggled(bool enabled);
-    event TStakeReceived(address sender, uint256 amount);
-    event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
+    event TreasuryContractUpdated(address newTreasury);
     event RevenueForwardedToTreasury(address token, uint256 amount, string source);
     event TreasuryAllocationCreated(address token, uint256 amount, uint256 releaseTime);
+    event LiquidityPairingToggled(bool enabled);
+    event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
+    event TStakeReceived(address sender, uint256 amount);
     event QuoterUpdated(address newQuoter);
+    event SecondaryQuoterUpdated(address newSecondaryQuoter);
+    event ChainlinkPriceFeedUpdated(address newPriceFeed);
     event FallbackPriceUpdated(uint256 price, uint256 timestamp);
     event QuoterFailure(string reason, uint256 amount, uint256 timestamp, address quoter);
-    event SlippageApplied(uint256 originalAmount, uint256 slippageAmount, uint256 finalAmount, uint256 adjustedSlippage);
+    event SlippageApplied(uint256 originalAmount, uint256 slippageAmount, uint256 finalAmount, uint256 adjustedSlippagePercentage);
     event FeeTransferred(string category, uint256 amount);
     event UsdcWithdrawn(address indexed recipient, uint256 tStakeAmount, uint256 usdcAmount, uint256 slippageApplied, address quoterUsed);
     event VolatilityUpdated(uint256 volatilityIndex);
-    
+    event SlippageConfigUpdated(uint256 baseSlippage, uint256 maxSlippage, uint256 minSlippage, uint256 volatilityWindow);
+    event FeeProcessed(uint256 totalAmount, uint8 feeType, uint256 buybackAmount, uint256 liquidityAmount, uint256 treasuryAmount);
+    event LiquiditySkippedDueToBalance(uint256 liquidityAmount, uint256 tStakeRequired, uint256 tStakeAvailable);
+
     // -------------------------------------------
     //  View Functions
     // -------------------------------------------
@@ -80,9 +78,8 @@ interface ITerraStakeTreasuryManager {
     function treasuryWallet() external view returns (address);
     function liquidityPairingEnabled() external view returns (bool);
     
-    function estimateMinimumTStakeOutput(uint256 usdcAmount, uint256 slippagePercentage) 
-        external returns (uint256);
-        
+    function estimateMinimumTStakeOutput(uint256 usdcAmount, uint256 slippagePercentage) external returns (uint256);
+    function estimateMinimumUsdcOutput(uint256 tStakeAmount, uint256 slippagePercentage) external returns (uint256);
     function estimateTStakeForLiquidity(uint256 usdcAmount) external returns (uint256);
     
     function getFallbackPriceInfo() external view returns (uint256 price, uint256 timestamp, uint256 age);
@@ -105,12 +102,19 @@ interface ITerraStakeTreasuryManager {
         address _usdcToken,
         address _uniswapRouter,
         address _uniswapQuoter,
+        address _secondaryQuoter,
+        address _chainlinkPriceFeed,
         address _initialAdmin,
         address _treasuryWallet,
         address _treasury
     ) external;
     
-    function updateFeeStructure(FeeStructure calldata newFeeStructure) external;
+    function updateBuybackPercentage(uint256 newPercentage) external;
+    function updateLiquidityPairingPercentage(uint256 newPercentage) external;
+    function updateBurnPercentage(uint256 newPercentage) external;
+    function updateTreasuryPercentage(uint256 newPercentage) external;
+    function updateProjectSubmissionFee(uint256 newFee) external;
+    function updateImpactReportingFee(uint256 newFee) external;
     
     function performBuyback(uint256 usdcAmount, uint256 minTStakeAmount) external returns (uint256);
     
@@ -122,6 +126,8 @@ interface ITerraStakeTreasuryManager {
     
     function updateTreasuryWallet(address newTreasuryWallet) external;
     
+    function updateTreasury(address _newTreasury) external;
+    
     function toggleLiquidityPairing(bool enabled) external;
     
     function emergencyRecoverTokens(address token, uint256 amount, address recipient) external;
@@ -130,9 +136,17 @@ interface ITerraStakeTreasuryManager {
     
     function updateUniswapRouter(address _newRouter) external;
     
+    function updateUniswapQuoter(address _newQuoter) external;
+    
+    function updateSecondaryQuoter(address _newSecondaryQuoter) external;
+    
+    function updateChainlinkPriceFeed(address _newPriceFeed) external;
+    
     function updateLiquidityGuard(address _newLiquidityGuard) external;
     
     function updateFeeUpdateCooldown(uint256 _newCooldown) external;
+    
+    function updateSlippageConfig(SlippageConfig calldata newConfig) external;
     
     function processFees(uint256 amount, uint8 feeType) external;
     
@@ -147,4 +161,6 @@ interface ITerraStakeTreasuryManager {
     function withdrawUsdcEquivalent(uint256 tStakeAmount, uint256 minUsdcAmount, address recipient) external returns (uint256);
     
     function updateFallbackPrice(uint256 _tStakePerUsdc) external;
+    
+    function emergencyAdjustFee(uint8 feeType, uint256 newValue) external;
 }
