@@ -18,6 +18,7 @@ import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeNeural.sol";
 import "../interfaces/IAIEngine.sol";
 import "../interfaces/ITerraStakeITO.sol";
+import "../interfaces/ITerraStakeToken.sol";
 
 /**
  * @title TerraStakeToken
