@@ -12,8 +12,8 @@ import "../interfaces/ITerraStakeAccessControl.sol";
 
 /**
  * @title TerraStakeAccessControl
- * @notice Centralized Role-Based Access Control for TerraStake
- * @dev Implements hierarchical permissioning, role time-locks, and governance-controlled security measures.
+ * @notice Optimized Role-Based Access Control for TerraStake on Arbitrum
+ * @dev Implements hierarchical permissioning with WTSTK and WBTC support
  */
 contract TerraStakeAccessControl is
     ITerraStakeAccessControl,
@@ -26,42 +26,39 @@ contract TerraStakeAccessControl is
     // ====================================================
     //  Constants
     // ====================================================
-    // Maximum role duration set to 100 years to prevent timestamp overflow
     uint256 private constant MAX_ROLE_DURATION = 100 * 365 days;
     
     // ====================================================
     //  State Variables
     // ====================================================
-    IERC20 private _tStakeToken;
-    IERC20 private _usdc;
-    IERC20 private _weth;
-    AggregatorV3Interface private _priceFeed;
+    IERC20 public immutable tStakeToken;
+    IERC20 public immutable usdc;
+    IERC20 public immutable weth;
+    IERC20 public immutable wtstk;  // Wrapped Terra Stake Token
+    IERC20 public immutable wbtc;   // Wrapped Bitcoin
+    AggregatorV3Interface public priceFeed;
     
-    // Role definitions (Optimized for Gas Efficiency)
-    bytes32 public constant override MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant override GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant override EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
-    bytes32 public constant override LIQUIDITY_MANAGER_ROLE = keccak256("LIQUIDITY_MANAGER_ROLE");
-    bytes32 public constant override VESTING_MANAGER_ROLE = keccak256("VESTING_MANAGER_ROLE");
-    bytes32 public constant override UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant override PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    bytes32 public constant override MULTISIG_ADMIN_ROLE = keccak256("MULTISIG_ADMIN_ROLE");
-    bytes32 public constant override REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
-    bytes32 public constant override DISTRIBUTION_ROLE = keccak256("DISTRIBUTION_ROLE");
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
+    bytes32 public constant LIQUIDITY_MANAGER_ROLE = keccak256("LIQUIDITY_MANAGER_ROLE");
+    bytes32 public constant VESTING_MANAGER_ROLE = keccak256("VESTING_MANAGER_ROLE");
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 public constant MULTISIG_ADMIN_ROLE = keccak256("MULTISIG_ADMIN_ROLE");
+    bytes32 public constant REWARD_MANAGER_ROLE = keccak256("REWARD_MANAGER_ROLE");
+    bytes32 public constant DISTRIBUTION_ROLE = keccak256("DISTRIBUTION_ROLE");
     
-    // Price and liquidity constraints
-    uint256 private _minimumLiquidity;
-    uint256 private _minimumPrice;
-    uint256 private _maximumPrice;
-    uint256 private _maxOracleDataAge;
+    uint256 public minimumLiquidity;
+    uint256 public minimumPrice;
+    uint256 public maximumPrice;
+    uint256 public maxOracleDataAge;
     
-    // Role configuration mappings
-    mapping(bytes32 => uint256) private _roleRequirements;
-    mapping(bytes32 => mapping(address => uint256)) private _roleExpirations;
-    mapping(bytes32 => bytes32) private _roleHierarchy;
-    
-    // Role hierarchy documentation
-    mapping(bytes32 => RoleInfo) private _roleInfo;
+    mapping(bytes32 => uint256) private roleRequirements;
+    mapping(bytes32 => mapping(address => uint256)) private roleExpirations;
+    mapping(bytes32 => bytes32) private roleHierarchy;
+    mapping(bytes32 => RoleInfo) private roleInfo;
+    mapping(bytes32 => IERC20) private roleRequirementToken;
     
     // ====================================================
     //  Errors
@@ -83,7 +80,6 @@ contract TerraStakeAccessControl is
     // ====================================================
     //  Constructor & Initializer
     // ====================================================
-    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
@@ -93,37 +89,49 @@ contract TerraStakeAccessControl is
         address priceOracle,
         address usdcToken,
         address wethToken,
-        address __tStakeToken,
-        uint256 minimumLiquidity,
-        uint256 minimumPrice,
-        uint256 maximumPrice,
-        uint256 __maxOracleDataAge
+        address _tStakeToken,
+        address _wtstkToken,
+        address _wbtcToken,
+        uint256 _minimumLiquidity,
+        uint256 _minimumPrice,
+        uint256 _maximumPrice,
+        uint256 _maxOracleDataAge
     ) external initializer {
-        if (admin == address(0) || __tStakeToken == address(0) || 
+        if (admin == address(0) || _tStakeToken == address(0) || 
             priceOracle == address(0) || usdcToken == address(0) || 
-            wethToken == address(0)) revert InvalidAddress();
+            wethToken == address(0) || _wtstkToken == address(0) || 
+            _wbtcToken == address(0)) revert InvalidAddress();
             
         __AccessControl_init();
         __ReentrancyGuard_init();
         __Pausable_init();
         __UUPSUpgradeable_init();
         
-        _tStakeToken = IERC20(__tStakeToken);
-        _usdc = IERC20(usdcToken);
-        _weth = IERC20(wethToken);
-        _priceFeed = AggregatorV3Interface(priceOracle);
-        _minimumLiquidity = minimumLiquidity;
-        _minimumPrice = minimumPrice;
-        _maximumPrice = maximumPrice;
-        _maxOracleDataAge = __maxOracleDataAge;
+        tStakeToken = IERC20(_tStakeToken);
+        usdc = IERC20(usdcToken);
+        weth = IERC20(wethToken);
+        wtstk = IERC20(_wtstkToken);
+        wbtc = IERC20(_wbtcToken);
+        priceFeed = AggregatorV3Interface(priceOracle);
+        minimumLiquidity = _minimumLiquidity;
+        minimumPrice = _minimumPrice;
+        maximumPrice = _maximumPrice;
+        maxOracleDataAge = _maxOracleDataAge;
         
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        
+        roleRequirementToken[MINTER_ROLE] = tStakeToken;
+        roleRequirementToken[GOVERNANCE_ROLE] = tStakeToken;
+        roleRequirementToken[EMERGENCY_ROLE] = tStakeToken;
+        roleRequirementToken[LIQUIDITY_MANAGER_ROLE] = tStakeToken;
+        roleRequirementToken[VESTING_MANAGER_ROLE] = tStakeToken;
+        roleRequirementToken[UPGRADER_ROLE] = tStakeToken;
+        roleRequirementToken[PAUSER_ROLE] = tStakeToken;
+        roleRequirementToken[MULTISIG_ADMIN_ROLE] = tStakeToken;
+        roleRequirementToken[REWARD_MANAGER_ROLE] = tStakeToken;
+        roleRequirementToken[DISTRIBUTION_ROLE] = tStakeToken;
     }
 
-        /**
-     * @dev Required function for UUPS upgradeable contracts
-     * @param newImplementation Address of the new implementation
-     */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     // ====================================================
@@ -138,36 +146,30 @@ contract TerraStakeAccessControl is
         if (duration == 0) revert InvalidDuration();
         if (duration > MAX_ROLE_DURATION) revert DurationTooLong(duration, MAX_ROLE_DURATION);
         
-        // Check if account already has this role
+        uint256 expiration = block.timestamp + duration;
         if (hasRole(role, account)) {
-            // Update expiration time instead of granting again
-            _roleExpirations[role][account] = block.timestamp + duration;
-            emit RoleGrantedWithExpiration(role, account, block.timestamp + duration);
+            roleExpirations[role][account] = expiration;
+            emit RoleGrantedWithExpiration(role, account, expiration);
             return;
         }
         
-        // Token requirement validation
-        if (_roleRequirements[role] > 0) {
-            uint256 requiredBalance = _roleRequirements[role];
-            uint256 currentBalance = _tStakeToken.balanceOf(account);
-            if (currentBalance < requiredBalance) {
-                revert InsufficientTStakeBalance(account, requiredBalance);
+        uint256 required = roleRequirements[role];
+        if (required > 0) {
+            IERC20 token = roleRequirementToken[role];
+            if (token == IERC20(address(0))) token = tStakeToken;
+            if (token.balanceOf(account) < required) {
+                revert InsufficientTStakeBalance(account, required);
             }
         }
         
-        // Hierarchy validation
-        bytes32 parentRole = _roleHierarchy[role];
-        if (parentRole != bytes32(0) && !hasRole(parentRole, account)) {
-            revert InvalidHierarchy(role, parentRole);
+        bytes32 parent = roleHierarchy[role];
+        if (parent != bytes32(0) && !hasRole(parent, account)) {
+            revert InvalidHierarchy(role, parent);
         }
         
-        // Set expiration
-        _roleExpirations[role][account] = block.timestamp + duration;
-        
-        // Grant role
+        roleExpirations[role][account] = expiration;
         _grantRole(role, account);
-        
-        emit RoleGrantedWithExpiration(role, account, block.timestamp + duration);
+        emit RoleGrantedWithExpiration(role, account, expiration);
     }
     
     function grantRoleBatch(
@@ -179,58 +181,47 @@ contract TerraStakeAccessControl is
         if (account == address(0)) revert InvalidAddress();
         
         for (uint256 i = 0; i < roles.length; i++) {
-            // Call internal version to avoid repeated access control checks
-            _grantRoleWithExpiration(roles[i], account, durations[i]);
-        }
-    }
-    
-    // Internal helper function for batch operations
-    function _grantRoleWithExpiration(bytes32 role, address account, uint256 duration) internal {
-        if (duration == 0) revert InvalidDuration();
-        if (duration > MAX_ROLE_DURATION) revert DurationTooLong(duration, MAX_ROLE_DURATION);
-        
-        // Check if account already has this role
-        if (hasRole(role, account)) {
-            // Update expiration time instead of granting again
-            _roleExpirations[role][account] = block.timestamp + duration;
-            emit RoleGrantedWithExpiration(role, account, block.timestamp + duration);
-            return;
-        }
-        
-        // Token requirement validation
-        if (_roleRequirements[role] > 0) {
-            uint256 requiredBalance = _roleRequirements[role];
-            uint256 currentBalance = _tStakeToken.balanceOf(account);
-            if (currentBalance < requiredBalance) {
-                revert InsufficientTStakeBalance(account, requiredBalance);
+            bytes32 role = roles[i];
+            uint256 duration = durations[i];
+            if (duration == 0) revert InvalidDuration();
+            if (duration > MAX_ROLE_DURATION) revert DurationTooLong(duration, MAX_ROLE_DURATION);
+            
+            uint256 expiration = block.timestamp + duration;
+            if (hasRole(role, account)) {
+                roleExpirations[role][account] = expiration;
+                emit RoleGrantedWithExpiration(role, account, expiration);
+                continue;
             }
+            
+            uint256 required = roleRequirements[role];
+            if (required > 0) {
+                IERC20 token = roleRequirementToken[role];
+                if (token == IERC20(address(0))) token = tStakeToken;
+                if (token.balanceOf(account) < required) {
+                    revert InsufficientTStakeBalance(account, required);
+                }
+            }
+            
+            bytes32 parent = roleHierarchy[role];
+            if (parent != bytes32(0) && !hasRole(parent, account)) {
+                revert InvalidHierarchy(role, parent);
+            }
+            
+            roleExpirations[role][account] = expiration;
+            _grantRole(role, account);
+            emit RoleGrantedWithExpiration(role, account, expiration);
         }
-        
-        // Hierarchy validation
-        bytes32 parentRole = _roleHierarchy[role];
-        if (parentRole != bytes32(0) && !hasRole(parentRole, account)) {
-            revert InvalidHierarchy(role, parentRole);
-        }
-        
-        // Set expiration
-        _roleExpirations[role][account] = block.timestamp + duration;
-        
-        // Grant role
-        _grantRole(role, account);
-        
-        emit RoleGrantedWithExpiration(role, account, block.timestamp + duration);
     }
     
     function setRoleRequirement(
         bytes32 role, 
         uint256 requirement
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
-        uint256 oldRequirement = _roleRequirements[role];
-        _roleRequirements[role] = requirement;
+        uint256 oldRequirement = roleRequirements[role];
+        roleRequirements[role] = requirement;
         
-        // Update the role info documentation as well
-        if (_roleInfo[role].id == role) {
-            _roleInfo[role].requirement = requirement;
+        if (roleInfo[role].id == role) {
+            roleInfo[role].requirement = requirement;
         }
         
         emit RoleRequirementUpdated(role, oldRequirement, requirement);
@@ -240,18 +231,34 @@ contract TerraStakeAccessControl is
         bytes32 role, 
         address account
     ) public override(ITerraStakeAccessControl, AccessControlUpgradeable) onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant whenNotPaused {
-        // For consistency, we'll use a standard duration of 1 year
         uint256 standardDuration = 365 days;
         
-        // For consistency, we'll update the expiration if the role is already granted
         if (hasRole(role, account)) {
-            _roleExpirations[role][account] = block.timestamp + standardDuration;
+            roleExpirations[role][account] = block.timestamp + standardDuration;
             emit RoleGrantedWithExpiration(role, account, block.timestamp + standardDuration);
             return;
         }
         
-        // Default to a year if granting without expiration
-        _grantRoleWithExpiration(role, account, standardDuration);
+        if (account == address(0)) revert InvalidAddress();
+        if (standardDuration > MAX_ROLE_DURATION) revert DurationTooLong(standardDuration, MAX_ROLE_DURATION);
+        
+        uint256 required = roleRequirements[role];
+        if (required > 0) {
+            IERC20 token = roleRequirementToken[role];
+            if (token == IERC20(address(0))) token = tStakeToken;
+            if (token.balanceOf(account) < required) {
+                revert InsufficientTStakeBalance(account, required);
+            }
+        }
+        
+        bytes32 parent = roleHierarchy[role];
+        if (parent != bytes32(0) && !hasRole(parent, account)) {
+            revert InvalidHierarchy(role, parent);
+        }
+        
+        roleExpirations[role][account] = block.timestamp + standardDuration;
+        _grantRole(role, account);
+        emit RoleGrantedWithExpiration(role, account, block.timestamp + standardDuration);
     }
     
     function revokeRole(
@@ -261,70 +268,49 @@ contract TerraStakeAccessControl is
         if (!hasRole(role, account)) revert RoleNotAssigned(role, account);
         
         _revokeRole(role, account);
-        _roleExpirations[role][account] = 0;
-                emit RoleRevoked(role, account);
+        roleExpirations[role][account] = 0;
+        emit RoleRevoked(role, account);
     }
-    /**
-     * @notice Allows users to renounce their own roles
-     * @dev Does not require admin permission since users are giving up privileges
-     * @param role The role to renounce
-     */
+    
     function renounceOwnRole(bytes32 role) external nonReentrant {
         if (!hasRole(role, msg.sender)) revert RoleNotAssigned(role, msg.sender);
         
         _revokeRole(role, msg.sender);
-        _roleExpirations[role][msg.sender] = 0;
-        
+        roleExpirations[role][msg.sender] = 0;
         emit RoleRenounced(role, msg.sender);
     }
-    /**
-     * @notice Checks if a role is expired and automatically revokes it if needed
-     * @param role The role to check
-     * @param account The address to check
-     */
+    
     function checkAndHandleExpiredRole(bytes32 role, address account) external override nonReentrant {
         if (!hasRole(role, account)) revert RoleNotAssigned(role, account);
         
-        uint256 expiration = _roleExpirations[role][account];
-        
-        // If the role has an expiration and it's in the past, revoke it
+        uint256 expiration = roleExpirations[role][account];
         if (expiration != 0 && block.timestamp > expiration) {
             _revokeRole(role, account);
-            _roleExpirations[role][account] = 0;
-            
+            roleExpirations[role][account] = 0;
             emit RoleRevoked(role, account);
         }
     }
+    
     // ====================================================
     //  Role Documentation Functions
     // ====================================================
-    
-    /**
-     * @notice Documents a role with its description and relationship
-     * @param role The role to document
-     * @param description Human-readable description of the role's purpose
-     */
     function documentRole(
         bytes32 role,
         string calldata description
     ) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        _roleInfo[role] = RoleInfo({
+        roleInfo[role] = RoleInfo({
             id: role,
-            parent: _roleHierarchy[role],
+            parent: roleHierarchy[role],
             description: description,
-            requirement: _roleRequirements[role]
+            requirement: roleRequirements[role]
         });
-        
         emit RoleDocumented(role, description);
     }
-    /**
-     * @notice Get detailed information about a role
-     * @param role The role to query
-     * @return Role information including hierarchy and description
-     */
+    
     function getRoleInfo(bytes32 role) external view returns (RoleInfo memory) {
-        return _roleInfo[role];
+        return roleInfo[role];
     }
+    
     // ====================================================
     //  Oracle and Configuration Updates
     // ====================================================
@@ -333,16 +319,14 @@ contract TerraStakeAccessControl is
     ) external override onlyRole(GOVERNANCE_ROLE) nonReentrant {
         if (newOracle == address(0)) revert InvalidAddress();
         
-        address oldOracle = address(_priceFeed);
-        _priceFeed = AggregatorV3Interface(newOracle);
-        
+        address oldOracle = address(priceFeed);
+        priceFeed = AggregatorV3Interface(newOracle);
         emit OracleUpdated(oldOracle, newOracle);
     }
     
     function updateLiquidityThreshold(uint256 newThreshold) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        uint256 oldThreshold = _minimumLiquidity;
-        _minimumLiquidity = newThreshold;
-        
+        uint256 oldThreshold = minimumLiquidity;
+        minimumLiquidity = newThreshold;
         emit LiquidityThresholdUpdated(oldThreshold, newThreshold);
     }
     
@@ -352,11 +336,10 @@ contract TerraStakeAccessControl is
     ) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
         if (newMinPrice >= newMaxPrice) revert InvalidParameters();
         
-        uint256 oldMinPrice = _minimumPrice;
-        uint256 oldMaxPrice = _maximumPrice;
-        _minimumPrice = newMinPrice;
-        _maximumPrice = newMaxPrice;
-        
+        uint256 oldMinPrice = minimumPrice;
+        uint256 oldMaxPrice = maximumPrice;
+        minimumPrice = newMinPrice;
+        maximumPrice = newMaxPrice;
         emit PriceBoundsUpdated(oldMinPrice, oldMaxPrice, newMinPrice, newMaxPrice);
     }
     
@@ -364,48 +347,31 @@ contract TerraStakeAccessControl is
         bytes32 role,
         bytes32 parentRole
     ) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        _roleHierarchy[role] = parentRole;
+        roleHierarchy[role] = parentRole;
         
-        // Update the role info documentation as well
-        if (_roleInfo[role].id == role) {
-            _roleInfo[role].parent = parentRole;
+        if (roleInfo[role].id == role) {
+            roleInfo[role].parent = parentRole;
         }
-        
         emit RoleHierarchyUpdated(role, parentRole);
     }
-    /**
-     * @notice Set the maximum allowed age for oracle data
-     * @param maxAgeInSeconds Maximum age in seconds for oracle data to be considered valid
-     */
+    
     function setMaxOracleDataAge(uint256 maxAgeInSeconds) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        uint256 oldAge = _maxOracleDataAge;
-        _maxOracleDataAge = maxAgeInSeconds;
-        
+        uint256 oldAge = maxOracleDataAge;
+        maxOracleDataAge = maxAgeInSeconds;
         emit OracleDataAgeUpdated(oldAge, maxAgeInSeconds);
     }
-    /**
-     * @notice Update token configuration for the system
-     * @param token The token address to configure
-     * @param tokenType The type identifier for the token (e.g. "staking", "reward", "governance")
-     */
-    function updateTokenConfiguration(address token, string calldata tokenType) external override onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        if (token == address(0)) revert InvalidAddress();
-        
-        // Determine which token to update based on the type
-        bytes32 tokenTypeHash = keccak256(abi.encodePacked(tokenType));
-        
-        if (tokenTypeHash == keccak256(abi.encodePacked("staking"))) {
-            _tStakeToken = IERC20(token);
-        } else if (tokenTypeHash == keccak256(abi.encodePacked("usdc"))) {
-            _usdc = IERC20(token);
-        } else if (tokenTypeHash == keccak256(abi.encodePacked("weth"))) {
-            _weth = IERC20(token);
-        } else {
-            revert InvalidParameters();
-        }
-        
-        emit TokenConfigurationUpdated(token, tokenType);
+    
+    function setRoleRequirementToken(
+        bytes32 role,
+        address token
+    ) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+        if (token != address(tStakeToken) && token != address(usdc) && 
+            token != address(weth) && token != address(wtstk) && 
+            token != address(wbtc)) revert InvalidAddress();
+        roleRequirementToken[role] = IERC20(token);
+        emit TokenConfigurationUpdated(token, "roleRequirement");
     }
+    
     // ====================================================
     //  Pausing Functions
     // ====================================================
@@ -416,6 +382,7 @@ contract TerraStakeAccessControl is
     function unpause() external override onlyRole(GOVERNANCE_ROLE) nonReentrant {
         _unpause();
     }
+    
     // ====================================================
     //  Validation Functions
     // ====================================================
@@ -423,7 +390,9 @@ contract TerraStakeAccessControl is
         address account,
         uint256 requiredBalance
     ) external view override {
-        if (_tStakeToken.balanceOf(account) < requiredBalance) {
+        IERC20 token = roleRequirementToken[DEFAULT_ADMIN_ROLE]; // Example: use admin role’s token
+        if (token == IERC20(address(0))) token = tStakeToken;
+        if (token.balanceOf(account) < requiredBalance) {
             revert InsufficientTStakeBalance(account, requiredBalance);
         }
     }
@@ -431,16 +400,15 @@ contract TerraStakeAccessControl is
     function validateWithOracle(
         uint256 expectedPrice
     ) external view override {
-        (, int256 price, , ,) = _priceFeed.latestRoundData();
+        (, int256 price, , ,) = priceFeed.latestRoundData();
         
         if (price <= 0) revert OracleValidationFailed();
         
         uint256 priceUint = uint256(price);
-        if (priceUint < _minimumPrice || priceUint > _maximumPrice) {
-            revert PriceOutOfBounds(priceUint, _minimumPrice, _maximumPrice);
+        if (priceUint < minimumPrice || priceUint > maximumPrice) {
+            revert PriceOutOfBounds(priceUint, minimumPrice, maximumPrice);
         }
         
-        // Allow 5% deviation
         uint256 lowerBound = expectedPrice * 95 / 100;
         uint256 upperBound = expectedPrice * 105 / 100;
         
@@ -448,27 +416,22 @@ contract TerraStakeAccessControl is
             revert PriceOutOfBounds(priceUint, lowerBound, upperBound);
         }
     }
-    /**
-     * @notice Enhanced oracle validation with timestamp and round checks
-     * @param expectedPrice The expected price for validation
-     */
+    
     function validateWithOracleAndTimestamp(
         uint256 expectedPrice
     ) external view override {
         (
             uint80 roundId,
             int256 price,
-            uint256 startedAt,
+            ,
             uint256 updatedAt,
             uint80 answeredInRound
-        ) = _priceFeed.latestRoundData();
+        ) = priceFeed.latestRoundData();
         
-        // Validate data freshness
-        if (_maxOracleDataAge > 0 && block.timestamp - updatedAt > _maxOracleDataAge) {
+        if (maxOracleDataAge > 0 && block.timestamp - updatedAt > maxOracleDataAge) {
             revert StaleOracleData(updatedAt, block.timestamp);
         }
         
-        // Validate round consistency
         if (answeredInRound < roundId) {
             revert InvalidOracleRound(answeredInRound, roundId);
         }
@@ -476,11 +439,10 @@ contract TerraStakeAccessControl is
         if (price <= 0) revert OracleValidationFailed();
         
         uint256 priceUint = uint256(price);
-        if (priceUint < _minimumPrice || priceUint > _maximumPrice) {
-            revert PriceOutOfBounds(priceUint, _minimumPrice, _maximumPrice);
+        if (priceUint < minimumPrice || priceUint > maximumPrice) {
+            revert PriceOutOfBounds(priceUint, minimumPrice, maximumPrice);
         }
         
-        // Allow 5% deviation
         uint256 lowerBound = expectedPrice * 95 / 100;
         uint256 upperBound = expectedPrice * 105 / 100;
         
@@ -490,36 +452,46 @@ contract TerraStakeAccessControl is
     }
     
     function validateLiquidityThreshold() external view override {
-        uint256 totalLiquidity = _tStakeToken.balanceOf(address(this));
-        if (totalLiquidity < _minimumLiquidity) {
+        uint256 totalLiquidity = tStakeToken.balanceOf(address(this)) + 
+                                wtstk.balanceOf(address(this)); // Include WTSTK
+        if (totalLiquidity < minimumLiquidity) {
             revert LiquidityThresholdNotMet();
         }
     }
+    
     // ====================================================
     //  View Functions
     // ====================================================
     function roleRequirements(bytes32 role) external view override returns (uint256) {
-        return _roleRequirements[role];
+        return roleRequirements[role];
     }
     
     function roleExpirations(bytes32 role, address account) external view override returns (uint256) {
-        return _roleExpirations[role][account];
+        return roleExpirations[role][account];
     }
     
     function priceFeed() external view override returns (AggregatorV3Interface) {
-        return _priceFeed;
+        return priceFeed;
     }
     
     function usdc() external view override returns (IERC20) {
-        return _usdc;
+        return usdc;
     }
     
     function weth() external view override returns (IERC20) {
-        return _weth;
+        return weth;
     }
     
     function tStakeToken() external view override returns (IERC20) {
-        return _tStakeToken;
+        return tStakeToken;
+    }
+    
+    function wtstk() external view returns (IERC20) {
+        return wtstk;
+    }
+    
+    function wbtc() external view returns (IERC20) {
+        return wbtc;
     }
     
     function hasValidRole(bytes32 role, address account) external view override returns (bool) {
@@ -529,31 +501,22 @@ contract TerraStakeAccessControl is
     function isActiveRole(bytes32 role, address account) public view override returns (bool) {
         if (!hasRole(role, account)) return false;
         
-        uint256 expiration = _roleExpirations[role][account];
+        uint256 expiration = roleExpirations[role][account];
         if (expiration != 0 && block.timestamp > expiration) {
             return false;
         }
-        
         return true;
     }
     
     function getRoleHierarchy(bytes32 role) external view override returns (bytes32) {
-        return _roleHierarchy[role];
-    }
-    /**
-     * @notice Returns the maximum allowed age for oracle data
-     * @return Maximum age in seconds
-     */
-    function maxOracleDataAge() external view override returns (uint256) {
-        return _maxOracleDataAge;
+        return roleHierarchy[role];
     }
     
-    /**
-     * @notice Returns the maximum allowed role duration
-     * @return Maximum role duration in seconds
-     */
+    function maxOracleDataAge() external view override returns (uint256) {
+        return maxOracleDataAge;
+    }
+    
     function getMaxRoleDuration() external pure returns (uint256) {
         return MAX_ROLE_DURATION;
     }
-} // End of contract TerraStakeAccessControl
-
+}
