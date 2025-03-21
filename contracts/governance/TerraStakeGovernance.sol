@@ -1037,6 +1037,39 @@ contract TerraStakeGovernance is
         // Emit an event to log the halving action
         emit HalvingInitiated(halvingEpoch);
     }
+
+    function recordVote(uint256 proposalId, bool support, string calldata reason) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+
+        // Validate proposal existence and voting period
+        require(proposal.voteStart > 0, "Proposal does not exist");
+        require(block.timestamp >= proposal.voteStart && block.timestamp <= proposal.voteEnd, "Not in voting period");
+
+        // Validate voter eligibility
+        address voter = msg.sender;
+        require(!proposal.hasVoted[voter], "Already voted");
+
+        // Use snapshot balance if supported
+        uint256 voterBalance = tStakeToken.getPastVotes(voter, proposal.voteStart);
+        require(voterBalance >= minimumHolding, "Insufficient token balance to vote");
+
+        // Record the vote
+        if (support) {
+            proposal.forVotes += voterBalance;
+        } else {
+            proposal.againstVotes += voterBalance;
+        }
+
+        // Mark voter as having voted
+        proposal.hasVoted[voter] = true;
+        totalVotesCast++;
+
+        // Emit separate event only if reason is provided
+        if (bytes(reason).length > 0) {
+            require(bytes(reason).length <= 256, "Reason too long");
+            emit VoteReason(proposalId, voter, reason);
+        }
+    }
     
     /**
      * @notice Update validator reward rate

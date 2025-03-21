@@ -91,6 +91,11 @@ interface ITerraStakeGovernance {
     event ProposalQueued(uint256 indexed proposalId, uint256 queueTime);
     event ProposalExecuted(uint256 indexed proposalId);
     
+    event VoteReason(
+        uint256 indexed proposalId,
+        address indexed voter,
+        string reason
+    );
     event VoteCast(
         uint256 indexed proposalId,
         address indexed voter,
@@ -204,6 +209,7 @@ interface ITerraStakeGovernance {
     function latestProposalIds(address proposer) external view returns (uint256);
 
     function applyHalving() external;
+    function recordVote(uint256 proposalId, bool support, string calldata reason) external;
 
     // -------------------------------------------
     //  Proposal Creation and Management
