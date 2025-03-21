@@ -8,6 +8,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/IQuoter.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeTreasuryManager.sol";
 import "../interfaces/ITerraStakeToken.sol";
@@ -61,6 +62,8 @@ contract TerraStakeTreasuryManager is
     ITerraStakeLiquidityGuard public liquidityGuard;
     ISwapRouter public uniswapRouter;
     IQuoter public uniswapQuoter;
+    IQuoter public secondaryQuoter;
+    AggregatorV3Interface public chainlinkPriceFeed;
     IERC20 public tStakeToken;
     IERC20 public usdcToken;
     ITerraStakeTreasury public treasury;
@@ -83,6 +86,11 @@ contract TerraStakeTreasuryManager is
     uint256 public quoterFailureCount;
     uint256 public lastSuccessfulQuoteTimestamp;
     
+    SlippageConfig public slippageConfig;
+    uint256[] public priceHistory;
+    uint256[] public priceTimestamps;
+    uint256 public volatilityIndex;
+
     // -------------------------------------------
     //  Initializer & Upgrade Control
     // -------------------------------------------
@@ -99,6 +107,8 @@ contract TerraStakeTreasuryManager is
      * @param _usdcToken Address of the USDC token
      * @param _uniswapRouter Address of the Uniswap V3 router
      * @param _uniswapQuoter Address of the Uniswap V3 quoter
+     * @param _secondaryQuoter Address of the secondary quoter
+     * @param _chainlinkPriceFeed Address of the Chainlink price feed
      * @param _initialAdmin Initial admin address
      * @param _treasuryWallet Address of the treasury wallet
      * @param _treasury Address of the treasury contract
@@ -109,6 +119,8 @@ contract TerraStakeTreasuryManager is
         address _usdcToken,
         address _uniswapRouter,
         address _uniswapQuoter,
+        address _secondaryQuoter,
+        address _chainlinkPriceFeed,
         address _initialAdmin,
         address _treasuryWallet,
         address _treasury
@@ -129,6 +141,8 @@ contract TerraStakeTreasuryManager is
         usdcToken = IERC20(_usdcToken);
         uniswapRouter = ISwapRouter(_uniswapRouter);
         uniswapQuoter = IQuoter(_uniswapQuoter);
+        secondaryQuoter = IQuoter(_secondaryQuoter);
+        chainlinkPriceFeed = AggregatorV3Interface(_chainlinkPriceFeed);
         treasuryWallet = _treasuryWallet;
         treasury = ITerraStakeTreasury(_treasury);
         
@@ -152,6 +166,13 @@ contract TerraStakeTreasuryManager is
         // With PRICE_PRECISION = 1e18, this means 0.1 * 1e18 = 1e17
         fallbackTStakePerUsdc = 1e17;
         fallbackPriceTimestamp = block.timestamp;
+
+        slippageConfig = SlippageConfig({
+            baseSlippage: DEFAULT_SLIPPAGE,
+            maxSlippage: 20,
+            minSlippage: 1,
+            volatilityWindow: 1 days
+        });
     }
     
     /**
@@ -164,6 +185,42 @@ contract TerraStakeTreasuryManager is
     //  Treasury Management Functions
     // -------------------------------------------
     
+    function updateBuybackPercentage(uint256 newPercentage) external onlyRole(GOVERNANCE_ROLE) {
+        _updateFeePercentage("buyback", newPercentage);
+        currentFeeStructure.buybackPercentage = newPercentage;
+        emit FeePercentageUpdated("Buyback", newPercentage);
+    }
+
+    function updateLiquidityPairingPercentage(uint256 newPercentage) external onlyRole(GOVERNANCE_ROLE) {
+        _updateFeePercentage("liquidityPairing", newPercentage);
+        currentFeeStructure.liquidityPairingPercentage = newPercentage;
+        emit FeePercentageUpdated("LiquidityPairing", newPercentage);
+    }
+
+    function updateBurnPercentage(uint256 newPercentage) external onlyRole(GOVERNANCE_ROLE) {
+        _updateFeePercentage("burn", newPercentage);
+        currentFeeStructure.burnPercentage = newPercentage;
+        emit FeePercentageUpdated("Burn", newPercentage);
+    }
+
+    function updateTreasuryPercentage(uint256 newPercentage) external onlyRole(GOVERNANCE_ROLE) {
+        _updateFeePercentage("treasury", newPercentage);
+        currentFeeStructure.treasuryPercentage = newPercentage;
+        emit FeePercentageUpdated("Treasury", newPercentage);
+    }
+
+    function updateProjectSubmissionFee(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
+        if (newFee == 0) revert InvalidAmount();
+        currentFeeStructure.projectSubmissionFee = newFee;
+        emit FeePercentageUpdated("ProjectSubmissionFee", newFee);
+    }
+
+    function updateImpactReportingFee(uint256 newFee) external onlyRole(GOVERNANCE_ROLE) {
+        if (newFee == 0) revert InvalidAmount();
+        currentFeeStructure.impactReportingFee = newFee;
+        emit FeePercentageUpdated("ImpactReportingFee", newFee);
+    }
+
     /**
      * @notice Update fee structure
      * @param newFeeStructure The new fee structure to set
@@ -199,7 +256,7 @@ contract TerraStakeTreasuryManager is
      * @param usdcAmount Amount of USDC to use for buyback
      * @param minTStakeAmount Minimum amount of TSTAKE to receive
      */
-    function performBuyback(uint256 usdcAmount, uint256 minTStakeAmount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+    function performBuyback(uint256 usdcAmount, uint256 minTStakeAmount) public onlyRole(GOVERNANCE_ROLE) nonReentrant returns (uint256) {
         if (usdcAmount == 0) revert InvalidAmount();
         if (minTStakeAmount == 0) revert InvalidAmount();
         
@@ -222,15 +279,20 @@ contract TerraStakeTreasuryManager is
         });
         
         // Execute the swap
+        address quoterUsed = lastSuccessfulQuoteTimestamp == block.timestamp 
+            ? address(uniswapQuoter) 
+            : address(0);
         uint256 amountOut = uniswapRouter.exactInputSingle(params);
         
         // Verify we received at least the minimum amount
         if (amountOut < minTStakeAmount) revert SlippageTooHigh();
         
         // Update fallback price based on this swap
-        _updateFallbackPrice(usdcAmount, amountOut);
+        _updateFallbackPrice(usdcAmount, amountOut, true);
         
-        emit BuybackExecuted(usdcAmount, amountOut);
+        uint256 slippageApplied = amountOut > minTStakeAmount ? 0 : (minTStakeAmount - amountOut);
+        emit BuybackExecuted(usdcAmount, amountOut, slippageApplied, quoterUsed);
+        return amountOut;
     }
     
     /**
@@ -238,7 +300,7 @@ contract TerraStakeTreasuryManager is
      * @param tStakeAmount Amount of TSTAKE tokens to add
      * @param usdcAmount Amount of USDC to add
      */
-    function addLiquidity(uint256 tStakeAmount, uint256 usdcAmount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
+    function addLiquidity(uint256 tStakeAmount, uint256 usdcAmount) public onlyRole(GOVERNANCE_ROLE) nonReentrant {
         if (!liquidityPairingEnabled) revert Unauthorized();
         if (tStakeAmount == 0 || usdcAmount == 0) revert InvalidAmount();
         
@@ -255,7 +317,7 @@ contract TerraStakeTreasuryManager is
         // Call addLiquidity on the liquidity guard
         liquidityGuard.addLiquidity(tStakeAmount, usdcAmount);
         
-        emit LiquidityAdded(tStakeAmount, usdcAmount);
+        emit LiquidityAdded(tStakeAmount, usdcAmount, address(liquidityGuard));
     }
     
     /**
@@ -470,6 +532,18 @@ contract TerraStakeTreasuryManager is
         
         emit QuoterUpdated(_newQuoter);
     }
+
+    function updateSecondaryQuoter(address _newSecondaryQuoter) external onlyRole(GOVERNANCE_ROLE) {
+        if (_newSecondaryQuoter == address(0)) revert InvalidParameters();
+        secondaryQuoter = IQuoter(_newSecondaryQuoter);
+        emit SecondaryQuoterUpdated(_newSecondaryQuoter);
+    }
+
+    function updateChainlinkPriceFeed(address _newPriceFeed) external onlyRole(GOVERNANCE_ROLE) {
+        if (_newPriceFeed == address(0)) revert InvalidParameters();
+        chainlinkPriceFeed = AggregatorV3Interface(_newPriceFeed);
+        emit ChainlinkPriceFeedUpdated(_newPriceFeed);
+    }
     
     /**
      * @notice Update liquidity guard address
@@ -502,6 +576,18 @@ contract TerraStakeTreasuryManager is
         
         emit FallbackPriceUpdated(_tStakePerUsdc, block.timestamp);
     }
+
+    function updateSlippageConfig(SlippageConfig calldata newConfig) external onlyRole(GOVERNANCE_ROLE) {
+        if (newConfig.minSlippage == 0 || 
+            newConfig.maxSlippage < newConfig.minSlippage || 
+            newConfig.baseSlippage < newConfig.minSlippage || 
+            newConfig.baseSlippage > newConfig.maxSlippage ||
+            newConfig.volatilityWindow < 1 hours) {
+            revert InvalidParameters();
+        }
+        slippageConfig = newConfig;
+        emit SlippageConfigUpdated(newConfig.baseSlippage, newConfig.maxSlippage, newConfig.minSlippage, newConfig.volatilityWindow);
+    }
     
     /**
      * @notice Process fees from project submission or impact reporting
@@ -519,13 +605,16 @@ contract TerraStakeTreasuryManager is
         uint256 usdcBalance = usdcToken.balanceOf(address(this));
         if (usdcBalance < amount) revert InsufficientBalance();
         
-        // Calculate fee distribution amounts based on percentages
-        uint256 buybackAmount = amount * currentFeeStructure.buybackPercentage / 100;
-        uint256 liquidityAmount = amount * currentFeeStructure.liquidityPairingPercentage / 100;
-        uint256 treasuryAmount = amount * currentFeeStructure.treasuryPercentage / 100;
-        // Burn amount is unused since we don't burn USDC
+        FeeStructure memory feeStruct = currentFeeStructure;
+        bool isLiquidityEnabled = liquidityPairingEnabled;
+        address cachedTreasuryWallet = treasuryWallet;
         
-        // Process buyback if there's an amount to process
+        uint256 buybackAmount = amount * feeStruct.buybackPercentage / 100;
+        uint256 liquidityAmount = amount * feeStruct.liquidityPairingPercentage / 100;
+        uint256 treasuryAmount = amount * feeStruct.treasuryPercentage / 100;
+        
+        emit FeeProcessed(amount, feeType, buybackAmount, liquidityAmount, treasuryAmount);
+        
         if (buybackAmount > 0) {
             // Calculate a reasonable minimum TSTAKE amount (allowing for default slippage)
             uint256 minTStakeAmount = estimateMinimumTStakeOutput(buybackAmount, DEFAULT_SLIPPAGE);
@@ -544,12 +633,16 @@ contract TerraStakeTreasuryManager is
                 sqrtPriceLimitX96: 0
             });
             
+            address quoterUsed = lastSuccessfulQuoteTimestamp == block.timestamp 
+                ? address(uniswapQuoter) 
+                : address(0);
             uint256 tStakeReceived = uniswapRouter.exactInputSingle(params);
             
             // Update fallback price based on this successful swap
-            _updateFallbackPrice(buybackAmount, tStakeReceived);
+            _updateFallbackPrice(buybackAmount, tStakeReceived, true);
             
-            emit BuybackExecuted(buybackAmount, tStakeReceived);
+            uint256 slippageApplied = tStakeReceived > minTStakeAmount ? 0 : (minTStakeAmount - tStakeReceived);
+            emit BuybackExecuted(buybackAmount, tStakeReceived, slippageApplied, quoterUsed);
         }
         
         // Process liquidity addition if enabled and there's an amount to process
@@ -567,17 +660,18 @@ contract TerraStakeTreasuryManager is
                 
                 // Add liquidity
                 liquidityGuard.addLiquidity(tStakeForLiquidity, liquidityAmount);
-                emit LiquidityAdded(tStakeForLiquidity, liquidityAmount);
+                emit LiquidityAdded(tStakeForLiquidity, liquidityAmount, address(liquidityGuard));
             } else {
                 // If not enough TSTAKE, send USDC to treasury instead
                 treasuryAmount += liquidityAmount;
+                emit LiquiditySkippedDueToBalance(liquidityAmount, tStakeForLiquidity, tStakeBalance);
             }
         }
         
         // Transfer treasury amount
         if (treasuryAmount > 0) {
-            _safeTransfer(address(usdcToken), treasuryWallet, treasuryAmount);
-            emit TreasuryTransfer(address(usdcToken), treasuryWallet, treasuryAmount);
+            _safeTransfer(address(usdcToken), cachedTreasuryWallet, treasuryAmount);
+            emit TreasuryTransfer(address(usdcToken), cachedTreasuryWallet, treasuryAmount);
         }
     }
 
@@ -596,32 +690,16 @@ contract TerraStakeTreasuryManager is
     {
         if (amount == 0) revert InvalidAmount();
 
-        // Calculate the split amounts based on percentages
-        buybackAmount = (amount * currentFeeStructure.buybackPercentage) / 100;
-        liquidityAmount = (amount * currentFeeStructure.liquidityPairingPercentage) / 100;
-        burnAmount = (amount * currentFeeStructure.burnPercentage) / 100;
-        treasuryAmount = (amount * currentFeeStructure.treasuryPercentage) / 100;
+        FeeStructure memory feeStruct = currentFeeStructure;
+        buybackAmount = (amount * feeStruct.buybackPercentage) / 100;
+        liquidityAmount = (amount * feeStruct.liquidityPairingPercentage) / 100;
+        burnAmount = (amount * feeStruct.burnPercentage) / 100;
+        treasuryAmount = (amount * feeStruct.treasuryPercentage) / 100;
 
-        // Transfer each category if the amount is greater than zero and emit an event
-        if (buybackAmount > 0) {
-            usdcToken.transfer(address(this), buybackAmount); // Fund buyback
-            emit FeeTransferred("Buyback", buybackAmount);
-        }
-
-        if (liquidityAmount > 0) {
-            usdcToken.transfer(address(this), liquidityAmount); // Fund liquidity pairing
-            emit FeeTransferred("Liquidity", liquidityAmount);
-        }
-
-        if (burnAmount > 0) {
-            usdcToken.transfer(address(0xdead), burnAmount); // Burn tokens
-            emit FeeTransferred("Burn", burnAmount);
-        }
-
-        if (treasuryAmount > 0) {
-            usdcToken.transfer(treasuryWallet, treasuryAmount); // Transfer to treasury
-            emit FeeTransferred("Treasury", treasuryAmount);
-        }
+        if (buybackAmount > 0) emit FeeTransferred("Buyback", buybackAmount);
+        if (liquidityAmount > 0) emit FeeTransferred("Liquidity", liquidityAmount);
+        if (burnAmount > 0) emit FeeTransferred("Burn", burnAmount);
+        if (treasuryAmount > 0) emit FeeTransferred("Treasury", treasuryAmount);
 
         return (buybackAmount, liquidityAmount, burnAmount, treasuryAmount);
     }
@@ -634,23 +712,15 @@ contract TerraStakeTreasuryManager is
     function emergencyAdjustFee(uint8 feeType, uint256 newValue) external onlyRole(GOVERNANCE_ROLE) {
         if (newValue == 0) revert InvalidAmount();
 
-        // Adjust the specified fee in the current fee structure
         if (feeType == 1) {
             currentFeeStructure.projectSubmissionFee = newValue;
+            emit FeePercentageUpdated("ProjectSubmissionFee", newValue);
         } else if (feeType == 2) {
             currentFeeStructure.impactReportingFee = newValue;
+            emit FeePercentageUpdated("ImpactReportingFee", newValue);
         } else {
             revert InvalidParameters();
         }
-
-        emit FeeStructureUpdated(
-            currentFeeStructure.projectSubmissionFee,
-            currentFeeStructure.impactReportingFee,
-            currentFeeStructure.buybackPercentage,
-            currentFeeStructure.liquidityPairingPercentage,
-            currentFeeStructure.burnPercentage,
-            currentFeeStructure.treasuryPercentage
-        );
     }
 
     /**
@@ -660,7 +730,9 @@ contract TerraStakeTreasuryManager is
     function executeBuyback(uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
         if (amount == 0) revert InvalidAmount();
 
-        // Split the fees into categories
+        bool isLiquidityEnabled = liquidityPairingEnabled;
+        address cachedTreasuryWallet = treasuryWallet;
+
         (
             uint256 buybackAmount,
             uint256 liquidityAmount,
@@ -668,30 +740,189 @@ contract TerraStakeTreasuryManager is
             uint256 treasuryAmount
         ) = splitFee(amount);
 
-        // Perform buyback with the allocated funds
-        performBuyback(buybackAmount);
-
-        // Add liquidity if enabled and funds are available
-        if (liquidityPairingEnabled && liquidityAmount > 0) {
-            addLiquidity(liquidityAmount);
+        uint256 tStakeReceived = 0;
+        if (buybackAmount > 0) {
+            uint256 minTStakeAmount = estimateMinimumTStakeOutput(buybackAmount, DEFAULT_SLIPPAGE);
+            tStakeReceived = performBuyback(buybackAmount, minTStakeAmount);
         }
 
-        emit BuybackExecuted(buybackAmount, /* tokens bought */ buybackAmount);
+        if (isLiquidityEnabled && liquidityAmount > 0) {
+            uint256 tStakeForLiquidity = estimateTStakeForLiquidity(liquidityAmount);
+            uint256 tStakeBalance = tStakeToken.balanceOf(address(this));
+            if (tStakeBalance >= tStakeForLiquidity) {
+                addLiquidity(tStakeForLiquidity, liquidityAmount);
+            } else {
+                _safeTransfer(address(usdcToken), cachedTreasuryWallet, liquidityAmount);
+                emit TreasuryTransfer(address(usdcToken), cachedTreasuryWallet, liquidityAmount);
+            }
+        }
+
+        if (burnAmount > 0) {
+            _safeTransfer(address(usdcToken), address(0xdead), burnAmount);
+            emit FeeTransferred("Burn", burnAmount);
+        }
+
+        if (treasuryAmount > 0) {
+            _safeTransfer(address(usdcToken), cachedTreasuryWallet, treasuryAmount);
+            emit TreasuryTransfer(address(usdcToken), cachedTreasuryWallet, treasuryAmount);
+        }
+
+        if (buybackAmount > 0) {
+            emit BuybackExecuted(
+                buybackAmount, 
+                tStakeReceived, 
+                0, // Slippage already emitted in performBuyback
+                lastSuccessfulQuoteTimestamp == block.timestamp ? address(uniswapQuoter) : address(0)
+            );
+        }
+    }
+
+    /**
+     * @notice Estimate minimum USDC output for a given TSTAKE input with slippage
+     * @param tStakeAmount Amount of TSTAKE input
+     * @param slippagePercentage Base slippage percentage
+     * @return Minimum USDC to receive
+     */
+    function estimateMinimumUsdcOutput(uint256 tStakeAmount, uint256 slippagePercentage) 
+        public 
+        returns (uint256) 
+    {
+        if (tStakeAmount == 0) return 0;
+        
+        // Try primary Quoter
+        try uniswapQuoter.quoteExactInputSingle(
+            address(tStakeToken),
+            address(usdcToken),
+            POOL_FEE,
+            tStakeAmount,
+            0
+        ) returns (uint256 expectedUsdc) {
+            return _validateAndApplySlippage(expectedUsdc, tStakeAmount, slippagePercentage, false);
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), tStakeAmount, block.timestamp, address(uniswapQuoter));
+            quoterFailureCount++;
+        }
+        
+        // Try secondary Quoter
+        try secondaryQuoter.quoteExactInputSingle(
+            address(tStakeToken),
+            address(usdcToken),
+            POOL_FEE,
+            tStakeAmount,
+            0
+        ) returns (uint256 expectedUsdc) {
+            return _validateAndApplySlippage(expectedUsdc, tStakeAmount, slippagePercentage, false);
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), tStakeAmount, block.timestamp, address(secondaryQuoter));
+            quoterFailureCount++;
+        }
+        
+        // Try Chainlink price feed
+        try chainlinkPriceFeed.latestRoundData() returns (
+            uint80, 
+            int256 price, 
+            uint256, 
+            uint256 updatedAt, 
+            uint80
+        ) {
+            if (block.timestamp - updatedAt > 1 hours) {
+                emit QuoterFailure("Chainlink price stale", tStakeAmount, block.timestamp, address(chainlinkPriceFeed));
+                quoterFailureCount++;
+            } else if (price <= 0) {
+                emit QuoterFailure("Invalid Chainlink price", tStakeAmount, block.timestamp, address(chainlinkPriceFeed));
+                quoterFailureCount++;
+            } else {
+                // Chainlink price is TSTAKE/USDC, scaled by 1e8
+                uint256 expectedUsdc = tStakeAmount * PRICE_PRECISION / (uint256(price) * PRICE_PRECISION / 1e8);
+                return _validateAndApplySlippage(expectedUsdc, tStakeAmount, slippagePercentage, false);
+            }
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), tStakeAmount, block.timestamp, address(chainlinkPriceFeed));
+            quoterFailureCount++;
+        }
+        
+        // Fallback to historical price
+        return _applySlippageToFallbackEstimateUsdc(tStakeAmount, slippagePercentage);
+    }
+
+    /**
+     * @notice Apply slippage to fallback estimate for USDC
+     * @param tStakeAmount TSTAKE amount to estimate for
+     * @param slippagePercentage Slippage percentage to apply
+     * @return Estimated USDC amount after slippage
+     */
+    function _applySlippageToFallbackEstimateUsdc(uint256 tStakeAmount, uint256 slippagePercentage) 
+        internal 
+        returns (uint256) 
+    {
+        uint256 expectedUsdc = tStakeAmount * PRICE_PRECISION / fallbackTStakePerUsdc;
+        return _applySlippage(expectedUsdc, slippagePercentage);
+    }
+
+    /**
+     * @notice Withdraw the USDC equivalent of a specified amount of TSTAKE tokens
+     * @param tStakeAmount Amount of TSTAKE to convert to USDC
+     * @param minUsdcAmount Minimum amount of USDC to receive (slippage protection)
+     * @param recipient Address to receive the USDC
+     * @return usdcReceived The amount of USDC received from the swap
+     */
+    function withdrawUSDCEquivalent(
+        uint256 tStakeAmount,
+        uint256 minUsdcAmount,
+        address recipient
+    ) 
+        external 
+        onlyRole(GOVERNANCE_ROLE) 
+        nonReentrant 
+        returns (uint256 usdcReceived) 
+    {
+        if (tStakeAmount == 0) revert InvalidAmount();
+        if (minUsdcAmount == 0) revert InvalidAmount();
+        if (recipient == address(0)) revert InvalidParameters();
+
+        uint256 tStakeBalance = tStakeToken.balanceOf(address(this));
+        if (tStakeBalance < tStakeAmount) revert InsufficientBalance();
+
+        _safeApprove(address(tStakeToken), address(uniswapRouter), tStakeAmount);
+
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: address(tStakeToken),
+            tokenOut: address(usdcToken),
+            fee: POOL_FEE,
+            recipient: recipient,
+            deadline: block.timestamp + 15 minutes,
+            amountIn: tStakeAmount,
+            amountOutMinimum: minUsdcAmount,
+            sqrtPriceLimitX96: 0
+        });
+
+        address quoterUsed = lastSuccessfulQuoteTimestamp == block.timestamp 
+            ? address(uniswapQuoter) 
+            : address(0);
+        usdcReceived = uniswapRouter.exactInputSingle(params);
+
+        if (usdcReceived < minUsdcAmount) revert SlippageTooHigh();
+
+        _updateFallbackPrice(usdcReceived, tStakeAmount, false);
+
+        uint256 slippageApplied = usdcReceived > minUsdcAmount ? 0 : (minUsdcAmount - usdcReceived);
+        emit TreasuryTransfer(address(usdcToken), recipient, usdcReceived);
+        emit UsdcWithdrawn(recipient, tStakeAmount, usdcReceived, slippageApplied, quoterUsed);
+        return usdcReceived;
     }
     
     /**
      * @notice Estimate minimum TSTAKE output for a given USDC input with slippage
      * @param usdcAmount Amount of USDC input
-     * @param slippagePercentage Allowed slippage in percentage
+     * @param slippagePercentage Base slippage percentage
      * @return Minimum TSTAKE to receive
-     * @dev This function attempts to use the Uniswap Quoter, but falls back to a calculation
-     *      based on historical data if the quoter fails
      */
     function estimateMinimumTStakeOutput(uint256 usdcAmount, uint256 slippagePercentage) 
         public returns (uint256) 
     {
         if (usdcAmount == 0) return 0;
         
+        // Try primary Quoter
         try uniswapQuoter.quoteExactInputSingle(
             address(usdcToken),
             address(tStakeToken),
@@ -699,43 +930,176 @@ contract TerraStakeTreasuryManager is
             usdcAmount,
             0
         ) returns (uint256 expectedTStake) {
-            // Validate the quoted amount is reasonable
-            if (expectedTStake == 0) {
-                // If quoter returns 0, use fallback but log the issue
-                emit QuoterFailure("Zero amount quoted", usdcAmount, block.timestamp);
-                quoterFailureCount++;
-                return _applySlippageToFallbackEstimate(usdcAmount, slippagePercentage);
-            }
-            
-            // Sanity check: make sure quote isn't unreasonably small
-            uint256 fallbackEstimate = usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
-            if (expectedTStake < fallbackEstimate / MAX_PRICE_IMPACT_FACTOR) {
-                // Quote is too low compared to fallback, possibly manipulated or extreme market conditions
-                emit QuoterFailure("Quote too low compared to fallback", usdcAmount, block.timestamp);
-                quoterFailureCount++;
-                return _applySlippageToFallbackEstimate(usdcAmount, slippagePercentage);
-            }
-            // Sanity check: make sure quote isn't unreasonably large
-            if (expectedTStake > fallbackEstimate * MAX_PRICE_IMPACT_FACTOR) {
-                // Quote is too high compared to fallback, possibly manipulated or extreme market conditions
-                emit QuoterFailure("Quote too high compared to fallback", usdcAmount, block.timestamp);
-                quoterFailureCount++;
-                return _applySlippageToFallbackEstimate(usdcAmount, slippagePercentage);
-            }
-            
-            // Quote passed validation, apply slippage
-            lastSuccessfulQuoteTimestamp = block.timestamp;
-            return _applySlippage(expectedTStake, slippagePercentage);
+            return _validateAndApplySlippage(expectedTStake, usdcAmount, slippagePercentage, true);
         } catch (bytes memory reason) {
-            // Log failure for monitoring
-            emit QuoterFailure(string(reason), usdcAmount, block.timestamp);
+            emit QuoterFailure(string(reason), usdcAmount, block.timestamp, address(uniswapQuoter));
             quoterFailureCount++;
-            
-            // Use fallback calculation
-            return _applySlippageToFallbackEstimate(usdcAmount, slippagePercentage);
         }
+        
+        // Try secondary Quoter
+        try secondaryQuoter.quoteExactInputSingle(
+            address(usdcToken),
+            address(tStakeToken),
+            POOL_FEE,
+            usdcAmount,
+            0
+        ) returns (uint256 expectedTStake) {
+            return _validateAndApplySlippage(expectedTStake, usdcAmount, slippagePercentage, true);
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), usdcAmount, block.timestamp, address(secondaryQuoter));
+            quoterFailureCount++;
+        }
+        
+        // Try Chainlink price feed
+        try chainlinkPriceFeed.latestRoundData() returns (
+            uint80, 
+            int256 price, 
+            uint256, 
+            uint256 updatedAt, 
+            uint80
+        ) {
+            if (block.timestamp - updatedAt > 1 hours) {
+                emit QuoterFailure("Chainlink price stale", usdcAmount, block.timestamp, address(chainlinkPriceFeed));
+                quoterFailureCount++;
+            } else if (price <= 0) {
+                emit QuoterFailure("Invalid Chainlink price", usdcAmount, block.timestamp, address(chainlinkPriceFeed));
+                quoterFailureCount++;
+            } else {
+                uint256 expectedTStake = usdcAmount * uint256(price) * PRICE_PRECISION / (1e8 * PRICE_PRECISION);
+                return _validateAndApplySlippage(expectedTStake, usdcAmount, slippagePercentage, true);
+            }
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), usdcAmount, block.timestamp, address(chainlinkPriceFeed));
+            quoterFailureCount++;
+        }
+        
+        // Fallback to historical price
+        return _applySlippageToFallbackEstimate(usdcAmount, slippagePercentage);
     }
     
+    /**
+     * @notice Validate a quoted amount and apply slippage
+     * @param expectedAmount The quoted amount
+     * @param inputAmount The input amount (USDC or TSTAKE)
+     * @param slippagePercentage Base slippage percentage
+     * @param isUsdcToTStake True if USDC -> TSTAKE, false if TSTAKE -> USDC
+     * @return Amount after validation and slippage
+     */
+    function _validateAndApplySlippage(
+        uint256 expectedAmount,
+        uint256 inputAmount,
+        uint256 slippagePercentage,
+        bool isUsdcToTStake
+    ) internal returns (uint256) {
+        if (expectedAmount == 0) {
+            emit QuoterFailure(
+                isUsdcToTStake ? "Zero amount quoted" : "Zero amount quoted for USDC", 
+                inputAmount, 
+                block.timestamp, 
+                address(0)
+            );
+            quoterFailureCount++;
+            return isUsdcToTStake 
+                ? _applySlippageToFallbackEstimate(inputAmount, slippagePercentage)
+                : _applySlippageToFallbackEstimateUsdc(inputAmount, slippagePercentage);
+        }
+        
+        uint256 fallbackEstimate = isUsdcToTStake 
+            ? inputAmount * fallbackTStakePerUsdc / PRICE_PRECISION
+            : inputAmount * PRICE_PRECISION / fallbackTStakePerUsdc;
+            
+        if (expectedAmount < fallbackEstimate / MAX_PRICE_IMPACT_FACTOR) {
+            emit QuoterFailure(
+                isUsdcToTStake ? "Quote too low compared to fallback" : "Quote too low compared to fallback for USDC", 
+                inputAmount, 
+                block.timestamp, 
+                address(0)
+            );
+            quoterFailureCount++;
+            return isUsdcToTStake 
+                ? _applySlippageToFallbackEstimate(inputAmount, slippagePercentage)
+                : _applySlippageToFallbackEstimateUsdc(inputAmount, slippagePercentage);
+        }
+        
+        if (expectedAmount > fallbackEstimate * MAX_PRICE_IMPACT_FACTOR) {
+            emit QuoterFailure(
+                isUsdcToTStake ? "Quote too high compared to fallback" : "Quote too high compared to fallback for USDC", 
+                inputAmount, 
+                block.timestamp, 
+                address(0)
+            );
+            quoterFailureCount++;
+            return isUsdcToTStake 
+                ? _applySlippageToFallbackEstimate(inputAmount, slippagePercentage)
+                : _applySlippageToFallbackEstimateUsdc(inputAmount, slippagePercentage);
+        }
+        
+        lastSuccessfulQuoteTimestamp = block.timestamp;
+        return _applySlippage(expectedAmount, slippagePercentage);
+    }
+
+    /**
+     * @notice Validate a quoted TSTAKE amount for liquidity
+     * @param tStakeAmount The quoted TSTAKE amount
+     * @param usdcAmount The USDC amount
+     * @return Validated TSTAKE amount
+     */
+    function _validateQuoteForLiquidity(uint256 tStakeAmount, uint256 usdcAmount) internal returns (uint256) {
+        if (tStakeAmount == 0) {
+            emit QuoterFailure("Zero amount quoted for liquidity", usdcAmount, block.timestamp, address(0));
+            quoterFailureCount++;
+            return usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
+        }
+        
+        uint256 fallbackEstimate = usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
+        if (tStakeAmount < fallbackEstimate / MAX_PRICE_IMPACT_FACTOR || 
+            tStakeAmount > fallbackEstimate * MAX_PRICE_IMPACT_FACTOR) {
+            emit QuoterFailure("Extreme liquidity quote", usdcAmount, block.timestamp, address(0));
+            quoterFailureCount++;
+            return fallbackEstimate;
+        }
+        
+        lastSuccessfulQuoteTimestamp = block.timestamp;
+        return tStakeAmount;
+    }
+
+    /**
+     * @notice Update a fee percentage and validate the total
+     * @param feeType Type of fee being updated
+     * @param newPercentage New percentage value
+     */
+    function _updateFeePercentage(string memory feeType, uint256 newPercentage) internal {
+        require(block.timestamp >= lastFeeUpdateTime + feeUpdateCooldown, "Fee update cooldown active");
+        
+        uint256 totalPercentage = 0;
+        if (keccak256(abi.encodePacked(feeType)) == keccak256(abi.encodePacked("buyback"))) {
+            totalPercentage = newPercentage + 
+                              currentFeeStructure.liquidityPairingPercentage + 
+                              currentFeeStructure.burnPercentage + 
+                              currentFeeStructure.treasuryPercentage;
+        } else if (keccak256(abi.encodePacked(feeType)) == keccak256(abi.encodePacked("liquidityPairing"))) {
+            totalPercentage = currentFeeStructure.buybackPercentage + 
+                              newPercentage + 
+                              currentFeeStructure.burnPercentage + 
+                              currentFeeStructure.treasuryPercentage;
+        } else if (keccak256(abi.encodePacked(feeType)) == keccak256(abi.encodePacked("burn"))) {
+            totalPercentage = currentFeeStructure.buybackPercentage + 
+                              currentFeeStructure.liquidityPairingPercentage + 
+                              newPercentage + 
+                              currentFeeStructure.treasuryPercentage;
+        } else if (keccak256(abi.encodePacked(feeType)) == keccak256(abi.encodePacked("treasury"))) {
+            totalPercentage = currentFeeStructure.buybackPercentage + 
+                              currentFeeStructure.liquidityPairingPercentage + 
+                              currentFeeStructure.burnPercentage + 
+                              newPercentage;
+        }
+        
+        if (totalPercentage != 100) revert InvalidParameters();
+        lastFeeUpdateTime = block.timestamp;
+    }
+
+
+
     /**
      * @notice Estimate amount of TSTAKE needed for liquidity with given USDC amount
      * @param usdcAmount Amount of USDC
@@ -746,6 +1110,7 @@ contract TerraStakeTreasuryManager is
     function estimateTStakeForLiquidity(uint256 usdcAmount) public returns (uint256) {
         if (usdcAmount == 0) return 0;
         
+        // Try primary Quoter
         try uniswapQuoter.quoteExactInputSingle(
             address(usdcToken),
             address(tStakeToken),
@@ -753,35 +1118,51 @@ contract TerraStakeTreasuryManager is
             usdcAmount,
             0
         ) returns (uint256 tStakeAmount) {
-            // Validate the quoted amount is reasonable
-            if (tStakeAmount == 0) {
-                // If quoter returns 0, use fallback but log the issue
-                emit QuoterFailure("Zero amount quoted for liquidity", usdcAmount, block.timestamp);
-                quoterFailureCount++;
-                return usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
-            }
-            
-            // Sanity check: make sure quote isn't unreasonably small or large
-            uint256 fallbackEstimate = usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
-            if (tStakeAmount < fallbackEstimate / MAX_PRICE_IMPACT_FACTOR || 
-                tStakeAmount > fallbackEstimate * MAX_PRICE_IMPACT_FACTOR) {
-                // Quote is too extreme compared to fallback
-                emit QuoterFailure("Extreme liquidity quote", usdcAmount, block.timestamp);
-                quoterFailureCount++;
-                return fallbackEstimate;
-            }
-            
-            // Quote passed validation
-            lastSuccessfulQuoteTimestamp = block.timestamp;
-            return tStakeAmount;
+            return _validateQuoteForLiquidity(tStakeAmount, usdcAmount);
         } catch (bytes memory reason) {
-            // Log failure for monitoring
-            emit QuoterFailure(string(reason), usdcAmount, block.timestamp);
+            emit QuoterFailure(string(reason), usdcAmount, block.timestamp, address(uniswapQuoter));
             quoterFailureCount++;
-            
-            // Use fallback calculation with precision scaling
-            return usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
         }
+        
+        // Try secondary Quoter
+        try secondaryQuoter.quoteExactInputSingle(
+            address(usdcToken),
+            address(tStakeToken),
+            POOL_FEE,
+            usdcAmount,
+            0
+        ) returns (uint256 tStakeAmount) {
+            return _validateQuoteForLiquidity(tStakeAmount, usdcAmount);
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), usdcAmount, block.timestamp, address(secondaryQuoter));
+            quoterFailureCount++;
+        }
+        
+        // Try Chainlink price feed
+        try chainlinkPriceFeed.latestRoundData() returns (
+            uint80, 
+            int256 price, 
+            uint256, 
+            uint256 updatedAt, 
+            uint80
+        ) {
+            if (block.timestamp - updatedAt > 1 hours) {
+                emit QuoterFailure("Chainlink price stale", usdcAmount, block.timestamp, address(chainlinkPriceFeed));
+                quoterFailureCount++;
+            } else if (price <= 0) {
+                emit QuoterFailure("Invalid Chainlink price", usdcAmount, block.timestamp, address(chainlinkPriceFeed));
+                quoterFailureCount++;
+            } else {
+                uint256 tStakeAmount = usdcAmount * uint256(price) * PRICE_PRECISION / (1e8 * PRICE_PRECISION);
+                return _validateQuoteForLiquidity(tStakeAmount, usdcAmount);
+            }
+        } catch (bytes memory reason) {
+            emit QuoterFailure(string(reason), usdcAmount, block.timestamp, address(chainlinkPriceFeed));
+            quoterFailureCount++;
+        }
+        
+        // Fallback to historical price
+        return usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
     }
     
     // -------------------------------------------
@@ -789,35 +1170,96 @@ contract TerraStakeTreasuryManager is
     // -------------------------------------------
     
     /**
-     * @notice Updates the fallback price based on a successful swap
-     * @param usdcAmount Amount of USDC used in the swap
-     * @param tStakeAmount Amount of TSTAKE received from the swap
-     * @dev This helps keep the fallback price in sync with market conditions
+     * @notice Updates the fallback price based on a successful swap and calculates volatility
+     * @param usdcAmount Amount of USDC involved in the swap
+     * @param tStakeAmount Amount of TSTAKE involved in the swap
+     * @param isUsdcToTStake True if the swap is USDC -> TSTAKE, false if TSTAKE -> USDC
      */
-    function _updateFallbackPrice(uint256 usdcAmount, uint256 tStakeAmount) internal {
+    function _updateFallbackPrice(uint256 usdcAmount, uint256 tStakeAmount, bool isUsdcToTStake) internal {
         if (usdcAmount == 0 || tStakeAmount == 0) return;
         
-        // Calculate TSTAKE per USDC with PRICE_PRECISION for precision
-        // Example: If 1 USDC = 0.1 TSTAKE, this will store 0.1 * 1e18 = 1e17
-        fallbackTStakePerUsdc = tStakeAmount * PRICE_PRECISION / usdcAmount;
+        // Calculate new price
+        uint256 newPrice;
+        if (isUsdcToTStake) {
+            newPrice = tStakeAmount * PRICE_PRECISION / usdcAmount;
+        } else {
+            newPrice = tStakeAmount * PRICE_PRECISION / usdcAmount;
+        }
+        
+        // Cache state variables
+        uint256 windowStart = block.timestamp - slippageConfig.volatilityWindow;
+        uint256 historyLength = priceTimestamps.length;
+        
+        // Clean up old entries
+        while (historyLength > 0 && priceTimestamps[0] < windowStart) {
+            for (uint256 i = 0; i < historyLength - 1; i++) {
+                priceTimestamps[i] = priceTimestamps[i + 1];
+                priceHistory[i] = priceHistory[i + 1];
+            }
+            priceTimestamps.pop();
+            priceHistory.pop();
+            historyLength--;
+        }
+        
+        // Add new price
+        priceHistory.push(newPrice);
+        priceTimestamps.push(block.timestamp);
+        historyLength++;
+        
+        // Calculate volatility
+        uint256 newVolatilityIndex = 0;
+        if (historyLength >= 2) {
+            uint256 meanPrice = 0;
+            for (uint256 i = 0; i < historyLength; i++) {
+                meanPrice += priceHistory[i];
+            }
+            meanPrice = meanPrice / historyLength;
+            
+            uint256 sumSquaredDiff = 0;
+            for (uint256 i = 0; i < historyLength; i++) {
+                int256 diff = int256(priceHistory[i]) - int256(meanPrice);
+                sumSquaredDiff += uint256(diff * diff);
+            }
+            
+            newVolatilityIndex = (sumSquaredDiff / historyLength) * PRICE_PRECISION / (meanPrice * meanPrice);
+        }
+        
+        // Batch storage updates
+        volatilityIndex = newVolatilityIndex;
+        fallbackTStakePerUsdc = newPrice;
         fallbackPriceTimestamp = block.timestamp;
         
-        emit FallbackPriceUpdated(fallbackTStakePerUsdc, block.timestamp);
+        emit FallbackPriceUpdated(newPrice, block.timestamp);
+        emit VolatilityUpdated(newVolatilityIndex);
     }
     
     /**
-     * @notice Apply slippage to an estimated amount
+     * @notice Apply dynamic slippage to an estimated amount
      * @param amount Original amount
-     * @param slippagePercentage Slippage percentage to apply
+     * @param slippagePercentage Base slippage percentage to adjust
      * @return Amount after slippage
      */
     function _applySlippage(uint256 amount, uint256 slippagePercentage) internal returns (uint256) {
         if (amount == 0) return 0;
         
-        uint256 slippageAmount = amount * slippagePercentage / 100;
+        // Adjust slippage based on volatility
+        uint256 adjustedSlippage = slippagePercentage;
+        if (volatilityIndex > 0) {
+            uint256 volatilityFactor = volatilityIndex / PRICE_PRECISION;
+            uint256 slippageIncrease = (slippageConfig.maxSlippage - slippageConfig.baseSlippage) * volatilityFactor;
+            adjustedSlippage = slippageConfig.baseSlippage + slippageIncrease;
+            if (adjustedSlippage > slippageConfig.maxSlippage) {
+                adjustedSlippage = slippageConfig.maxSlippage;
+            }
+            if (adjustedSlippage < slippageConfig.minSlippage) {
+                adjustedSlippage = slippageConfig.minSlippage;
+            }
+        }
+        
+        uint256 slippageAmount = amount * adjustedSlippage / 100;
         uint256 finalAmount = amount - slippageAmount;
         
-        emit SlippageApplied(amount, slippageAmount, finalAmount);
+        emit SlippageApplied(amount, slippageAmount, finalAmount, adjustedSlippage);
         return finalAmount;
     }
     
@@ -826,13 +1268,12 @@ contract TerraStakeTreasuryManager is
      * @param usdcAmount USDC amount to estimate for
      * @param slippagePercentage Slippage percentage to apply
      * @return Estimated TSTAKE amount after slippage
-     * @dev This combines the fallback calculation and slippage application for cleaner code
      */
-    function _applySlippageToFallbackEstimate(uint256 usdcAmount, uint256 slippagePercentage) internal returns (uint256) {
-        // Calculate expected amount using fallback price with PRICE_PRECISION
+    function _applySlippageToFallbackEstimate(uint256 usdcAmount, uint256 slippagePercentage) 
+        internal 
+        returns (uint256) 
+    {
         uint256 expectedTStake = usdcAmount * fallbackTStakePerUsdc / PRICE_PRECISION;
-        
-        // Apply slippage
         return _applySlippage(expectedTStake, slippagePercentage);
     }
     
@@ -998,5 +1439,13 @@ contract TerraStakeTreasuryManager is
      */
     function getImpactReportingFee() external view returns (uint256) {
         return currentFeeStructure.impactReportingFee;
+    }
+
+    function getSlippageConfig() external view returns (SlippageConfig memory) {
+        return slippageConfig;
+    }
+
+    function getVolatilityInfo() external view returns (uint256 volatility, uint256 historyLength) {
+        return (volatilityIndex, priceHistory.length);
     }
 }                    

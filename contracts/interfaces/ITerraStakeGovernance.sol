@@ -285,8 +285,7 @@ interface ITerraStakeGovernance {
     function getProposalVotes(uint256 proposalId) external view returns (
         uint256 againstVotes,
         uint256 forVotes,
-        uint256 abstainVotes,
-        uint256 validatorSupport
+        uint256 abstainVotes
     );
     
     function hasProposalSucceeded(uint256 proposalId) external view returns (bool);

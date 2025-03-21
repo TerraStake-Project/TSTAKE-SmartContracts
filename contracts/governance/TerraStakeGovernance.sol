@@ -7,7 +7,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
 import "../interfaces/ITerraStakeGovernance.sol";
@@ -31,32 +31,7 @@ contract TerraStakeGovernance is
     UUPSUpgradeable,
     ITerraStakeGovernance
 {
-    using ECDSA for bytes32;
-
-    // Custom errors
-    error Unauthorized();
-    error InvalidParameters();
-    error InvalidProposalState();
-    error ProposalNotActive();
-    error ProposalExpired();
-    error AlreadyVoted();
-    error InsufficientVotingPower();
-    error InvalidTargetCount();
-    error EmptyProposal();
-    error TooManyActions();
-    error InvalidState();
-    error GovernanceThresholdNotMet();
-    error ProposalNotReady();
-    error ProposalDoesNotExist();
-    error InvalidVote();
-    error TimelockNotExpired();
-    error ProposalAlreadyExecuted();
-    error GovernanceViolation();
-    error InsufficientValidators();
-    error ProposalTypeNotAllowed();
-    error InvalidGuardianSignatures();
-    error NonceAlreadyExecuted();
-
+    using MessageHashUtils for bytes32;
     // Packed storage
     struct GovernanceParams {
         uint48 votingDelay;          // Added for interface
@@ -96,7 +71,7 @@ contract TerraStakeGovernance is
     uint8 public constant PROPOSAL_TYPE_EMERGENCY = 5;
     uint8 public constant PROPOSAL_TYPE_VALIDATOR = 6;
     
-    uint256 public constant TIMELOCK_DURATION = 2 days;
+    uint48 public constant TIMELOCK_DURATION = 2 days;
     uint256 public constant PENALTY_FOR_VIOLATION = 5;
     uint256 public constant TWO_YEARS = 730 days;
     uint24 public constant POOL_FEE = 3000;
@@ -114,24 +89,24 @@ contract TerraStakeGovernance is
     ITerraStakeRewardDistributor public rewardDistributor;
     ITerraStakeLiquidityGuard public liquidityGuard;
     ISwapRouter public uniswapRouter;
-    IERC20 public override tStakeToken;
+    IERC20 public tStakeToken;
     IERC20 public usdcToken;
     
-    ITerraStakeTreasuryManager public override treasuryManager;
-    ITerraStakeValidatorSafety public override validatorSafety;
-    ITerraStakeGuardianCouncil public override guardianCouncil;
+    ITerraStakeTreasuryManager public treasuryManager;
+    ITerraStakeValidatorSafety public validatorSafety;
+    ITerraStakeGuardianCouncil public guardianCouncil;
     
     GovernanceParams public govParams;
     SystemState public systemState;
     FeeProposal public currentFeeStructure;
     
-    mapping(uint256 => Proposal) public override proposals;
+    mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => ExtendedProposalData) public proposalExtendedData;
-    mapping(uint256 => mapping(address => Receipt)) public override receipts;
+    mapping(uint256 => mapping(address => Receipt)) public receipts;
     mapping(bytes32 => bool) public executedHashes;
     mapping(address => bool) public penalizedGovernors;
     mapping(uint256 => bool) public executedNonces;
-    mapping(address => uint256) public override latestProposalIds;
+    mapping(address => uint256) public latestProposalIds;
     
     uint8 public governanceTier;
     bool public bootstrapMode;
@@ -179,7 +154,7 @@ contract TerraStakeGovernance is
         address _guardianCouncil,
         address _tStakeToken,
         address _initialAdmin
-    ) external override initializer {
+    ) external initializer {
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
@@ -238,7 +213,7 @@ contract TerraStakeGovernance is
         bootstrapEndTime = currentTime + 90 days;
         guardianCount = 1;
         guardianCouncilMembers[_initialAdmin] = true;
-        originalValidatorThreshold = stakingContract.validatorThreshold();
+        originalValidatorThreshold = uint96(stakingContract.validatorThreshold());
         governanceTier = 0;
     }
     
@@ -487,7 +462,7 @@ contract TerraStakeGovernance is
     {
         if (stakingContract.getValidatorCount() >= CRITICAL_VALIDATOR_THRESHOLD) revert InvalidProposalState();
         
-        if (temporaryThresholdEndTime == 0) originalValidatorThreshold = stakingContract.validatorThreshold();
+        if (temporaryThresholdEndTime == 0) originalValidatorThreshold = uint96(stakingContract.validatorThreshold());
         
         (bool success, ) = address(stakingContract).call(
             abi.encodeWithSelector(ITerraStakeStaking.setValidatorThreshold.selector, newThreshold)
@@ -932,8 +907,7 @@ contract TerraStakeGovernance is
         returns (
             uint256 againstVotes,
             uint256 forVotes,
-            uint256 abstainVotes,
-            uint256 validatorSupport
+            uint256 abstainVotes
         ) 
     {
         Proposal memory proposal = proposals[proposalId];

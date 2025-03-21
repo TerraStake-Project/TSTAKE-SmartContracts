@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.28;
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 /**
  * @title ITerraStakeToken
  * @notice Interface for the core TerraStake token functionality
  * @dev Defines token operations including standard ERC20, governance, and liquidity functions
  */
-interface ITerraStakeToken {
+interface ITerraStakeToken is IERC20 {
     // ================================
     //  Structs
     // ================================
@@ -287,16 +289,6 @@ interface ITerraStakeToken {
     function resetCircuitBreaker() external;
 
     // ================================
-    //  Upgradeability
-    // ================================
-    
-    /**
-     * @notice Get the implementation contract address
-     * @return The implementation address
-     */
-    function getImplementation() external view returns (address);
-
-    // ================================
     //  Events
     // ================================
     
@@ -314,7 +306,5 @@ interface ITerraStakeToken {
     event TransferBlocked(address indexed from, address indexed to, uint256 amount, string reason);
     event StakingOperationExecuted(address indexed user, uint256 amount, bool isStake);
     event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
     event ITOContractUpdated(address indexed itoContract);
 }

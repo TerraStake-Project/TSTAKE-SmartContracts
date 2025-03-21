@@ -31,11 +31,11 @@ contract TerraStakeAccessControl is
     // ====================================================
     //  State Variables
     // ====================================================
-    IERC20 public immutable tStakeToken;
-    IERC20 public immutable usdc;
-    IERC20 public immutable weth;
-    IERC20 public immutable wtstk;  // Wrapped Terra Stake Token
-    IERC20 public immutable wbtc;   // Wrapped Bitcoin
+    IERC20 public tStakeToken;
+    IERC20 public usdc;
+    IERC20 public weth;
+    IERC20 public wtstk;  // Wrapped Terra Stake Token
+    IERC20 public wbtc;   // Wrapped Bitcoin
     AggregatorV3Interface public priceFeed;
     
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
@@ -54,8 +54,8 @@ contract TerraStakeAccessControl is
     uint256 public maximumPrice;
     uint256 public maxOracleDataAge;
     
-    mapping(bytes32 => uint256) private roleRequirements;
-    mapping(bytes32 => mapping(address => uint256)) private roleExpirations;
+    mapping(bytes32 => uint256) public roleRequirements;
+    mapping(bytes32 => mapping(address => uint256)) public roleExpirations;
     mapping(bytes32 => bytes32) private roleHierarchy;
     mapping(bytes32 => RoleInfo) private roleInfo;
     mapping(bytes32 => IERC20) private roleRequirementToken;
@@ -461,39 +461,7 @@ contract TerraStakeAccessControl is
     
     // ====================================================
     //  View Functions
-    // ====================================================
-    function roleRequirements(bytes32 role) external view override returns (uint256) {
-        return roleRequirements[role];
-    }
-    
-    function roleExpirations(bytes32 role, address account) external view override returns (uint256) {
-        return roleExpirations[role][account];
-    }
-    
-    function priceFeed() external view override returns (AggregatorV3Interface) {
-        return priceFeed;
-    }
-    
-    function usdc() external view override returns (IERC20) {
-        return usdc;
-    }
-    
-    function weth() external view override returns (IERC20) {
-        return weth;
-    }
-    
-    function tStakeToken() external view override returns (IERC20) {
-        return tStakeToken;
-    }
-    
-    function wtstk() external view returns (IERC20) {
-        return wtstk;
-    }
-    
-    function wbtc() external view returns (IERC20) {
-        return wbtc;
-    }
-    
+    // ====================================================    
     function hasValidRole(bytes32 role, address account) external view override returns (bool) {
         return hasRole(role, account) && isActiveRole(role, account);
     }
@@ -510,10 +478,6 @@ contract TerraStakeAccessControl is
     
     function getRoleHierarchy(bytes32 role) external view override returns (bytes32) {
         return roleHierarchy[role];
-    }
-    
-    function maxOracleDataAge() external view override returns (uint256) {
-        return maxOracleDataAge;
     }
     
     function getMaxRoleDuration() external pure returns (uint256) {
