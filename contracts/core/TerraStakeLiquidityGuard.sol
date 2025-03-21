@@ -23,7 +23,7 @@ import "../interfaces/ITerraStakeTreasuryManager.sol";
 /**
  * @title TerraStakeLiquidityGuard
  * @notice Manages liquidity for the TerraStake protocol on Uniswap V3 with anti-whale mechanisms, TWAP protection, and emergency controls.
- * @dev Optimized for Arbitrum deployment. Uses Chainlink VRF for randomness and Uniswap V3 for liquidity provision.
+ * @dev Optimized for Arbitrum deployment. Uses Chainlink VRF for randomness and Uniswap V3 for liquidity provision. V2
  */
 contract TerraStakeLiquidityGuard is
     Initializable,
