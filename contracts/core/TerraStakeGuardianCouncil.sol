@@ -85,22 +85,22 @@ contract TerraStakeGuardianCouncil is
     function _authorizeUpgrade(address newCode) internal override onlyRole(UPGRADER_ROLE) {}
     
     function addGuardian(address newGuardian) external onlyRole(GOVERNANCE_ROLE) {
-        uint64 now = uint64(block.timestamp);
-        require(now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
+        uint64 _now = uint64(block.timestamp);
+        require(_now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
         require(newGuardian != address(0) && !guardianCouncil[newGuardian], "Bad guardian pick");
         require(guardianList.length < 100, "Too many guardians");
         
         guardianCouncil[newGuardian] = true;
         guardianList.push(newGuardian);
         _grantRole(GUARDIAN_ROLE, newGuardian);
-        lastChangeTime = now;
+        lastChangeTime = _now;
         
         emit GuardianAdded(newGuardian);
     }
     
     function removeGuardian(address oldGuardian) external onlyRole(GOVERNANCE_ROLE) {
-        uint64 now = uint64(block.timestamp);
-        require(now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
+        uint64 _now = uint64(block.timestamp);
+        require(_now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
         require(guardianCouncil[oldGuardian] && guardianList.length > 3, "Can't remove this one");
         
         guardianCouncil[oldGuardian] = false;
@@ -119,7 +119,7 @@ contract TerraStakeGuardianCouncil is
         }
         
         _revokeRole(GUARDIAN_ROLE, oldGuardian);
-        lastChangeTime = now;
+        lastChangeTime = _now;
         
         uint96 minQuorum = uint96(guardianList.length * 2 / 3 + 1);
         if (quorumNeeded > guardianList.length || quorumNeeded < minQuorum) {
@@ -132,8 +132,8 @@ contract TerraStakeGuardianCouncil is
     }
     
     function updateQuorum(uint96 newQuorum) external onlyRole(GOVERNANCE_ROLE) {
-        uint64 now = uint64(block.timestamp);
-        require(now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
+        uint64 _now = uint64(block.timestamp);
+        require(_now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
         
         uint256 count = guardianList.length;
         uint96 min = uint96(count * 6 / 10 + 1);
@@ -142,7 +142,7 @@ contract TerraStakeGuardianCouncil is
         
         uint96 old = quorumNeeded;
         quorumNeeded = newQuorum;
-        lastChangeTime = now;
+        lastChangeTime = _now;
         
         emit QuorumUpdated(old, newQuorum);
     }
@@ -193,13 +193,13 @@ contract TerraStakeGuardianCouncil is
     function checkSignatures(
         bytes4 action,
         address target,
-        bytes calldata data,
+        bytes memory data,
         bytes[] calldata signatures,
         uint256 timestamp
     ) public view returns (bool) {
         if (signatures.length < quorumNeeded) return false;
-        uint64 now = uint64(block.timestamp);
-        if (now > timestamp + signatureExpiry || timestamp > now) return false;
+        uint64 _now = uint64(block.timestamp);
+        if (_now > timestamp + signatureExpiry || timestamp > _now) return false;
         
         bytes32 hash = keccak256(abi.encode(action, target, keccak256(data), nonce, timestamp));
         bytes32 signedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));

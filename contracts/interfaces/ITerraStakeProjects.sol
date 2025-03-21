@@ -573,6 +573,13 @@ interface ITerraStakeProjects {
         uint256 categoryChangeFee
     ) external;
     
+    // Chainlink Data Feeder Integration
+    /**
+     * @notice Updates a project's last reported value using Chainlink.
+     * @param projectId The ID of the project to update.
+     * @param dataValue The new data value from Chainlink.
+     */
+    function updateProjectDataFromChainlink(uint256 projectId, int256 dataValue) external;
     
     /**
      * @notice Function to check if a project exists
