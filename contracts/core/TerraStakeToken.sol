@@ -16,6 +16,7 @@ import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
 import "../interfaces/ITerraStakeLiquidityGuard.sol";
 import "../interfaces/ITerraStakeNeural.sol";
+import "../interfaces/IAIEngine.sol";
 import "../interfaces/ITerraStakeITO.sol";
 import "../interfaces/ITerraStakeToken.sol";
 /**
@@ -34,7 +35,7 @@ import "../interfaces/ITerraStakeToken.sol";
     PausableUpgradeable,
     UUPSUpgradeable,
     ITerraStakeToken,
-    ITerraStakeNeural,
+    ITerraStakeNeural
 {
     using SafeERC20 for IERC20;
 
@@ -59,7 +60,12 @@ import "../interfaces/ITerraStakeToken.sol";
     ITerraStakeGovernance public governanceContract;
     ITerraStakeStaking public stakingContract;
     ITerraStakeLiquidityGuard public liquidityGuard;
+    // Add AIEngine reference
+    IAIEngine public aiEngine;
+    bool public useAIEngine;
+    // Add ITO reference 
     address public itoContractAddress;
+
     // ================================
     //  Blacklist Management
     // ================================
@@ -86,6 +92,8 @@ import "../interfaces/ITerraStakeToken.sol";
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant LIQUIDITY_MANAGER_ROLE = keccak256("LIQUIDITY_MANAGER_ROLE");
+    // Add AI Engine specific role
+    bytes32 public constant AI_MANAGER_ROLE = keccak256("AI_MANAGER_ROLE");
     bytes32 public constant ITO_ROLE = keccak256("ITO_ROLE");  
 
     // ========== [Neural / DNA Addition] ==========
@@ -156,6 +164,11 @@ import "../interfaces/ITerraStakeToken.sol";
     event DiversityIndexUpdated(uint256 newIndex);
     event AdaptiveRebalanceTriggered(string reason, uint256 timestamp);
     event SelfOptimizationExecuted(uint256 counter, uint256 timestamp);
+    
+    // Add AIEngine integration events
+    event AIEngineUpdated(address indexed aiEngineAddress);
+    event AIEngineUsageToggled(bool useAIEngine);
+    event AIEngineOperationExecuted(string operation, bool success);
 
     // ================================
     //  Upgradeable Contract Initialization
@@ -200,6 +213,9 @@ import "../interfaces/ITerraStakeToken.sol";
 
         // ========== [Neural / DNA Addition: Additional Role Grants] ==========
         _grantRole(NEURAL_INDEXER_ROLE, msg.sender);
+        
+        // Add AI Manager Role Grant
+        _grantRole(AI_MANAGER_ROLE, msg.sender);
 
         uniswapPool = IUniswapV3Pool(_uniswapPool);
         governanceContract = ITerraStakeGovernance(_governanceContract);
@@ -216,13 +232,120 @@ import "../interfaces/ITerraStakeToken.sol";
         rebalancingFrequencyTarget = 365; // daily
         lastAdaptiveLearningUpdate = block.timestamp;
         lastRebalanceTime = block.timestamp; // set to now so we wait a full interval
-        
         // Initialize remaining neural variables
         diversityIndex = 0;
         geneticVolatility = 0;
         selfOptimizationCounter = 0;
         
+        // Initialize AIEngine variables
+        useAIEngine = false;
+        
         lastTWAPPrice = 0; // Initialize TWAP price
+    }
+
+    // ================================
+    //  AIEngine Integration Functions
+    // ================================
+    
+    /**
+     * @notice Set the AIEngine contract address
+     * @param _aiEngine Address of the AIEngine contract
+     */
+    function setAIEngine(address _aiEngine) external onlyRole(AI_MANAGER_ROLE) {
+        require(_aiEngine != address(0), "Invalid AIEngine address");
+        aiEngine = IAIEngine(_aiEngine);
+        emit AIEngineUpdated(_aiEngine);
+    }
+    
+    /**
+     * @notice Toggle the usage of AIEngine for neural operations
+     * @param _useAIEngine Whether to use AIEngine (true) or internal logic (false)
+     */
+    function toggleAIEngineUsage(bool _useAIEngine) external onlyRole(AI_MANAGER_ROLE) {
+        useAIEngine = _useAIEngine;
+        emit AIEngineUsageToggled(_useAIEngine);
+    }
+    
+    /**
+     * @notice Syncs constituent data with the AIEngine
+     * @param asset Address of the asset to sync
+     */
+    function syncConstituentWithAIEngine(address asset) external onlyRole(NEURAL_INDEXER_ROLE) {
+        require(address(aiEngine) != address(0), "AIEngine not set");
+        require(constituents[asset].isActive, "Not an active constituent");
+        
+        // Create price feed address to pass to AIEngine (would be set properly in production)
+        address dummyPriceFeed = address(0x1);
+        
+        try aiEngine.addConstituent(asset, dummyPriceFeed) {
+            emit AIEngineOperationExecuted("syncConstituent", true);
+        } catch {
+            emit AIEngineOperationExecuted("syncConstituent", false);
+        }
+    }
+    
+    /**
+     * @notice Syncs a neural weight with the AIEngine
+     * @param asset Address of the asset
+     * @param newRawSignal The new signal value
+     * @param smoothingFactor EMA smoothing factor
+     */
+    function syncNeuralWeightWithAIEngine(
+        address asset,
+        uint256 newRawSignal,
+        uint256 smoothingFactor
+    ) external onlyRole(NEURAL_INDEXER_ROLE) {
+        require(address(aiEngine) != address(0), "AIEngine not set");
+        
+        try aiEngine.updateNeuralWeight(asset, newRawSignal, smoothingFactor) {
+            emit AIEngineOperationExecuted("syncNeuralWeight", true);
+        } catch {
+            emit AIEngineOperationExecuted("syncNeuralWeight", false);
+        }
+    }
+    
+    /**
+     * @notice Check token ecosystem health using AIEngine if available
+     * @return healthy Whether the ecosystem is considered healthy
+     */
+    function checkTokenHealth() external view returns (bool healthy) {
+        // Start with presumption of health
+        healthy = true;
+        
+        // Check using AIEngine if available
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.shouldAdaptiveRebalance() returns (bool shouldRebalance, ) {
+                if (shouldRebalance) {
+                    healthy = false;
+                }
+            } catch {
+                // Fallback to local metrics if AIEngine call fails
+                (bool localRebalance, ) = this.shouldAdaptiveRebalance();
+                healthy = !localRebalance;
+            }
+            
+            // Additional AIEngine checks
+            try aiEngine.diversityIndex() returns (uint256 divIndex) {
+                if (divIndex > aiEngine.MAX_DIVERSITY_INDEX() || 
+                    (divIndex < aiEngine.MIN_DIVERSITY_INDEX() && divIndex > 0)) {
+                    healthy = false;
+                }
+            } catch {
+                // Ignore if this check fails
+            }
+        } else {
+            // Use local metrics
+            (bool shouldRebalance, ) = this.shouldAdaptiveRebalance();
+            uint256 localDiversity = diversityIndex;
+            
+            if (shouldRebalance || 
+                localDiversity > MAX_DIVERSITY_INDEX || 
+                (localDiversity < MIN_DIVERSITY_INDEX && localDiversity > 0)) {
+                healthy = false;
+            }
+        }
+        
+        return healthy;
     }
 
     // ================================
@@ -276,10 +399,28 @@ function batchBlacklist(address[] calldata accounts, bool status) external onlyR
  * @param account Address to check and sync
  */
 function syncBlacklistWithITO(address account) external onlyRole(ADMIN_ROLE) {
+    require(itoContractAddress != address(0), "ITO contract not set");
     bool itoBlacklisted = ITerraStakeITO(itoContractAddress).blacklist(account);
     if (isBlacklisted[account] != itoBlacklisted) {
         isBlacklisted[account] = itoBlacklisted;
         emit BlacklistUpdated(account, itoBlacklisted);
+    }
+}
+
+/**
+ * @notice Batch sync blacklist status with ITO contract
+ * @param accounts Array of addresses to sync
+ */
+function batchSyncBlacklistWithITO(address[] calldata accounts) external onlyRole(ADMIN_ROLE) {
+    require(itoContractAddress != address(0), "ITO contract not set");
+    require(accounts.length <= MAX_BATCH_SIZE, "Batch too large");
+    
+    for (uint256 i = 0; i < accounts.length; i++) {
+        bool itoBlacklisted = ITerraStakeITO(itoContractAddress).blacklist(accounts[i]);
+        if (isBlacklisted[accounts[i]] != itoBlacklisted) {
+            isBlacklisted[accounts[i]] = itoBlacklisted;
+            emit BlacklistUpdated(accounts[i], itoBlacklisted);
+        }
     }
 }
     // ================================
@@ -342,6 +483,20 @@ function syncBlacklistWithITO(address account) external onlyRole(ADMIN_ROLE) {
     //  TWAP Oracle Implementation (Arbitrum-optimized)
     // ================================
     function getTWAPPrice(uint32 twapInterval) public returns (uint256 price) {
+        // If AIEngine is active, try to get price from there first
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.fetchLatestPrice(address(this)) returns (uint256 aiPrice) {
+                if (aiPrice > 0) {
+                    lastTWAPPrice = aiPrice;
+                    emit TWAPPriceQueried(twapInterval, aiPrice);
+                    return aiPrice;
+                }
+            } catch {
+                // If AIEngine price fetch fails, fallback to Uniswap TWAP
+            }
+        }
+        
+        // Original Uniswap TWAP logic as fallback
         require(twapInterval >= MIN_TWAP_PERIOD, "TWAP interval too short");
         
         uint32[] memory secondsAgos = new uint32[](2);
@@ -410,11 +565,15 @@ function syncBlacklistWithITO(address account) external onlyRole(ADMIN_ROLE) {
         liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
         emit LiquidityGuardUpdated(_liquidityGuard);
     }
+    /**
+    * @notice Updates the ITO contract address
+    * @param _itoContract Address of the ITO contract
+   */
     function updateITOContract(address _itoContract) external onlyRole(ADMIN_ROLE) {
-    require(_itoContract != address(0), "Invalid address");
-    itoContractAddress = _itoContract;
-    emit ITOContractUpdated(_itoContract);
-    }
+         require(_itoContract != address(0), "Invalid address");
+         itoContractAddress = _itoContract;
+         emit ITOContractUpdated(_itoContract);
+   }
 
     // ================================
     //  Token Transfer Override (Gas-optimized for Arbitrum)
@@ -585,15 +744,15 @@ function syncBlacklistWithITO(address account) external onlyRole(ADMIN_ROLE) {
     // ================================
     //  Upgradeability (Arbitrum considerations)
     // ================================
-  function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-
-/**
- * @notice Get the implementation contract address
- * @return The implementation address
- */
-function getImplementation() external view returns (address) {
-    return _getImplementation();
-}
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+    
+    /**
+     * @notice Get the implementation contract address
+     * @return The implementation address
+     */
+    function getImplementation() external view returns (address) {
+        return _getImplementation();
+    }
 
     // ========== [Neural / DNA Addition: Implementation (Arbitrum optimized)] ==========
 
@@ -612,6 +771,18 @@ function getImplementation() external view returns (address) {
         public
         onlyRole(NEURAL_INDEXER_ROLE)
     {
+        // Try to use AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.updateNeuralWeight(asset, newRawSignal, smoothingFactor) {
+                // If AIEngine update succeeded, still update local state to keep in sync
+                emit AIEngineOperationExecuted("updateNeuralWeight", true);
+            } catch {
+                // If AIEngine fails, proceed with local update only
+                emit AIEngineOperationExecuted("updateNeuralWeight", false);
+            }
+        }
+        
+        // Always update local state regardless of AIEngine
         require(smoothingFactor > 0 && smoothingFactor <= MAX_EMA_SMOOTHING, "Invalid smoothing factor");
 
         // If first time
@@ -654,6 +825,16 @@ function getImplementation() external view returns (address) {
         require(assets.length == smoothingFactors.length, "Arrays mismatch");
         require(assets.length <= MAX_BATCH_SIZE, "Batch too large");
 
+        // Try to batch update via AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.batchUpdateNeuralWeights(assets, signals, smoothingFactors) {
+                emit AIEngineOperationExecuted("batchUpdateNeuralWeights", true);
+            } catch {
+                emit AIEngineOperationExecuted("batchUpdateNeuralWeights", false);
+            }
+        }
+
+        // Always update local state
         for (uint256 i = 0; i < assets.length; i++) {
             updateNeuralWeight(assets[i], signals[i], smoothingFactors[i]);
         }
@@ -667,6 +848,19 @@ function getImplementation() external view returns (address) {
         external
         onlyRole(ADMIN_ROLE)
     {
+        // Try to add constituent to AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            // Create price feed address to pass to AIEngine (would be set properly in production)
+            address dummyPriceFeed = address(0x1);
+            
+            try aiEngine.addConstituent(asset, dummyPriceFeed) {
+                emit AIEngineOperationExecuted("addConstituent", true);
+            } catch {
+                emit AIEngineOperationExecuted("addConstituent", false);
+            }
+        }
+        
+        // Always update local state
         require(asset != address(0), "Zero address");
         require(!constituents[asset].isActive, "Already active");
         constituents[asset] = ConstituentData({
@@ -695,6 +889,16 @@ function getImplementation() external view returns (address) {
         external
         onlyRole(ADMIN_ROLE)
     {
+        // Try to remove constituent from AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.deactivateConstituent(asset) {
+                emit AIEngineOperationExecuted("removeConstituent", true);
+            } catch {
+                emit AIEngineOperationExecuted("removeConstituent", false);
+            }
+        }
+        
+        // Always update local state
         require(constituents[asset].isActive, "Not active");
         constituents[asset].isActive = false;
         emit ConstituentRemoved(asset, block.timestamp);
@@ -708,10 +912,22 @@ function getImplementation() external view returns (address) {
         external
         onlyRole(NEURAL_INDEXER_ROLE)
     {
+        // Always update local state first
         require(constituents[asset].isActive, "Not active");
         constituents[asset].evolutionScore = newScore;
-        // Update geneticVolatility
+        
+        // Update geneticVolatility locally
+        uint256 oldVolatility = geneticVolatility;
         geneticVolatility = (geneticVolatility * 90 + newScore * 10) / 100;
+        
+        // Try to update genetic volatility in AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.updateGeneticVolatility(geneticVolatility) {
+                emit AIEngineOperationExecuted("updateGeneticVolatility", true);
+            } catch {
+                emit AIEngineOperationExecuted("updateGeneticVolatility", false);
+            }
+        }
     }
 
     /**
@@ -719,6 +935,16 @@ function getImplementation() external view returns (address) {
      * @return count The number of active constituents
      */
     function getActiveConstituentsCount() external view returns (uint256 count) {
+        // If AIEngine is enabled, try to get count from there first
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.activeConstituentCount() returns (uint256 aiCount) {
+                return aiCount;
+            } catch {
+                // Fallback to local calculation on AIEngine failure
+            }
+        }
+        
+        // Local calculation as fallback
         uint256 activeCount = 0;
         for (uint256 i = 0; i < constituentList.length; i++) {
             if (constituents[constituentList[i]].isActive) {
@@ -743,6 +969,17 @@ function getImplementation() external view returns (address) {
      * @return reason Human-readable reason
      */
     function shouldAdaptiveRebalance() public view returns (bool, string memory) {
+        // Try to use AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.shouldAdaptiveRebalance() returns (bool shouldRebalance, string memory reason) {
+                return (shouldRebalance, reason);
+            } catch {
+                // Fallback to local logic if AIEngine call fails
+            }
+        }
+        
+        // Local rebalance logic as fallback
+        
         // Time-based rebalance
         if (block.timestamp >= lastRebalanceTime + rebalanceInterval) {
             return (true, "Time-based rebalance");
@@ -786,6 +1023,20 @@ function getImplementation() external view returns (address) {
      * @return reason The reason for rebalance
      */
     function triggerAdaptiveRebalance() external onlyRole(NEURAL_INDEXER_ROLE) returns (string memory reason) {
+        // Try to trigger rebalance in AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.triggerAdaptiveRebalance() returns (string memory aiReason) {
+                emit AIEngineOperationExecuted("triggerAdaptiveRebalance", true);
+                // Still update local state for consistency
+                lastRebalanceTime = block.timestamp;
+                return aiReason;
+            } catch {
+                emit AIEngineOperationExecuted("triggerAdaptiveRebalance", false);
+                // Fallback to local rebalance if AIEngine fails
+            }
+        }
+
+        // Local rebalance logic as fallback
         (bool doRebalance, string memory rebalanceReason) = shouldAdaptiveRebalance();
         require(doRebalance, "Rebalance not needed");
 
@@ -805,6 +1056,22 @@ function getImplementation() external view returns (address) {
      * @notice Execute self-optimization routine
      */
     function executeSelfOptimization() external onlyRole(ADMIN_ROLE) {
+        // Try to use AIEngine for self-optimization if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.manualKeeper() {
+                emit AIEngineOperationExecuted("executeSelfOptimization", true);
+                // Still update local counters
+                selfOptimizationCounter++;
+                lastAdaptiveLearningUpdate = block.timestamp;
+                emit SelfOptimizationExecuted(selfOptimizationCounter, block.timestamp);
+                return;
+            } catch {
+                emit AIEngineOperationExecuted("executeSelfOptimization", false);
+                // Fallback to local optimization if AIEngine fails
+            }
+        }
+        
+        // Local optimization logic as fallback
         require(block.timestamp >= lastAdaptiveLearningUpdate + 30 days, "Too soon to optimize");
 
         uint256 timeSinceLast = block.timestamp - lastAdaptiveLearningUpdate;
@@ -856,6 +1123,42 @@ function getImplementation() external view returns (address) {
         uint256 currentPrice,
         uint256 selfOptCounter
     ) {
+        // Try to get metrics from AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.getActiveConstituents() returns (address[] memory activeAssets) {
+                uint256 activeCount = activeAssets.length;
+                
+                // Try to get other metrics individually
+                uint256 aiDiversityIndex;
+                uint256 aiGeneticVolatility;
+                
+                // Use try/catch for each metric to handle potential failures
+                try aiEngine.diversityIndex() returns (uint256 div) {
+                    aiDiversityIndex = div;
+                } catch {
+                    aiDiversityIndex = diversityIndex; // Fallback to local value
+                }
+                
+                try aiEngine.geneticVolatility() returns (uint256 vol) {
+                    aiGeneticVolatility = vol;
+                } catch {
+                    aiGeneticVolatility = geneticVolatility; // Fallback to local value
+                }
+                
+                return (
+                    aiDiversityIndex,
+                    aiGeneticVolatility,
+                    activeCount,
+                    adaptiveVolatilityThreshold,
+                    lastTWAPPrice,
+                    selfOptimizationCounter
+                );
+            } catch {
+                // If the getActiveConstituents call fails, fall back to local calculation
+            }
+        }
+        
+        // Local calculation as fallback
         uint256 active = 0;
         for (uint256 i = 0; i < constituentList.length; i++) {
             if (constituents[constituentList[i]].isActive) {
@@ -942,6 +1245,139 @@ function getImplementation() external view returns (address) {
             diversityIndex = activeCount > 0 ? 10000 / activeCount : 0;
         }
 
+        // Sync with AIEngine if enabled
+        if (address(aiEngine) != address(0) && useAIEngine) {
+            try aiEngine.recalculateDiversityIndex() {
+                emit AIEngineOperationExecuted("recalculateDiversityIndex", true);
+            } catch {
+                emit AIEngineOperationExecuted("recalculateDiversityIndex", false);
+            }
+        }
+
         emit DiversityIndexUpdated(diversityIndex);
+    }
+
+    /**
+     * @notice Batch sync multiple constituents with the AIEngine
+     * @param assets Array of constituent addresses to sync
+     */
+    function batchSyncConstituentsWithAIEngine(address[] calldata assets) 
+        external 
+        onlyRole(NEURAL_INDEXER_ROLE) 
+    {
+        require(address(aiEngine) != address(0), "AIEngine not set");
+        require(assets.length <= MAX_BATCH_SIZE, "Batch too large");
+        
+        address dummyPriceFeed = address(0x1); // Would be properly set in production
+        
+        for (uint256 i = 0; i < assets.length; i++) {
+            if (constituents[assets[i]].isActive) {
+                try aiEngine.addConstituent(assets[i], dummyPriceFeed) {
+                    // Success
+                } catch {
+                    // Continue with next asset if one fails
+                }
+            }
+        }
+        
+        emit AIEngineOperationExecuted("batchSyncConstituents", true);
+    }
+    
+    /**
+     * @notice Force update local diversity index from AIEngine
+     */
+    function updateDiversityFromAIEngine() 
+        external 
+        onlyRole(NEURAL_INDEXER_ROLE) 
+    {
+        require(address(aiEngine) != address(0), "AIEngine not set");
+        require(useAIEngine, "AIEngine not enabled");
+        
+        try aiEngine.diversityIndex() returns (uint256 aiDiversityIndex) {
+            diversityIndex = aiDiversityIndex;
+            emit DiversityIndexUpdated(diversityIndex);
+            emit AIEngineOperationExecuted("updateDiversityFromAIEngine", true);
+        } catch {
+            emit AIEngineOperationExecuted("updateDiversityFromAIEngine", false);
+            revert("Failed to get diversity from AIEngine");
+        }
+    }
+    
+    /**
+     * @notice Force update local genetic volatility from AIEngine
+     */
+    function updateVolatilityFromAIEngine() 
+        external 
+        onlyRole(NEURAL_INDEXER_ROLE) 
+    {
+        require(address(aiEngine) != address(0), "AIEngine not set");
+        require(useAIEngine, "AIEngine not enabled");
+        
+        try aiEngine.geneticVolatility() returns (uint256 aiGeneticVolatility) {
+            geneticVolatility = aiGeneticVolatility;
+            emit AIEngineOperationExecuted("updateVolatilityFromAIEngine", true);
+        } catch {
+            emit AIEngineOperationExecuted("updateVolatilityFromAIEngine", false);
+            revert("Failed to get volatility from AIEngine");
+        }
+    }
+    
+    /**
+     * @notice Execute AIEngine keeper functions manually
+     * @dev Useful for maintenance and ensuring data consistency
+     */
+    function executeAIEngineKeeper() 
+        external 
+        onlyRole(AI_MANAGER_ROLE) 
+    {
+        require(address(aiEngine) != address(0), "AIEngine not set");
+        
+        try aiEngine.manualKeeper() {
+            emit AIEngineOperationExecuted("executeAIEngineKeeper", true);
+        } catch {
+            emit AIEngineOperationExecuted("executeAIEngineKeeper", false);
+            revert("AIEngine keeper operation failed");
+        }
+    }
+    
+    /**
+     * @notice Get the maximum price deviation allowed by AIEngine
+     * @return The maximum price deviation in basis points (100 = 1%)
+     */
+    function getAIEngineMaxPriceDeviation() 
+        external 
+        view 
+        returns (uint256) 
+    {
+        if (address(aiEngine) != address(0)) {
+            try aiEngine.MAX_PRICE_DEVIATION() returns (uint256 deviation) {
+                return deviation;
+            } catch {
+                return 0;
+            }
+        }
+        return 0;
+    }
+    
+    /**
+     * @notice Get AIEngine integration status
+     * @return isSet Whether AIEngine is set
+     * @return isEnabled Whether AIEngine is enabled for use
+     * @return engineAddress The address of the AIEngine (zero if not set)
+     */
+    function getAIEngineStatus() 
+        external 
+        view 
+        returns (
+            bool isSet,
+            bool isEnabled,
+            address engineAddress
+        ) 
+    {
+        isSet = address(aiEngine) != address(0);
+        isEnabled = useAIEngine;
+        engineAddress = address(aiEngine);
+        
+        return (isSet, isEnabled, engineAddress);
     }
 }
