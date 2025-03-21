@@ -9,7 +9,7 @@ import "./ITerraStakeTreasuryManager.sol";
 
 /**
  * @title ITerraStakeLiquidityGuard
- * @notice Interface for the TerraStakeLiquidityGuard contract
+ * @notice Interface for the TerraStakeLiquidityGuard contract, v2
  */
 interface ITerraStakeLiquidityGuard {
     // Events
