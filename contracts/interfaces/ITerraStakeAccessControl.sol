@@ -59,8 +59,11 @@ interface ITerraStakeAccessControl {
         address usdcToken,
         address wethToken,
         address tStakeToken,
+        address wtstkToken,   // Added for WTSTK
+        address wbtcToken,    // Added for WBTC
         uint256 minimumLiquidity,
         uint256 minimumPrice,
+        uint256 maximumPrice, // Added to match implementation
         uint256 maxOracleDataAge
     ) external;
     
@@ -81,7 +84,7 @@ interface ITerraStakeAccessControl {
     function updatePriceBounds(uint256 newMinPrice, uint256 newMaxPrice) external;
     function setRoleHierarchy(bytes32 role, bytes32 parentRole) external;
     function setMaxOracleDataAge(uint256 maxAgeInSeconds) external;
-    function updateTokenConfiguration(address token, string calldata tokenType) external;
+    function setRoleRequirementToken(bytes32 role, address token) external; // Added for token flexibility
     
     // System Control
     function pause() external;
@@ -100,8 +103,11 @@ interface ITerraStakeAccessControl {
     function usdc() external view returns (IERC20);
     function weth() external view returns (IERC20);
     function tStakeToken() external view returns (IERC20);
+    function wtstk() external view returns (IERC20); // Added for WTSTK
+    function wbtc() external view returns (IERC20);  // Added for WBTC
     function hasValidRole(bytes32 role, address account) external view returns (bool);
     function isActiveRole(bytes32 role, address account) external view returns (bool);
     function getRoleHierarchy(bytes32 role) external view returns (bytes32);
     function maxOracleDataAge() external view returns (uint256);
+    function getMaxRoleDuration() external pure returns (uint256); // Added to match implementation
 }
