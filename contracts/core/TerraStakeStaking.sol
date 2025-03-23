@@ -1147,10 +1147,10 @@ contract TerraStakeStaking is
     //   Slashing
     // -------------------------------------------
 
-    function slash(address validator, uint256 amount) 
-        external 
+    function slash(address validator, uint256 amount)
+        external
         onlyRole(SLASHER_ROLE)
-        returns (bool) 
+        returns (bool)
     {
         if (!_validators[validator]) {
             revert NotValidator(validator);
@@ -1181,6 +1181,13 @@ contract TerraStakeStaking is
 
         emit Slashed(validator, amount, block.timestamp);
         return true;
+    }
+
+    function distributeSlashedTokens(uint256 amount) external onlyRole(SLASHER_ROLE) {
+        bool success = stakingToken.approve(address(rewardDistributor), amount);
+        if (!success) revert TransferFailed(address(stakingToken), address(this), address(rewardDistributor), amount);
+        rewardDistributor.addPenaltyRewards(amount);
+        emit SlashedTokensDistributed(amount);
     }
 
     // -------------------------------------------
