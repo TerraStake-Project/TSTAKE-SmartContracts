@@ -68,6 +68,42 @@ interface ITerraStakeMetadataRenderer {
     ) external view returns (string memory);
     
     /**
+     * @notice Generate enhanced metadata including project verification and oracle data
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category
+     * @param impactValue Numeric impact value
+     * @param projectId Project ID
+     * @param reportId Report ID
+     * @param verificationStatus Whether the impact has been verified
+     * @param oracleData Additional data from Chainlink oracle
+     * @return Full JSON metadata with extended information
+     */
+    function generateEnhancedMetadata(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue,
+        uint256 projectId,
+        uint256 reportId,
+        bool verificationStatus,
+        bytes memory oracleData
+    ) external view returns (string memory);
+    
+    /**
+     * @notice Generate dynamic SVG with real-time oracle data visualization
+     * @param tokenId NFT token ID
+     * @param impactCategory Impact category
+     * @param impactValue Numeric impact value
+     * @param oracleData Oracle data for dynamic visualization
+     * @return SVG string with dynamic elements
+     */
+    function generateDynamicSVG(
+        uint256 tokenId,
+        uint8 impactCategory,
+        uint256 impactValue,
+        bytes memory oracleData
+    ) external view returns (string memory);
+
+    /**
      * @notice Toggle interactive mode for SVGs
      * @param enabled Whether interactive mode should be enabled
      */
@@ -140,6 +176,27 @@ interface ITerraStakeMetadataRenderer {
     function updateSVGTemplate(string calldata newTemplate) external;
     
     /**
+     * @notice Set project-specific template
+     * @param projectId Project ID
+     * @param template Custom SVG template for this project
+     */
+    function setProjectTemplate(uint256 projectId, string calldata template) external;
+    
+    /**
+     * @notice Set visualization for oracle data
+     * @param dataType Oracle data type identifier
+     * @param visualization SVG elements for visualizing this data type
+     */
+    function setOracleDataVisualization(bytes32 dataType, string calldata visualization) external;
+    
+    /**
+     * @notice Set verification badge visualization
+     * @param verifiedBadge SVG for verified content
+     * @param unverifiedBadge SVG for unverified content
+     */
+    function setVerificationBadges(string calldata verifiedBadge, string calldata unverifiedBadge) external;
+    
+    /**
      * @notice Batch configuration of multiple categories
      * @param categories Array of category IDs
      * @param names Array of category names
@@ -184,6 +241,34 @@ interface ITerraStakeMetadataRenderer {
             uint256 scalingFactor
         );
     
+    /**
+     * @notice Get project template
+     * @param projectId Project ID
+     * @return template Custom SVG template for this project
+     */
+    function getProjectTemplate(uint256 projectId) external view returns (string memory template);
+    
+    /**
+     * @notice Get oracle data visualization 
+     * @param dataType Oracle data type identifier
+     * @return visualization SVG elements for visualizing this data type
+     */
+    function getOracleDataVisualization(bytes32 dataType) external view returns (string memory visualization);
+    
+    /**
+     * @notice Set projects contract address
+     * @param projectsContract Address of the TerraStakeProjects contract
+     */
+    function setProjectsContract(address projectsContract) external;
+    
+    /**
+     * @notice Set formatter for specific oracle data types
+     * @param dataType Oracle data type
+     * @param format Format string for this data type
+     * @param units Units string for this data type
+     */
+    function setOracleDataFormat(bytes32 dataType, string calldata format, string calldata units) external;
+
     // Events
     event CategoryColorsUpdated(uint8 indexed category, string primaryColor, string secondaryColor);
     event CategoryIconUpdated(uint8 indexed category, string svgPath);
@@ -203,4 +288,11 @@ interface ITerraStakeMetadataRenderer {
     );
     event InteractiveModeSet(bool enabled);
     event InteractiveElementsSet(uint8 indexed category, string elements);
+    
+    // New events
+    event ProjectTemplateSet(uint256 indexed projectId, string templateHash);
+    event OracleDataVisualizationSet(bytes32 indexed dataType, string visualizationHash);
+    event VerificationBadgesSet(string verifiedBadgeHash, string unverifiedBadgeHash);
+    event ProjectsContractSet(address projectsContract);
+    event OracleDataFormatSet(bytes32 indexed dataType, string format, string units);
 }
