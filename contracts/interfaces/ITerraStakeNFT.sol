@@ -14,7 +14,21 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     // ====================================================
     
     enum NFTType { STANDARD, IMPACT, GOVERNANCE }
-    enum ProjectCategory { CarbonCredit, RenewableEnergy, Biodiversity, Reforestation, WaterConservation, WasteManagement, SustainableAgriculture, ClimateAdaptation }
+    enum NFTProjectCategory { 
+        CarbonCredit,
+        RenewableEnergy,
+        OceanCleanup,
+        Reforestation,
+        Biodiversity,
+        SustainableAg,
+        WasteManagement,
+        WaterConservation,
+        PollutionControl,
+        HabitatRestoration,
+        GreenBuilding,
+        CircularEconomy,
+        CommunityDevelopment
+    }
     
     struct NFTMetadata {
         string name;
@@ -22,7 +36,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
         uint256 creationTime;
         bool uriIsFrozen;
         NFTType nftType;
-        ProjectCategory category;
+        NFTProjectCategory category;
     }
     
     struct ImpactCertificate {
@@ -34,7 +48,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
         string location;
         address verifier;
         bool isVerified;
-        ProjectCategory category;
+        NFTProjectCategory category;
     }
     
     struct FractionInfo {
@@ -45,7 +59,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
         NFTType nftType;
         uint256 projectId;
         bytes32 reportHash;
-        ProjectCategory category;
+        NFTProjectCategory category;
     }
     
     struct RoyaltyInfo {
@@ -67,7 +81,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     function mintStandardNFT(
         address to,
         uint256 amount,
-        ProjectCategory category,
+        NFTProjectCategory category,
         string calldata uri
     ) external returns (uint256);
     
@@ -108,9 +122,9 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     // ====================================================
     //  Metadata & Query Functions
     // ====================================================
-    function getTokenData(uint256 tokenId) external view returns (uint256 impactValue, ProjectCategory category, bytes32 verificationHash);
+    function getTokenData(uint256 tokenId) external view returns (uint256 impactValue, NFTProjectCategory category, bytes32 verificationHash);
 
-    function getTokensByCategory(ProjectCategory category) external view returns (uint256[] memory);
+    function getTokensByCategory(NFTProjectCategory category) external view returns (uint256[] memory);
     
     function getTokenMetadata(uint256 _tokenID) external view returns (NFTMetadata memory);
     
@@ -213,7 +227,7 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     //  Events
     // ====================================================
     
-    event TokenMinted(uint256 indexed _tokenID, address indexed recipient, NFTType nftType, ProjectCategory category);
+    event TokenMinted(uint256 indexed _tokenID, address indexed recipient, NFTType nftType, NFTProjectCategory category);
     event ImpactCertificateCreated(uint256 indexed _tokenID, uint256 indexed projectId, bytes32 reportHash);
     event ImpactVerified(uint256 indexed _tokenID, bytes32 reportHash, address verifier);
     event TokenFractionalized(uint256 indexed originalTokenID, uint256[] fractionIds, uint256 fractionCount); // Updated name
