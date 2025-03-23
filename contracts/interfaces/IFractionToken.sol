@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -42,6 +43,9 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         uint256 impactValue;
         ITerraStakeNFT.ProjectCategory category;
         bytes32 verificationHash;
+        // New fields for project integration
+        uint256 projectId;
+        uint256 reportId;
     }
 
     struct FractionParams {
@@ -51,6 +55,9 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         string name;
         string symbol;
         uint256 lockPeriod;
+        // New fields for project integration
+        uint256 projectId;
+        uint256 reportId;
     }
 
     struct FractionMarketData {
@@ -82,6 +89,15 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
     struct TimelockConfig {
         uint256 duration;
         bool enabled;
+    }
+
+    // New struct for project-related fraction data
+    struct ProjectFractionData {
+        uint256 projectId;
+        uint256 reportId;
+        uint256 impactValue;
+        address[] fractionTokens;
+        uint256 totalFractionalized;
     }
 
     // =====================================================
@@ -204,6 +220,29 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         bool enabled
     );
 
+    // New events for project integration
+    event ProjectLinked(
+        address indexed fractionToken,
+        uint256 indexed nftId,
+        uint256 indexed projectId,
+        uint256 reportId
+    );
+    
+    event ImpactMetricsUpdated(
+        address indexed fractionToken,
+        uint256 oldImpactValue,
+        uint256 newImpactValue
+    );
+
+    event ChainlinkDataRequested(
+        address indexed fractionToken,
+        bytes32 requestId
+    );
+
+    event ProjectsContractSet(
+        address indexed projectsContract
+    );
+
     // =====================================================
     // Fractionalization Functions
     // =====================================================
@@ -223,6 +262,99 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         uint256 fractionCount,
         uint256 lockPeriod
     ) external returns (address fractionToken);
+
+    // =====================================================
+    // New Project Integration Functions
+    // =====================================================
+    
+    /**
+     * @notice Sets the TerraStakeProjects contract address
+     * @param projectsContract The projects contract address
+     */
+    function setProjectsContract(address projectsContract) external;
+    
+    /**
+     * @notice Gets the TerraStakeProjects contract address
+     * @return The projects contract address
+     */
+    function getProjectsContract() external view returns (address);
+    
+    /**
+     * @notice Links an existing fractionalized NFT to a project
+     * @param fractionToken The fraction token address
+     * @param projectId The project ID
+     * @param reportId The report ID
+     */
+    function linkFractionToProject(
+        address fractionToken,
+        uint256 projectId,
+        uint256 reportId
+    ) external;
+    
+    /**
+     * @notice Gets all fractionalized tokens for a project
+     * @param projectId The project ID
+     * @return fractionTokens Array of fraction token addresses
+     */
+    function getProjectFractionTokens(uint256 projectId) 
+        external 
+        view 
+        returns (address[] memory fractionTokens);
+    
+    /**
+     * @notice Gets all fractionalized tokens for a specific impact report
+     * @param projectId The project ID
+     * @param reportId The report ID
+     * @return fractionTokens Array of fraction token addresses
+     */
+    function getReportFractionTokens(uint256 projectId, uint256 reportId) 
+        external 
+        view 
+        returns (address[] memory fractionTokens);
+    
+    /**
+     * @notice Updates impact value for a fraction token using Chainlink data
+     * @param fractionToken The fraction token address
+     * @return success Whether the update was successful
+     */
+    function updateImpactValue(address fractionToken) external returns (bool success);
+    
+    /**
+     * @notice Requests impact data update from Chainlink for a fraction token
+     * @param fractionToken The fraction token address
+     * @return requestId The Chainlink request ID
+     */
+    function requestImpactDataUpdate(address fractionToken) external returns (bytes32 requestId);
+    
+    /**
+     * @notice Gets the project and report IDs for a fraction token
+     * @param fractionToken The fraction token address
+     * @return projectId The project ID
+     * @return reportId The report ID
+     */
+    function getFractionProjectData(address fractionToken) 
+        external 
+        view 
+        returns (uint256 projectId, uint256 reportId);
+    
+    /**
+     * @notice Gets fraction data for a specific project
+     * @param projectId The project ID
+     * @return data The project fraction data
+     */
+    function getProjectFractionData(uint256 projectId) 
+        external 
+        view 
+        returns (ProjectFractionData memory data);
+    
+    /**
+     * @notice Fractionalizes an NFT with project data
+     * @param params The fractionalization parameters including project data
+     * @return fractionToken The created fraction token address
+     */
+    function fractionalizeProjectNFT(FractionParams calldata params) 
+        external 
+        returns (address fractionToken);
 
     // =====================================================
     // Oracle Functions
