@@ -280,7 +280,7 @@ interface ITerraStakeProjects {
     /**
      * @notice Emitted when a project's metadata is updated
      */
-    event ProjectMetadataUpdated(uint256 indexed projectId, string name);
+    event ProjectMetadataUpdated(uint256 indexed projectId, string name, bytes32 ipfsHash);
     
     /**
      * @notice Emitted when a comment is added to a project
@@ -335,7 +335,13 @@ interface ITerraStakeProjects {
     /**
      * @notice Emitted when an impact report is submitted
      */
-    event ImpactReportSubmitted(uint256 indexed projectId, uint256 indexed reportId, address reporter, bytes32 reportHash, uint256 impactMetricValue);
+    event ImpactReportSubmitted(
+        uint256 indexed projectId, 
+        uint256 indexed reportId, 
+        address reporter, 
+        bytes32 reportHash, 
+        uint256 impactMetricValue
+    );
     
     /**
      * @notice Emitted when a REC report is submitted
@@ -407,9 +413,6 @@ interface ITerraStakeProjects {
     event MinimumStakeAmountSet(uint256 amount);
     event FeesWithdrawn(address recipient, uint256 amount);
     
-    // Project metadata update event
-    event ProjectMetadataUpdated(uint256 indexed projectId, string name, bytes32 ipfsHash);
-    
     // Fee management events
     event TokensBurned(uint256 amount);
     
@@ -422,7 +425,6 @@ interface ITerraStakeProjects {
     event BuybackExecuted(uint256 amount);
     
     // Project events
-    event ImpactReportSubmitted(uint256 indexed projectId, uint256 reportId, bytes32 reportHash, uint256 measuredValue);
     event ImpactReportValidated(uint256 indexed projectId, uint256 reportId, address validator, bool approved);
     event RewardsDistributed(uint256 indexed projectId, uint256 amount);
     event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount);
@@ -573,7 +575,6 @@ interface ITerraStakeProjects {
         uint256 categoryChangeFee
     ) external;
     
-    // Chainlink Data Feeder Integration
     /**
      * @notice Updates a project's last reported value using Chainlink.
      * @param projectId The ID of the project to update.
@@ -587,8 +588,232 @@ interface ITerraStakeProjects {
      * @return bool True if the project exists, false otherwise
      */
     function projectExists(uint256 projectId) external view returns (bool);
+    
+    /**
+     * @notice Gets the total number of projects
+     * @return uint256 The total count of projects
+     */
     function getProjectCount() external view returns (uint256);
     
+    /**
+     * @notice Increments the staker count for a project
+     * @param projectId ID of the project
+     */
     function incrementStakerCount(uint256 projectId) external;
+    
+    /**
+     * @notice Decrements the staker count for a project
+     * @param projectId ID of the project
+     */
     function decrementStakerCount(uint256 projectId) external;
+    
+    /**
+     * @notice Validates an impact report
+     * @param projectId ID of the project
+     * @param reportId ID of the report to validate
+     * @param approved Whether the report is approved
+     * @param validationNotes Notes from the validator
+     */
+    function validateImpactReport(
+        uint256 projectId, 
+        uint256 reportId, 
+        bool approved, 
+        string calldata validationNotes
+    ) external;
+    
+    /**
+     * @notice Updates a project's information
+     * @param projectId ID of the project
+     * @param name Updated name
+     * @param description Updated description
+     * @param location Updated location
+     * @param impactMetrics Updated impact metrics
+     * @param ipfsHash Updated IPFS hash
+     */
+    function updateProject(
+        uint256 projectId,
+        string memory name,
+        string memory description,
+        string memory location,
+        string memory impactMetrics,
+        bytes32 ipfsHash
+    ) external;
+    
+    /**
+     * @notice Sets targets for a project
+     * @param projectId ID of the project
+     * @param impactTarget Target impact value
+     * @param stakingTarget Target staking amount
+     */
+    function setProjectTargets(
+        uint256 projectId,
+        uint256 impactTarget,
+        uint256 stakingTarget
+    ) external;
+    
+    /**
+     * @notice Changes a project's category
+     * @param projectId ID of the project
+     * @param newCategory New category for the project
+     */
+    function changeProjectCategory(
+        uint256 projectId,
+        ProjectCategory newCategory
+    ) external;
+    
+    /**
+     * @notice Updates the staking multiplier for a project
+     * @param projectId ID of the project
+     * @param newMultiplier New staking multiplier
+     */
+    function updateStakingMultiplier(
+        uint256 projectId,
+        uint32 newMultiplier
+    ) external;
+    
+    /**
+     * @notice Sets the minimum stake amount
+     * @param amount Minimum stake amount
+     */
+    function setMinimumStakeAmount(uint256 amount) external;
+    
+    /**
+     * @notice Withdraws accumulated fees
+     * @param recipient Address to receive the fees
+     * @param amount Amount to withdraw
+     */
+    function withdrawFees(address recipient, uint256 amount) external;
+    
+    /**
+     * @notice Burns tokens
+     * @param amount Amount of tokens to burn
+     */
+    function burnTokens(uint256 amount) external;
+    
+    /**
+     * @notice Activates emergency mode
+     */
+    function activateEmergencyMode() external;
+    
+    /**
+     * @notice Deactivates emergency mode
+     */
+    function deactivateEmergencyMode() external;
+    
+    /**
+     * @notice Executes a buyback
+     * @param amount Amount for buyback
+     */
+    function executeBuyback(uint256 amount) external;
+    
+    /**
+     * @notice Finalizes staking for a project
+     * @param projectId ID of the project
+     * @param isCompleted Whether the project is completed
+     */
+    function finalizeProjectStaking(uint256 projectId, bool isCompleted) external;
+    
+    /**
+     * @notice Adds a document to a project
+     * @param projectId ID of the project
+     * @param name Document name
+     * @param docType Document type
+     * @param ipfsHash IPFS hash of the document
+     */
+    function addProjectDocument(
+        uint256 projectId,
+        string calldata name,
+        string calldata docType,
+        bytes32 ipfsHash
+    ) external returns (uint256 documentId);
+    
+    /**
+     * @notice Recovers tokens accidentally sent to the contract
+     * @param tokenAddress Address of the token
+     * @param to Address to receive the tokens
+     * @param amount Amount to recover
+     */
+    function recoverToken(address tokenAddress, address to, uint256 amount) external;
+    
+    /**
+     * @notice Verifies a project
+     * @param projectId ID of the project
+     * @param verificationNotes Notes from the verifier
+     * @param verificationDataHash Hash of verification data
+     */
+    function verifyProject(
+        uint256 projectId,
+        string calldata verificationNotes,
+        bytes32 verificationDataHash
+    ) external;
+    
+    /**
+     * @notice Updates impact requirements for a project
+     * @param projectId ID of the project
+     * @param minStakingPeriod Minimum staking period
+     * @param reportingFrequency Frequency of reporting
+     * @param verificationThreshold Threshold for verification
+     * @param impactDataFormat Format of impact data
+     * @param requiresAudit Whether audit is required
+     */
+    function updateImpactRequirements(
+        uint256 projectId,
+        uint32 minStakingPeriod,
+        uint32 reportingFrequency,
+        uint32 verificationThreshold,
+        uint32 impactDataFormat,
+        bool requiresAudit
+    ) external;
+    
+    /**
+     * @notice Updates category requirements
+     * @param category Project category
+     * @param name Category name
+     * @param description Category description
+     * @param impactWeight Impact weight
+     */
+    function updateCategoryRequirements(
+        ProjectCategory category,
+        string calldata name,
+        string calldata description,
+        uint8 impactWeight
+    ) external;
+    
+    /**
+     * @notice Changes the treasury address
+     * @param newTreasury New treasury address
+     */
+    function changeTreasuryAddress(address newTreasury) external;
+    
+    /**
+     * @notice Increases the reward pool for a project
+     * @param projectId ID of the project
+     * @param amount Amount to add to the pool
+     */
+    function increaseRewardPool(uint256 projectId, uint256 amount) external;
+    
+    /**
+     * @notice Sets the NFT contract address
+     * @param nftContract Address of the NFT contract
+     */
+    function setNFTContract(address nftContract) external;
+    
+    /**
+     * @notice Mints an impact NFT
+     * @param projectId ID of the project
+     * @param reportHash Hash of the report
+     * @param recipient Address to receive the NFT
+     */
+    function mintImpactNFT(uint256 projectId, bytes32 reportHash, address recipient) external;
+    
+    /**
+     * @notice Pauses the contract
+     */
+    function pause() external;
+    
+    /**
+     * @notice Unpauses the contract
+     */
+    function unpause() external;
 }
+
