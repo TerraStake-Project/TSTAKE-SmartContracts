@@ -104,7 +104,7 @@ contract AIEngine is
     event OperationApproved(bytes32 indexed operationId, address indexed approver, uint256 currentApprovals);
     event OperationScheduled(bytes32 indexed operationId, uint256 executionTime);
     event ConfigUpdated(string parameter, uint256 newValue);
-    event PriceUpdated(address indexed asset, uint256 price, uint256 timestamp);
+    event AssetPriceUpdated(address indexed asset, uint256 price, uint256 timestamp); // Renamed from PriceUpdated
     event CircuitBreaker(address indexed asset, uint256 oldPrice, uint256 newPrice, uint256 deviation);
 
     // ===============================
@@ -389,11 +389,11 @@ contract AIEngine is
                 sumSquared += (percentShare * percentShare);
             }
         }
-        
-        // Set new diversity index and emit event
+                // Set new diversity index and emit event
         diversityIndex = sumSquared;
         emit DiversityIndexUpdated(sumSquared);
     }
+
     /**
      * @notice Manually triggers diversity index recalculation
      */
@@ -469,7 +469,7 @@ contract AIEngine is
         constituents[asset].lastPrice = priceUint;
         constituents[asset].lastPriceUpdateTime = block.timestamp;
 
-        emit PriceUpdated(asset, priceUint, block.timestamp);
+        emit AssetPriceUpdated(asset, priceUint, block.timestamp); // Renamed from PriceUpdated
 
         return priceUint;
     }
@@ -480,7 +480,7 @@ contract AIEngine is
      * @return price The asset price
      * @return isFresh Whether the price data is fresh
      */
-    function getLatestPrice(address asset) external view returns (uint256 price, bool isFresh) {
+    function getAssetPrice(address asset) external view returns (uint256 price, bool isFresh) {
         if (address(priceFeeds[asset]) == address(0)) {
             return (0, false);
         }
@@ -698,7 +698,7 @@ contract AIEngine is
                         // Price update successful
                     } catch {
                         // Log but continue with other assets
-                        emit PriceUpdated(asset, 0, block.timestamp);
+                        emit AssetPriceUpdated(asset, 0, block.timestamp); // Renamed from PriceUpdated
                     }
                 }
             }
@@ -730,7 +730,7 @@ contract AIEngine is
                     // Price update successful
                 } catch {
                     // Log but continue with other assets
-                    emit PriceUpdated(asset, 0, block.timestamp);
+                    emit AssetPriceUpdated(asset, 0, block.timestamp); // Renamed from PriceUpdated
                 }
             }
         }
@@ -977,7 +977,7 @@ contract AIEngine is
         constituents[asset].lastPrice = priceUint;
         constituents[asset].lastPriceUpdateTime = block.timestamp;
         
-        emit PriceUpdated(asset, priceUint, block.timestamp);
+        emit AssetPriceUpdated(asset, priceUint, block.timestamp); // Renamed from PriceUpdated
     }
 
     // ===============================
@@ -1013,4 +1013,3 @@ contract AIEngine is
         // Implementation validation could be added here
     }
 }
-    
