@@ -221,8 +221,6 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
     
     function recoverERC20(address tokenAddress, uint256 amount) external;
     
-    function executeBuyback(uint256 amount) external;
-    
     // ====================================================
     //  Events
     // ====================================================

@@ -430,7 +430,7 @@ interface ITerraStakeProjects {
     event ProjectStaked(uint256 indexed projectId, address indexed staker, uint256 amount);
     event ProjectUnstaked(uint256 indexed projectId, address indexed staker, uint256 amount);
     event RewardsClaimed(uint256 indexed projectId, address indexed staker, uint256 amount);
-    event ProjectDocumentAdded(uint256 indexed projectId, uint256 documentId, string name, bytes32 ipfsHash);
+    event ProjectDocumentAdded(uint256 indexed projectId, uint256 documentId, string name, string docType, bytes32 ipfsHash);
     event TokenRecovered(address tokenAddress, address to, uint256 amount);
     event ProjectVerified(uint256 indexed projectId, address verifier, bytes32 verificationDataHash);
     event ImpactRequirementsUpdated(uint256 indexed projectId);
@@ -699,12 +699,6 @@ interface ITerraStakeProjects {
      * @notice Deactivates emergency mode
      */
     function deactivateEmergencyMode() external;
-    
-    /**
-     * @notice Executes a buyback
-     * @param amount Amount for buyback
-     */
-    function executeBuyback(uint256 amount) external;
     
     /**
      * @notice Finalizes staking for a project

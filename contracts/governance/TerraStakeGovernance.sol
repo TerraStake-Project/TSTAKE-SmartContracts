@@ -8,6 +8,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
 import "../interfaces/ITerraStakeGovernance.sol";
@@ -32,6 +33,7 @@ contract TerraStakeGovernance is
     ITerraStakeGovernance
 {
     using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
 
     // Custom errors
     error Unauthorized();
@@ -96,7 +98,7 @@ contract TerraStakeGovernance is
     uint8 public constant PROPOSAL_TYPE_EMERGENCY = 5;
     uint8 public constant PROPOSAL_TYPE_VALIDATOR = 6;
     
-    uint256 public constant TIMELOCK_DURATION = 2 days;
+    uint48 public constant TIMELOCK_DURATION = 2 days;
     uint256 public constant PENALTY_FOR_VIOLATION = 5;
     uint256 public constant TWO_YEARS = 730 days;
     uint24 public constant POOL_FEE = 3000;
@@ -125,7 +127,7 @@ contract TerraStakeGovernance is
     SystemState public systemState;
     FeeProposal public currentFeeStructure;
     
-    mapping(uint256 => Proposal) public override proposals;
+    mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => ExtendedProposalData) public proposalExtendedData;
     mapping(uint256 => mapping(address => Receipt)) public override receipts;
     mapping(bytes32 => bool) public executedHashes;
@@ -138,8 +140,6 @@ contract TerraStakeGovernance is
     uint48 public bootstrapEndTime;
     uint48 public temporaryThresholdEndTime;
     uint96 public originalValidatorThreshold;
-    mapping(address => bool) public guardianCouncilMembers;
-    uint8 public guardianCount;
     
     bool public paused; // Added for pause/unpause
     
@@ -179,7 +179,7 @@ contract TerraStakeGovernance is
         address _guardianCouncil,
         address _tStakeToken,
         address _initialAdmin
-    ) external override initializer {
+    ) external initializer {
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
@@ -236,9 +236,7 @@ contract TerraStakeGovernance is
         
         bootstrapMode = true;
         bootstrapEndTime = currentTime + 90 days;
-        guardianCount = 1;
-        guardianCouncilMembers[_initialAdmin] = true;
-        originalValidatorThreshold = stakingContract.validatorThreshold();
+        originalValidatorThreshold = uint96(stakingContract.validatorThreshold());
         governanceTier = 0;
     }
     
@@ -487,7 +485,7 @@ contract TerraStakeGovernance is
     {
         if (stakingContract.getValidatorCount() >= CRITICAL_VALIDATOR_THRESHOLD) revert InvalidProposalState();
         
-        if (temporaryThresholdEndTime == 0) originalValidatorThreshold = stakingContract.validatorThreshold();
+        if (temporaryThresholdEndTime == 0) originalValidatorThreshold = uint96(stakingContract.validatorThreshold());
         
         (bool success, ) = address(stakingContract).call(
             abi.encodeWithSelector(ITerraStakeStaking.setValidatorThreshold.selector, newThreshold)
@@ -515,73 +513,6 @@ contract TerraStakeGovernance is
         uint256 totalStaked = stakingContract.totalStakedTokens();
         emit ValidatorHealthCheck(validatorCount, totalStaked, 
             validatorCount > 0 ? totalStaked / validatorCount : 0, governanceTier);
-    }
-    
-    function addGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (guardian == address(0) || guardianCouncilMembers[guardian]) revert InvalidParameters();
-        
-        guardianCouncilMembers[guardian] = true;
-        unchecked { guardianCount++; }
-        _grantRole(GUARDIAN_ROLE, guardian);
-        emit GuardianAdded(guardian);
-    }
-    
-    function removeGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (!guardianCouncilMembers[guardian] || guardianCount <= 1) revert InvalidParameters();
-        
-        guardianCouncilMembers[guardian] = false;
-        unchecked { guardianCount--; }
-        _revokeRole(GUARDIAN_ROLE, guardian);
-        emit GuardianRemoved(guardian);
-    }
-    
-    function validateGuardianSignatures(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures
-    ) public view returns (bool) {
-        if (signatures.length < GUARDIAN_QUORUM) return false;
-        
-        bytes32 messageHash = keccak256(abi.encodePacked(operation, target, data, systemState.currentNonce))
-            .toEthSignedMessageHash();
-        
-        address[GUARDIAN_QUORUM] memory signers;
-        uint256 validCount;
-        
-        for (uint256 i = 0; i < signatures.length && validCount < GUARDIAN_QUORUM; i++) {
-            address signer = messageHash.recover(signatures[i]);
-            if (guardianCouncilMembers[signer]) {
-                bool isUnique = true;
-                for (uint256 j = 0; j < validCount; j++) {
-                    if (signers[j] == signer) {
-                        isUnique = false;
-                        break;
-                    }
-                }
-                if (isUnique) signers[validCount++] = signer;
-            }
-        }
-        return validCount >= GUARDIAN_QUORUM;
-    }
-    
-    function guardianOverride(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures
-    ) external nonReentrant {
-        if (stakingContract.getValidatorCount() >= CRITICAL_VALIDATOR_THRESHOLD) revert InvalidProposalState();
-        if (!validateGuardianSignatures(operation, target, data, signatures)) revert InvalidGuardianSignatures();
-        if (executedNonces[systemState.currentNonce]) revert NonceAlreadyExecuted();
-        
-        executedNonces[systemState.currentNonce] = true;
-        unchecked { systemState.currentNonce++; }
-        
-        (bool success, ) = target.call(data);
-        if (!success) revert InvalidParameters();
-        
-        emit GuardianOverrideExecuted(msg.sender, operation, target);
     }
     
     function createValidatorProposal(string calldata description, uint256 newThreshold, uint256 incentives) 
@@ -753,17 +684,7 @@ contract TerraStakeGovernance is
         if (!success) tStakeToken.transfer(address(0xdead), amount);
         emit TokensBurned(amount);
     }
-    
-    function treasuryTransfer(address token, address recipient, uint256 amount) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-        nonReentrant 
-    {
-        if (amount == 0 || recipient == address(0)) revert InvalidParameters();
-        IERC20(token).transfer(recipient, amount);
-        emit TreasuryTransfer(token, recipient, amount);
-    }
-    
+        
     // -------------------------------------------
     //  Reward Distribution Functions
     // -------------------------------------------
@@ -972,14 +893,6 @@ contract TerraStakeGovernance is
     ) {
         return (governanceTier, stakingContract.getValidatorCount(), bootstrapMode, 
             temporaryThresholdEndTime, originalValidatorThreshold);
-    }
-    
-    function isGuardianQuorumAchievable() external view returns (bool) {
-        return guardianCount >= GUARDIAN_QUORUM;
-    }
-    
-    function isGuardian(address account) external view returns (bool) {
-        return guardianCouncilMembers[account];
     }
 
     // -------------------------------------------

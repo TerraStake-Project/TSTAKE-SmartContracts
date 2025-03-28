@@ -32,7 +32,6 @@ interface ITerraStakeGuardianCouncil {
     event EmergencyTargetAdded(bytes4 operationType, address target);
     event EmergencyTargetRemoved(bytes4 operationType, address target);
     event NonceIncremented(uint256 newNonce);
-    event GuardianOverride(bytes4 operation, address target, bytes data);
     event EmergencyActionAttempt(bytes4 operationType, bool success);
     
     // -------------------------------------------
@@ -73,15 +72,7 @@ interface ITerraStakeGuardianCouncil {
         address target,
         bytes calldata data
     ) external view returns (bool);
-    
-    function validateGuardianSignatures(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures,
-        uint256 timestamp
-    ) external view returns (bool);
-    
+        
     // -------------------------------------------
     //  State-Changing Functions
     // -------------------------------------------
@@ -100,14 +91,6 @@ interface ITerraStakeGuardianCouncil {
     function removeEmergencyTarget(bytes4 operationType, address target) external;
     
     function incrementNonce() external;
-    
-    function guardianOverride(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures,
-        uint256 timestamp
-    ) external;
     
     function executeEmergencyPause(
         bytes[] calldata signatures,

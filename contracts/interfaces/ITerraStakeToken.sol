@@ -194,13 +194,6 @@ interface ITerraStakeToken is IERC20 {
     function executeBuyback(uint256 usdcAmount) external returns (uint256 tokensReceived);
     
     /**
-     * @notice Inject liquidity
-     * @param amount Amount to inject
-     * @return success Operation status
-     */
-    function injectLiquidity(uint256 amount) external returns (bool);
-    
-    /**
      * @notice Get buyback statistics
      * @return The buyback statistics struct
      */
@@ -282,11 +275,6 @@ interface ITerraStakeToken is IERC20 {
      * @notice Activate circuit breaker
      */
     function activateCircuitBreaker() external;
-    
-    /**
-     * @notice Reset circuit breaker
-     */
-    function resetCircuitBreaker() external;
 
     // ================================
     //  Events

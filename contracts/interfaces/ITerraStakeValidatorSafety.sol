@@ -15,7 +15,6 @@ interface ITerraStakeValidatorSafety {
     event ValidatorRemoved(address indexed validator);
     event ValidatorThresholdUpdated(uint256 newThreshold);
     event ValidatorQuorumUpdated(uint256 newQuorum);
-    event GovernanceTierUpdated(uint8 tierId, uint256 newThreshold);
     event ValidatorCooldownUpdated(uint256 newCooldown);
     event RiskScoreUpdated(address indexed validator, uint256 newScore);
     event RiskScoreThresholdUpdated(uint256 newThreshold);
@@ -66,10 +65,6 @@ interface ITerraStakeValidatorSafety {
     function validatorCooldownPeriod() external view returns (uint256);
     function lastValidatorConfigUpdate() external view returns (uint256);
     
-    function governanceTier1Threshold() external view returns (uint256);
-    function governanceTier2Threshold() external view returns (uint256);
-    function governanceTier3Threshold() external view returns (uint256);
-    
     function riskScoreThreshold() external view returns (uint256);
     function validatorRiskScores(address validator) external view returns (uint256);
     function lastValidatorActivity(address validator) external view returns (uint256);
@@ -90,7 +85,6 @@ interface ITerraStakeValidatorSafety {
     function getActiveValidators() external view returns (address[] memory);
     function getValidatorInactivityDuration(address validator) external view returns (uint256);
     function isValidatorConfigCooldownActive() external view returns (bool);
-    function getGovernanceTier(uint256 tokenAmount) external view returns (uint8);
     function isEmergencyCooldownActive() external view returns (bool);
     function getHighRiskValidatorCount() external view returns (uint256);
     function getInactiveValidators() external view returns (address[] memory);
@@ -117,7 +111,6 @@ interface ITerraStakeValidatorSafety {
     function updateValidatorThreshold(uint256 newThreshold) external;
     function scheduleUpdateValidatorQuorum(uint256 newQuorum) external;
     function updateValidatorQuorum(uint256 newQuorum) external;
-    function updateGovernanceTier(uint8 tierId, uint256 newThreshold) external;
     function updateValidatorCooldown(uint256 newCooldown) external;
     function updateValidatorInactivityThreshold(uint256 newThreshold) external;
     function setAutoSuspendHighRiskValidators(bool enabled) external;

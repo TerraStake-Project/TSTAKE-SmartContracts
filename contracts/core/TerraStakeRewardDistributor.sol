@@ -415,7 +415,7 @@ contract TerraStakeRewardDistributor is
             if (stakerAmount > 0) {
                 uint256 penaltyShare = (batchPenaltyShare * stakerAmount) / batchStaked;
                 if (penaltyShare > 0) {
-                    try rewardToken.safeTransfer(staker, penaltyShare) {
+                    try rewardToken.transfer(staker, penaltyShare) {
                         distributedInBatch += penaltyShare;
                     } catch {
                         // Failed transfer should not block other distributions

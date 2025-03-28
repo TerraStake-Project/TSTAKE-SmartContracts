@@ -5,7 +5,7 @@ pragma solidity 0.8.28;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
 import "./ITerraStakeToken.sol";
-import "./ITerraStakeNFT.sol";
+import "./ITerraStakeProjects.sol";
 
 interface IFractionToken is IERC20 {
     function burnAll(address account) external;
@@ -19,18 +19,6 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
     // =====================================================
     // Structs
     // =====================================================
-    struct Proposal {
-        bytes32 proposalHash;
-        uint256 proposedTime;
-        uint256 requiredThreshold;
-        bool executed;
-        bool isEmergency;
-        address creator;
-        bool canceled;
-        uint256 executionTime;
-        address[] approvers; // Using array instead of EnumerableSet
-    }
-
     struct FractionData {
         address tokenAddress;
         uint256 nftId;
@@ -41,7 +29,7 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         address creator;
         uint256 creationTime;
         uint256 impactValue;
-        ITerraStakeNFT.ProjectCategory category;
+        ITerraStakeProjects.ProjectCategory category;
         bytes32 verificationHash;
         // New fields for project integration
         uint256 projectId;
@@ -108,7 +96,7 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         address fractionToken, 
         uint256 totalSupply, 
         address creator,
-        ITerraStakeNFT.ProjectCategory category,
+        ITerraStakeProjects.ProjectCategory category,
         uint256 impactValue
     );
 
@@ -157,37 +145,7 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         uint256 totalTradingVolume,
         uint256 totalEnvironmentalImpact
     );
-
-    event ProposalCreated(
-        bytes32 indexed proposalId,
-        address indexed proposer,
-        bool isEmergency,
-        bytes data,
-        uint256 executionTime
-    );
-    
-    event ProposalApproved(
-        bytes32 indexed proposalId,
-        address indexed approver,
-        uint256 approvalCount,
-        uint256 threshold
-    );
-    
-    event ProposalExecuted(
-        bytes32 indexed proposalId,
-        address indexed executor,
-        bool success
-    );
-    
-    event ProposalExpiredEvent(
-        bytes32 indexed proposalId
-    );
-    
-    event ProposalCanceledEvent(
-        bytes32 indexed proposalId,
-        address indexed canceler
-    );
-    
+            
     event OracleConfigured(
         address indexed token,
         address indexed oracle,
@@ -242,6 +200,24 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
     event ProjectsContractSet(
         address indexed projectsContract
     );
+
+
+    // Errors
+    error InvalidAddress();
+    error NFTAlreadyFractionalized();
+    error FractionalizationNotActive();
+    error ProjectsContractNotSet();
+    error InvalidProjectId();
+    error InvalidFractionSupply();
+    error InvalidLockPeriod();
+    error InsufficientBalance();
+    error NFTStillLocked();
+    error NoRedemptionOffer();
+    error TransferFailed();
+    error ProposalAlreadyExists();
+    error ProposalDoesNotExist();
+    error ProposalAlreadyExecuted();
+    error ProposalExpired();
 
     // =====================================================
     // Fractionalization Functions
@@ -372,31 +348,7 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
 
     // =====================================================
     // Governance Functions
-    // =====================================================
-    function createProposal(
-        bytes calldata data,
-        string calldata description,
-        bool isEmergency
-    ) external returns (bytes32);
-    
-    function approveProposal(bytes32 proposalId) external;
-    
-    function executeProposal(
-        bytes32 proposalId,
-        address target,
-        bytes calldata data
-    ) external returns (bool);
-    
-    function cancelProposal(bytes32 proposalId) external;
-    
-    function cleanupExpiredProposal(bytes32 proposalId) external;
-    
-    function setGovernanceParams(
-        uint256 _governanceThreshold,
-        uint256 _emergencyThreshold,
-        uint256 _proposalExpiryTime
-    ) external;
-    
+    // =====================================================                   
     function setTimelockConfig(uint256 _duration, bool _enabled) external;
     
     function executeEmergencyAction(
@@ -405,18 +357,6 @@ interface ITerraStakeFractionManager is KeeperCompatibleInterface {
         string calldata description
     ) external returns (bool);
     
-    function getActiveProposals() external view returns (bytes32[] memory);
-    
-    function getProposalDetails(bytes32 proposalId) 
-        external 
-        view 
-        returns (Proposal memory, uint256);
-    
-    function hasApprovedProposal(bytes32 proposalId, address account) 
-        external 
-        view 
-        returns (bool);
-
     // =====================================================
     // Fee Management
     // =====================================================

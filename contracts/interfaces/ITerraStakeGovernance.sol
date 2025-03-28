@@ -122,7 +122,6 @@ interface ITerraStakeGovernance {
     event BuybackExecuted(uint256 amount0, uint256 amount1);
     event LiquidityAdded(uint256 amount0, uint256 amount1);
     event TokensBurned(uint256 amount);
-    event TreasuryTransfer(address token, address recipient, uint256 amount);
     event HalvingInitiated(uint256 halvingEpoch);
     event ValidatorRewardRateUpdated(uint256 newRewardRate);
     event TreasuryWalletUpdated(address newTreasuryWallet);
@@ -143,7 +142,6 @@ interface ITerraStakeGovernance {
     event ValidatorHealthCheck(uint256 validatorCount, uint256 totalStaked, uint256 avgStakePerValidator, uint8 governanceTier);
     event GuardianAdded(address guardian);
     event GuardianRemoved(address guardian);
-    event GuardianOverrideExecuted(address executor, bytes4 operation, address target);
     event ValidatorProposalCreated(uint256 proposalId, uint256 newThreshold);
     event ValidatorRecruitmentInitiated(uint256 incentiveAmount, uint256 targetCount);
 
@@ -285,7 +283,8 @@ interface ITerraStakeGovernance {
     function getProposalVotes(uint256 proposalId) external view returns (
         uint256 againstVotes,
         uint256 forVotes,
-        uint256 abstainVotes
+        uint256 abstainVotes,
+        uint256 validatorSupport
     );
     
     function hasProposalSucceeded(uint256 proposalId) external view returns (bool);

@@ -43,6 +43,7 @@ contract TerraStakeProjects is
     bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
     // ====================================================
     //  State Variables
@@ -172,6 +173,7 @@ contract TerraStakeProjects is
         _grantRole(VERIFIER_ROLE, admin);
         _grantRole(UPGRADER_ROLE, admin);
         _grantRole(TREASURY_ROLE, admin);
+        _grantRole(EMERGENCY_ROLE, admin);
         
         tStakeToken = IERC20(_tstakeToken);
         terraTokenAddress = _tstakeToken;
@@ -843,6 +845,32 @@ contract TerraStakeProjects is
         emit StakingMultiplierUpdated(projectId, oldMultiplier, newMultiplier);
     }
 
+    /**
+     * @notice Adds a document to a project
+     * @param projectId ID of the project
+     * @param name Document name
+     * @param docType Document type
+     * @param ipfsHash IPFS hash of the document
+     */
+    function addProjectDocument(
+        uint256 projectId,
+        string calldata name,
+        string calldata docType,
+        bytes32 ipfsHash
+    ) external nonReentrant validProjectId(projectId) onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused returns (uint256 documentId) {
+        documentId = projectDocuments[projectId].length;
+        
+        projectDocuments[projectId].push(ProjectDocument({
+            name: name,
+            docType: docType,
+            ipfsHash: ipfsHash,
+            timestamp: block.timestamp,
+            uploader: msg.sender
+        }));
+        
+        emit ProjectDocumentAdded(projectId, documentId, name, docType, ipfsHash);
+    }
+
     // ====================================================
     //  Verification, Validation & Impact Reporting
     // ====================================================
@@ -1014,6 +1042,56 @@ contract TerraStakeProjects is
             pendingReports,
             averageValidationTime
         );
+    }
+
+    /**
+     * @notice Updates impact requirements for a project
+     * @param projectId ID of the project
+     * @param minStakingPeriod Minimum staking period
+     * @param reportingFrequency Frequency of reporting
+     * @param verificationThreshold Threshold for verification
+     * @param impactDataFormat Format of impact data
+     * @param requiresAudit Whether audit is required
+     */
+    function updateImpactRequirements(
+        uint256 projectId,
+        uint32 minStakingPeriod,
+        uint32 reportingFrequency,
+        uint32 verificationThreshold,
+        uint32 impactDataFormat,
+        bool requiresAudit
+    ) external nonReentrant validProjectId(projectId) onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
+        // Update project requirements
+        projectImpactRequirements[projectId] = ImpactRequirements({
+            minStakingPeriod: minStakingPeriod,
+            reportingFrequency: reportingFrequency,
+            verificationThreshold: verificationThreshold,
+            impactDataFormat: impactDataFormat,
+            requiresAudit: requiresAudit
+        });
+        
+        emit ImpactRequirementsUpdated(projectId);
+    }
+
+    /**
+     * @notice Updates category requirements
+     * @param category Project category
+     * @param name Category name
+     * @param description Category description
+     * @param impactWeight Impact weight
+     */
+    function updateCategoryRequirements(
+        ProjectCategory category,
+        string calldata name,
+        string calldata description,
+        uint8 impactWeight
+    ) external nonReentrant onlyRole(GOVERNANCE_ROLE) whenNotPaused {
+        // Update category requirements
+        categoryInfo[category].name = name;
+        categoryInfo[category].description = description;
+        categoryInfo[category].impactWeight = impactWeight;
+        
+        emit CategoryRequirementsUpdated(category);
     }
     
     // ====================================================
@@ -1204,11 +1282,11 @@ contract TerraStakeProjects is
         emit ProjectTargetsSet(projectId, impactTarget, stakingTarget);
     }
 
-    function incrementStakerCount(uint256 projectId) external override nonReentrant validProjectId(projectId) onlyRole(STAKER_ROLE) whenNotPaused {
+    function incrementStakerCount(uint256 projectId) external nonReentrant validProjectId(projectId) onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         // projectStakerCount[projectId]++;
     }
 
-    function decrementStakerCount(uint256 projectId) external override nonReentrant validProjectId(projectId) onlyRole(STAKER_ROLE) whenNotPaused {
+    function decrementStakerCount(uint256 projectId) external nonReentrant validProjectId(projectId) onlyRole(PROJECT_MANAGER_ROLE) whenNotPaused {
         // projectStakerCount[projectId]--;
     }
     
@@ -1433,7 +1511,7 @@ contract TerraStakeProjects is
         emit ContractUnpaused(msg.sender);
     }
     
-    function recoverERC20(
+    function recoverToken(
         address tokenAddress,
         address to,
         uint256 amount
@@ -1454,6 +1532,33 @@ contract TerraStakeProjects is
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _setRoleAdmin(role, adminRole);
         emit RoleAdminChanged(role, getRoleAdmin(role), adminRole);
+    }
+
+    /**
+     * @notice Activates emergency mode
+     */
+    function activateEmergencyMode() external onlyRole(EMERGENCY_ROLE) {
+        emergencyMode = true;
+        emit EmergencyModeActivated(msg.sender);
+    }
+
+    /**
+     * @notice Deactivate emergency mode
+     */
+    function deactivateEmergencyMode() external onlyRole(EMERGENCY_ROLE) {
+        emergencyMode = false;
+        emit EmergencyModeDeactivated(msg.sender);
+    }
+
+    /**
+     * @notice Changes the treasury address
+     * @param newTreasury New treasury address
+     */
+    function changeTreasuryAddress(address newTreasury) external onlyRole(GOVERNANCE_ROLE) {
+        if (newTreasury == address(0)) revert InvalidAddress();
+        address oldTreasury = treasuryAddress;
+        treasuryAddress = newTreasury;
+        emit TreasuryAddressChanged(oldTreasury, newTreasury);
     }
     
     // ====================================================
@@ -1576,54 +1681,54 @@ contract TerraStakeProjects is
     
     // Function to get project leaderboard by impact
     function getProjectLeaderboard(
-    uint256 limit
-) external view returns (
-    uint256[] memory projectIds,
-    uint256[] memory impactValues
-) {
-    // Limit the number of projects to return
-    uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
-    
-    // Initialize arrays
-    projectIds = new uint256[](resultSize);
-    impactValues = new uint256[](resultSize);
-    
-    // Create temporary array of project IDs and impact values
-    uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
-    uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
-    
-    // Fill temporary arrays
-    for (uint256 i = 0; i < allProjectIds.length; i++) {
-        uint256 projectId = allProjectIds[i];
-        tempProjectIds[i] = projectId;
-        tempImpactValues[i] = totalWeightedImpact[projectId];
-    }
-    
-    // Sort projects by impact (optimized bubble sort)
-    for (uint256 i = 0; i < tempProjectIds.length - 1; i++) {
-        for (uint256 j = 0; j < tempProjectIds.length - i - 1; j++) {
-            if (tempImpactValues[j] < tempImpactValues[j + 1]) {
-                // Swap impact values
-                uint256 tempImpact = tempImpactValues[j];
-                tempImpactValues[j] = tempImpactValues[j + 1];
-                tempImpactValues[j + 1] = tempImpact;
-                
-                // Swap project IDs
-                uint256 tempId = tempProjectIds[j];
-                tempProjectIds[j] = tempProjectIds[j + 1];
-                tempProjectIds[j + 1] = tempId;
+        uint256 limit
+    ) external view returns (
+        uint256[] memory projectIds,
+        uint256[] memory impactValues
+    ) {
+        // Limit the number of projects to return
+        uint256 resultSize = limit > allProjectIds.length ? allProjectIds.length : limit;
+        
+        // Initialize arrays
+        projectIds = new uint256[](resultSize);
+        impactValues = new uint256[](resultSize);
+        
+        // Create temporary array of project IDs and impact values
+        uint256[] memory tempProjectIds = new uint256[](allProjectIds.length);
+        uint256[] memory tempImpactValues = new uint256[](allProjectIds.length);
+        
+        // Fill temporary arrays
+        for (uint256 i = 0; i < allProjectIds.length; i++) {
+            uint256 projectId = allProjectIds[i];
+            tempProjectIds[i] = projectId;
+            tempImpactValues[i] = totalWeightedImpact[projectId];
+        }
+        
+        // Sort projects by impact (optimized bubble sort)
+        for (uint256 i = 0; i < tempProjectIds.length - 1; i++) {
+            for (uint256 j = 0; j < tempProjectIds.length - i - 1; j++) {
+                if (tempImpactValues[j] < tempImpactValues[j + 1]) {
+                    // Swap impact values
+                    uint256 tempImpact = tempImpactValues[j];
+                    tempImpactValues[j] = tempImpactValues[j + 1];
+                    tempImpactValues[j + 1] = tempImpact;
+                    
+                    // Swap project IDs
+                    uint256 tempId = tempProjectIds[j];
+                    tempProjectIds[j] = tempProjectIds[j + 1];
+                    tempProjectIds[j + 1] = tempId;
+                }
             }
         }
+        
+        // Take the top 'resultSize' projects
+        for (uint256 i = 0; i < resultSize; i++) {
+            projectIds[i] = tempProjectIds[i];
+            impactValues[i] = tempImpactValues[i];
+        }
+        
+        return (projectIds, impactValues);
     }
-    
-    // Take the top 'resultSize' projects
-    for (uint256 i = 0; i < resultSize; i++) {
-        projectIds[i] = tempProjectIds[i];
-        impactValues[i] = tempImpactValues[i];
-    }
-    
-    return (projectIds, impactValues);
-}
     
     // Function to generate a summary of the platform
     function getPlatformSummary() external view returns (

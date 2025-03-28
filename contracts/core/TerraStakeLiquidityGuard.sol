@@ -518,13 +518,16 @@ contract TerraStakeLiquidityGuard is
         if (emergencyMode) revert EmergencyModeActive();
         if (circuitBreakerTriggered) revert OperationFailed("Circuit breaker triggered");
         if (amount == 0) revert InvalidParameter("amount", amount);
-        
+
+        uint256 minUsdcAmount = treasuryManager.estimateMinimumUsdcOutput(amount, slippageTolerance);
+        if (minUsdcAmount == 0) revert InvalidParameter("minUsdcAmount", minUsdcAmount);
+
         // Get equivalent USDC from TreasuryManager
         if (address(treasuryManager) == address(0)) revert InvalidZeroAddress("treasuryManager");
         
         if (activePositions.length >= MAX_ACTIVE_POSITIONS) revert OperationFailed("Max active positions reached");
 
-        usdcAmount = treasuryManager.withdrawUSDCEquivalent(amount);
+        usdcAmount = treasuryManager.withdrawUSDCEquivalent(amount, minUsdcAmount, address(this));
         if (usdcAmount == 0) revert InvalidParameter("usdcAmount", usdcAmount);
 
         IERC20 tStake = IERC20(address(tStakeToken));

@@ -601,22 +601,6 @@ function batchSyncBlacklistWithITO(address[] calldata accounts) external onlyRol
         return tokensReceived;
     }
 
-    function injectLiquidity(uint256 amount) 
-        external 
-        onlyRole(LIQUIDITY_MANAGER_ROLE) 
-        nonReentrant 
-        returns (bool) 
-    {
-        require(amount > 0, "Amount must be > 0");
-        require(balanceOf(address(this)) >= amount, "Insufficient balance");
-        address liquidityPool = liquidityGuard.getLiquidityPool();
-        require(liquidityPool != address(0), "Invalid liquidity pool");
-        
-        _transfer(address(this), liquidityPool, amount);
-        emit LiquidityInjected(amount, amount);
-        return true;
-    }
-
     // ================================
     //  Halving Mechanism Integration
     // ================================
@@ -672,10 +656,6 @@ function batchSyncBlacklistWithITO(address[] calldata accounts) external onlyRol
 
     function activateCircuitBreaker() external onlyRole(ADMIN_ROLE) {
         liquidityGuard.triggerCircuitBreaker();
-    }
-
-    function resetCircuitBreaker() external onlyRole(ADMIN_ROLE) {
-        liquidityGuard.resetCircuitBreaker();
     }
 
     // ================================
