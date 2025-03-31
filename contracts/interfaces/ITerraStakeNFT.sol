@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+pragma solidity ^0.8.21;
 
-import "@openzeppelin/contracts/interfaces/IERC1155.sol";
-import "@openzeppelin/contracts/interfaces/IERC2981.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 
-/**
- * @title ITerraStakeNFT
- * @dev Interface for the TerraStakeNFT contract
- */
-interface ITerraStakeNFT is IERC1155, IERC2981 {
-    // ====================================================
-    //  Structs
-    // ====================================================
-    
-    enum NFTType { STANDARD, IMPACT, GOVERNANCE }
-    enum NFTProjectCategory { 
+interface ITerraStakeNFT is IERC1155 {
+    // ========== Enums & Structs ==========
+    enum NFTType {
+        STANDARD,
+        IMPACT,
+        LAND,
+        CARBON_LIABILITY,
+        BIODIVERSITY,
+        POLLUTION_LIABILITY,
+        WASTE_LIABILITY,
+        WATER_LIABILITY,
+        HABITAT_LIABILITY,
+        ENERGY_LIABILITY,
+        CIRCULARITY_LIABILITY,
+        COMMUNITY_LIABILITY
+    }
+
+    enum ProjectCategory {
         CarbonCredit,
         RenewableEnergy,
         OceanCleanup,
@@ -29,16 +35,16 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
         CircularEconomy,
         CommunityDevelopment
     }
-    
+
     struct NFTMetadata {
         string name;
         string description;
         uint256 creationTime;
         bool uriIsFrozen;
         NFTType nftType;
-        NFTProjectCategory category;
+        ProjectCategory category;
     }
-    
+
     struct ImpactCertificate {
         uint256 projectId;
         bytes32 reportHash;
@@ -48,215 +54,286 @@ interface ITerraStakeNFT is IERC1155, IERC2981 {
         string location;
         address verifier;
         bool isVerified;
-        NFTProjectCategory category;
+        ProjectCategory category;
+        bool isLiability;
     }
-    
+
     struct FractionInfo {
-        uint256 originalTokenID; // Updated name
+        uint256 originalTokenId;
         uint256 fractionCount;
         address fractionalizer;
         bool isActive;
         NFTType nftType;
         uint256 projectId;
         bytes32 reportHash;
-        NFTProjectCategory category;
+        ProjectCategory category;
     }
-    
-    struct RoyaltyInfo {
-        address receiver;
-        uint96 royaltyFraction;
+
+    struct NFTData {
+        address owner;
+        bool verified;
+        uint256 eLiability;
+        ProjectCategory category;
+        bytes32 auditDataHash;
     }
-    
-    struct TokenLock {
-        bool isLocked;
-        address lockedBy;
-        uint256 lockTime;
-        uint256 unlockTime;
-    }
-    
-    // ====================================================
-    //  Token Minting Functions
-    // ====================================================
-    
+
+    // ========== Standard ERC1155 Functions (from IERC1155) ==========
+    // These are inherited from IERC1155 but listed here for completeness
+    /*
+    function balanceOf(address account, uint256 id) external view returns (uint256);
+    function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids) external view returns (uint256[] memory);
+    function setApprovalForAll(address operator, bool approved) external;
+    function isApprovedForAll(address account, address operator) external view returns (bool);
+    function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external;
+    function safeBatchTransferFrom(address from, address to, uint256[] calldata ids, uint256[] calldata amounts, bytes calldata data) external;
+    */
+
+    // ========== ERC1155 Supply Extension ==========
+    function totalSupply(uint256 id) external view returns (uint256);
+
+    // ========== Token Management ==========
+    event TokenMinted(
+        uint256 indexed tokenId,
+        address indexed to,
+        NFTType nftType,
+        ProjectCategory category
+    );
+    event ImpactCertificateCreated(
+        uint256 indexed tokenId,
+        uint256 indexed projectId,
+        bytes32 reportHash
+    );
+    event LiabilityCertificateCreated(
+        uint256 indexed tokenId,
+        uint256 indexed liabilityAmount,
+        string liabilityType
+    );
+    event TokenRetired(
+        uint256 indexed tokenId,
+        address indexed retiredBy,
+        address indexed beneficiary,
+        string retirementReason,
+        uint256 timestamp
+    );
+
     function mintStandardNFT(
         address to,
         uint256 amount,
-        NFTProjectCategory category,
-        string calldata uri
+        ProjectCategory category,
+        string calldata _uri
     ) external returns (uint256);
-    
+
     function mintImpactNFT(
         address to,
         uint256 projectId,
-        string calldata uri,
+        string calldata _uri,
         bytes32 reportHash
     ) external returns (uint256);
-    
+
+    function mintLiabilityNFT(
+        address to,
+        uint256 liabilityAmount,
+        string calldata liabilityType,
+        string calldata location,
+        string calldata _uri
+    ) external returns (uint256);
+
+    function mintImpact(
+        address to,
+        uint256 impactValue,
+        ProjectCategory category,
+        bytes32 auditDataHash
+    ) external returns (uint256 tokenId);
+
     function verifyImpactCertificate(
-        uint256 _tokenID,
+        uint256 tokenId,
         uint256 impactValue,
         string calldata impactType,
         string calldata location
     ) external;
-    
-    // ====================================================
-    //  Fractionalization Functions
-    // ====================================================
-    
-    function fractionalizeToken(uint256 _tokenID, uint256 fractionCount) 
-        external 
-        returns (uint256[] memory);
-    
-    function reassembleToken(uint256 originalTokenID) external; // Updated name
-    
-    // ====================================================
-    //  URI Management
-    // ====================================================
-    
-    function setTokenURI(uint256 _tokenID, string calldata newUri) external;
-    
-    function lockTokenURI(uint256 _tokenID) external;
-    
-    function uri(uint256 _tokenID) external view returns (string memory);
-    
-    // ====================================================
-    //  Metadata & Query Functions
-    // ====================================================
-    function getTokenData(uint256 tokenId) external view returns (uint256 impactValue, NFTProjectCategory category, bytes32 verificationHash);
 
-    function getTokensByCategory(NFTProjectCategory category) external view returns (uint256[] memory);
-    
-    function getTokenMetadata(uint256 _tokenID) external view returns (NFTMetadata memory);
-    
-    function getImpactCertificate(uint256 _tokenID) external view returns (ImpactCertificate memory);
-    
-    function getFractionInfo(uint256 _tokenID) external view returns (FractionInfo memory);
-    
-    function getFractionTokens(uint256 originalTokenID) external view returns (uint256[] memory); // Updated name
-    
-    function getOriginalTokenID(uint256 fractionTokenID) external view returns (uint256); // Updated name
-    
-    function exists(uint256 _tokenID) external view returns (bool);
-    
-    // ====================================================
-    //  Fee Management
-    // ====================================================
-    
-    function updateFeePercentages(
-        uint8 _burnPercent,
-        uint8 _treasuryPercent,
-        uint8 _buybackPercent
+    function offsetCarbonLiability(
+        uint256 tokenId,
+        string calldata retirementReason
     ) external;
-    
-    function updateTreasuryWallet(address _treasuryWallet) external;
-    
-    function updateFees(
-        uint256 _mintFee,
-        uint256 _fractionalizationFee,
-        uint256 _verificationFee,
-        uint256 _transferFee
+
+    function retireToken(
+        uint256 tokenId,
+        address beneficiary,
+        string calldata retirementReason
     ) external;
-    
-    function updateDynamicFeeParams(
-        uint256 _baseMintFee,
-        uint256 _baseFractionalizationFee,
-        uint256 _feeMultiplier,
-        uint256 _feeAdjustmentInterval
+
+    function batchRetireTokens(
+        uint256[] calldata tokenIds,
+        address beneficiary,
+        string calldata retirementReason
     ) external;
-    
-    function adjustFeesBasedOnUsage() external;
-    
-    // ====================================================
-    //  Royalties Implementation
-    // ====================================================
-    
-    function setDefaultRoyalty(address receiver, uint96 feeNumerator) external;
-    
+
+    // ========== Fractionalization ==========
+    event TokenFractionalized(
+        uint256 indexed originalTokenId,
+        uint256[] fractionIds,
+        uint256 fractionCount
+    );
+    event TokensReassembled(uint256 indexed originalTokenId, address indexed owner);
+    event LiabilityTokenSet(uint256 indexed tokenId, address liabilityToken);
+
+    function fractionalize(uint256 originalTokenId, uint256 fractionCount) 
+        external returns (uint256[] memory fractionIds);
+
+    function reassemble(uint256 originalTokenId) external;
+
+    function setLiabilityToken(uint256 originalTokenId, address liabilityToken) external;
+
+    function getFractionTWAPPrice(uint256 originalTokenId) external view returns (uint256);
+
+    // ========== Metadata & URIs ==========
+    event TokenURIUpdated(uint256 indexed tokenId, string newUri);
+    event TokenURILocked(uint256 indexed tokenId);
+
+    function uri(uint256 tokenId) external view override returns (string memory);
+
+    function setTokenURI(uint256 tokenId, string calldata newUri) external;
+
+    function lockTokenURI(uint256 tokenId) external;
+
+    // ========== Royalty Management ==========
+    event RoyaltySet(
+        uint256 indexed tokenId,
+        address receiver,
+        uint96 royaltyFraction
+    );
+    event DefaultRoyaltySet(address receiver, uint96 royaltyFraction);
+
     function setTokenRoyalty(
-        uint256 _tokenID,
+        uint256 tokenId,
         address receiver,
         uint96 feeNumerator
     ) external;
-    
-    function royaltyInfo(uint256 _tokenID, uint256 salePrice)
+
+    function setDefaultRoyalty(
+        address receiver,
+        uint96 feeNumerator
+    ) external;
+
+    // ========== Fee Management ==========
+    event FeesUpdated(
+        uint256 mintFee,
+        uint256 fractionalizationFee,
+        uint256 verificationFee,
+        uint256 transferFee,
+        uint256 retirementFee
+    );
+    event FeeDistributionUpdated(
+        uint16 burnPercent,
+        uint16 treasuryPercent,
+        uint16 impactFundPercent,
+        uint16 api3FeePercent
+    );
+    event TreasuryWalletUpdated(address newTreasuryWallet);
+    event ImpactFundWalletUpdated(address newImpactFundWallet);
+    event API3FeeWalletUpdated(address newApi3FeeWallet);
+    event FeesCollected(
+        address from,
+        uint256 amount,
+        uint256 burnAmount,
+        uint256 treasuryAmount,
+        uint256 impactFundAmount,
+        uint256 api3FeeAmount
+    );
+
+    function setFeeAmounts(
+        uint256 _mintFee,
+        uint256 _fractionalizationFee,
+        uint256 _verificationFee,
+        uint256 _transferFee,
+        uint256 _retirementFee
+    ) external;
+
+    function setFeeDistribution(
+        uint16 _burnPercent,
+        uint16 _treasuryPercent,
+        uint16 _impactFundPercent,
+        uint16 _api3FeePercent
+    ) external;
+
+    function setTreasuryWallet(address _treasuryWallet) external;
+
+    function setImpactFundWallet(address _impactFundWallet) external;
+
+    function setAPI3FeeWallet(address _api3FeeWallet) external;
+
+    // ========== API3 Integration ==========
+    event CarbonPriceFeedSet(address priceFeed);
+    event API3ProxySet(address proxyAddress);
+
+    function setCarbonPriceFeed(address _carbonPriceFeed) external;
+
+    function setAPI3Proxy(address _api3Proxy) external;
+
+    function getCarbonPrice() external view returns (uint256);
+
+    // ========== Liability Manager Integration ==========
+    event LiabilityManagerSet(address liabilityManager);
+    event TokenStateSync(uint256 indexed tokenId, bytes32 syncHash, uint256 timestamp);
+
+    function setLiabilityManager(address _liabilityManagerAddress) external;
+
+    function emitSyncEvent(uint256 tokenId, bytes32 syncHash) external;
+
+    function getNFTData(uint256 tokenId) external view returns (NFTData memory);
+
+    // ========== Ownership & Utility Functions ==========
+    function ownerOf(uint256 tokenId) external view returns (address);
+
+    function exists(uint256 tokenId) external view returns (bool);
+
+    function getTokenMetadata(uint256 tokenId) external view returns (NFTMetadata memory);
+
+    function getImpactCertificate(uint256 tokenId) external view returns (ImpactCertificate memory);
+
+    function getFractionInfo(uint256 tokenId) external view returns (FractionInfo memory);
+
+    function getFractionTokens(uint256 originalTokenId) external view returns (uint256[] memory);
+
+    function getOriginalTokenId(uint256 fractionTokenId) external view returns (uint256);
+
+    function getRetiredTokensByAddress(address owner) external view returns (uint256[] memory);
+
+    function getRetirementDetails(uint256 tokenId)
         external
         view
-        returns (address receiver, uint256 royaltyAmount);
-    
-    // ====================================================
-    //  Utility Functions
-    // ====================================================
-    
-    function requestRandomSeed() external returns (uint256 requestId);
-    
-    function getRandomSeed(uint256 requestId) external view returns (uint256);
-    
-    function emergencyPause() external;
-    
-    function emergencyResume() external;
-    
-    function updateVRFConfig(
-        address _coordinator,
-        bytes32 _keyHash,
-        uint64 _subscriptionId,
-        uint32 _callbackGasLimit,
-        uint16 _requestConfirmations
-    ) external;
-    
-    // ====================================================
-    //  Locking Mechanism Implementation
-    // ====================================================
-    
-    function lockToken(uint256 _tokenID, uint256 duration) external;
-    
-    function unlockToken(uint256 _tokenID) external;
-    
-    function isLocked(uint256 _tokenID) external view returns (bool);
-    
-    function getLockInfo(uint256 _tokenID) external view returns (TokenLock memory);
-    
-    // ====================================================
-    //  Token Recovery
-    // ====================================================
-    
-    function recoverERC20(address tokenAddress, uint256 amount) external;
-    
-    // ====================================================
-    //  Events
-    // ====================================================
-    
-    event TokenMinted(uint256 indexed _tokenID, address indexed recipient, NFTType nftType, NFTProjectCategory category);
-    event ImpactCertificateCreated(uint256 indexed _tokenID, uint256 indexed projectId, bytes32 reportHash);
-    event ImpactVerified(uint256 indexed _tokenID, bytes32 reportHash, address verifier);
-    event TokenFractionalized(uint256 indexed originalTokenID, uint256[] fractionIds, uint256 fractionCount); // Updated name
-    event TokensReassembled(uint256 indexed originalTokenID, address collector); // Updated name
-    event TokenURIUpdated(uint256 indexed _tokenID, string newUri);
-    event TokenURILocked(uint256 indexed _tokenID);
-    event FeePercentagesUpdated(uint8 burnPercent, uint8 treasuryPercent, uint8 buybackPercent);
-    event TreasuryWalletUpdated(address treasuryWallet);
-    event FeeConfigured(uint256 mintFee, uint256 fractionalizationFee, uint256 verificationFee, uint256 transferFee);
-    event DynamicFeeParamsUpdated(uint256 baseMintFee, uint256 baseFractionalizationFee, uint256 feeMultiplier, uint256 feeAdjustmentInterval);
-    event FeeMultiplierUpdated(uint256 newMultiplier);
-    event FeeCollected(address from, uint256 feeAmount, uint256 burnAmount, uint256 treasuryAmount, uint256 buybackAmount);
-    event DefaultRoyaltySet(address receiver, uint96 feeNumerator);
-    event TokenRoyaltySet(uint256 indexed _tokenID, address receiver, uint96 feeNumerator);
-    event RandomSeedRequested(uint256 indexed requestId, address requester);
-    event RandomSeedReceived(uint256 indexed requestId, uint256 randomValue);
-    event EmergencyModeActivated(address activator);
-    event EmergencyModeDeactivated(address deactivator);
-    event VRFConfigured(address coordinator, bytes32 keyHash, uint64 subscriptionId, uint32 callbackGasLimit, uint16 requestConfirmations);
-    event TokenLocked(uint256 indexed _tokenID, address locker, uint256 unlockTime);
-    event TokenUnlocked(uint256 indexed _tokenID, address unlocker);
-    event TokensRecovered(address tokenAddress, uint256 amount, address recipient);
-    event BuybackExecuted(uint256 amount, address executor);
-}
+        returns (
+            bool isTokenRetired,
+            address beneficiary,
+            uint256 retirementDate,
+            string memory reason
+        );
 
-/**
- * @title ILockable
- * @dev Interface for token locking functionality
- */
-interface ILockable {
-    function lockToken(uint256 _tokenID, uint256 duration) external;
-    function unlockToken(uint256 _tokenID) external;
-    function isLocked(uint256 _tokenID) external view returns (bool);
+    function getTokenData(uint256 tokenId) 
+        external 
+        view 
+        returns (
+            uint256 impactValue,
+            ProjectCategory category,
+            bytes32 verificationHash,
+            bool isLiability
+        );
+
+    function getTokensByCategory(ProjectCategory category)
+        external
+        view
+        returns (uint256[] memory);
+
+    // ========== Emergency Functions ==========
+    event EmergencyModeTriggered(address caller);
+    event EmergencyModeDisabled(address caller);
+
+    function triggerEmergencyMode() external;
+
+    function disableEmergencyMode() external;
+
+    function pause() external;
+
+    function unpause() external;
 }

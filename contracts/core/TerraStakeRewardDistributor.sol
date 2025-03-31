@@ -1,1064 +1,615 @@
-// SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.21;
 
-import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
-import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {AccessControlEnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {SafeERC20Upgradeable, IERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import {MathUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol";
+import {IERC3156FlashLender} from "@openzeppelin/contracts/interfaces/IERC3156FlashLender.sol";
 
-import "../interfaces/ITerraStakeRewardDistributor.sol";
-import "../interfaces/ITerraStakeStaking.sol";
-import "../interfaces/ITerraStakeLiquidityGuard.sol";
-import "../interfaces/ITerraStakeSlashing.sol";
+// Uniswap V4
+import {IPoolManager} from "@uniswap/v4-core/contracts/interfaces/IPoolManager.sol";
+import {PoolKey} from "@uniswap/v4-core/contracts/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/contracts/types/PoolId.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/contracts/types/Currency.sol";
+import {TickMath} from "@uniswap/v4-core/contracts/libraries/TickMath.sol";
+
+// API3
+import {IApi3ServerV1} from "@api3/contracts/v0.8/interfaces/IApi3ServerV1.sol";
+
+// LayerZero
+import {ILayerZeroEndpoint} from "@layerzerolabs/solidity-examples/contracts/interfaces/ILayerZeroEndpoint.sol";
+import {ILayerZeroReceiver} from "@layerzerolabs/solidity-examples/contracts/interfaces/ILayerZeroReceiver.sol";
 
 /**
  * @title TerraStakeRewardDistributor
- * @author TerraStake Protocol Team
- * @notice Handles staking rewards, liquidity injection, APR management, and reward halving
- * @dev Integrates with Chainlink VRF for randomized halving and Uniswap for liquidity operations
+ * @notice Manages reward distribution with advanced protection against price manipulation
+ * @dev Implements flashloan protection, cross-chain syncing via LayerZero, and dynamic slippage adjustment
  */
-contract TerraStakeRewardDistributor is 
+contract TerraStakeRewardDistributor is
     Initializable,
-    AccessControlEnumerableUpgradeable, 
-    ReentrancyGuardUpgradeable, 
     UUPSUpgradeable,
-    VRFConsumerBaseV2,
-    ITerraStakeRewardDistributor 
+    AccessControlEnumerableUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable,
+    ILayerZeroReceiver
 {
-    using SafeERC20 for IERC20;
-    
-    // -------------------------------------------
-    //  Constants
-    // -------------------------------------------
-    bytes32 public constant STAKING_CONTRACT_ROLE = keccak256("STAKING_CONTRACT_ROLE");
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant MULTISIG_ROLE = keccak256("MULTISIG_ROLE");
-    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
+    using SafeERC20Upgradeable for IERC20Upgradeable;
+    using MathUpgradeable for uint256;
+    using PoolIdLibrary for PoolKey;
 
-    uint256 public constant MAX_LIQUIDITY_INJECTION_RATE = 10; // 10%
-    uint256 public constant MAX_HALVING_REDUCTION_RATE = 90;   // 90%
-    uint256 public constant TWO_YEARS_IN_SECONDS = 730 days;
-    uint256 public constant MIN_REWARD_RATE = 10;              // 10% (floor)
-    uint256 public constant PARAMETER_TIMELOCK = 2 days;       // Timelock for parameter changes
+    // ========== CONSTANTS ==========
+    uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint256 public constant PRICE_PRECISION = 1e18;
+    uint256 public constant HALVING_INTERVAL = 730 days;
+    uint256 public constant MIN_REWARD_RATE_BPS = 50;
+    uint256 public constant MAX_SLIPPAGE_BPS = 500;
+    uint256 public constant FLASHLOAN_COOLDOWN_BLOCKS = 1;
+    uint256 public constant MAX_FLASHLOAN_IMPACT_BPS = 300; // 3% max temporary price impact
+    
+    // Re-entrancy guard constants for flashloan detection
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
 
-    // -------------------------------------------
-    //  Errors
-    // -------------------------------------------
-    error Unauthorized();
-    error InvalidAddress(string name);
-    error InvalidParameter(string name);
-    error TransferFailed(address token, address from, address to, uint256 amount);
-    error HalvingAlreadyRequested();
-    error RandomizationFailed();
-    error TimelockNotExpired(uint256 current, uint256 required);
-    error NoUpdatePending(string paramName);
-    error CircuitBreakerActive();
-    error CannotRecoverRewardToken();
-    error MaxDistributionExceeded();
-
-    // -------------------------------------------
-    //  State Variables
-    // -------------------------------------------
-    // Core contracts and addresses
-    IERC20 public rewardToken;
-    ITerraStakeStaking public stakingContract;
-    ISwapRouter public uniswapRouter;
-    ITerraStakeLiquidityGuard public liquidityGuard;
-    ITerraStakeSlashing public slashingContract;
-    VRFCoordinatorV2Interface public vrfCoordinator;
-    
-    address public rewardSource;
-    address public liquidityPool;
-    
-    // Reward parameters
-    uint256 public totalDistributed;
-    uint256 public halvingEpoch;
-    uint256 public lastHalvingTime;
-    uint256 public halvingReductionRate;
-    uint256 public liquidityInjectionRate;
-    uint256 public maxDailyDistribution;
-    uint256 public dailyDistributed;
-    uint256 public lastDistributionReset;
-    
-    // Feature flags
-    bool public autoBuybackEnabled;
-    bool public halvingMechanismPaused;
-    bool public distributionPaused;
-    bool public pendingRandomnessRequest;
-    
-    // Chainlink VRF variables
-    bytes32 public keyHash;
-    uint64 public subscriptionId;
-    uint32 public callbackGasLimit;
-    mapping(bytes32 => bool) private vrfRequests;
-    
-    // Penalty redistribution
-    mapping(address => uint256) public pendingPenalties;
-    uint256 public totalPendingPenalties;
-    uint256 public totalStakedCache;
-    uint256 public lastStakeUpdateTime;
-
-    // Timelocked parameter updates
-    struct PendingUpdate {
-        uint256 value;
-        uint256 effectiveTime;
-        bool isAddress;
-        address addrValue;
+    // ========== STRUCTS ==========
+    struct DistributionParams {
+        uint256 rewardRateBps;
+        uint256 maxDailyDistribution;
+        uint256 distributedToday;
+        uint256 lastDistributionTime;
+        uint256 lastHalvingTime;
+        uint256 minSlippageBps;
+        uint256 maxSlippageBps;
     }
-    mapping(bytes32 => PendingUpdate) public pendingParameterUpdates;
 
-    // -------------------------------------------
-    //  Events
-    // -------------------------------------------
-    event RewardDistributed(address indexed user, uint256 amount);
-    event HalvingApplied(uint256 newRewardRate, uint256 halvingEpoch);
-    event LiquidityInjected(uint256 amount);
-    event LiquidityInjectionFailed(uint256 amount);
-    event PenaltyReDistributed(address indexed from, uint256 amount);
-    event HalvingRequested(uint256 requestId);
-    event RandomnessReceived(bytes32 indexed requestId, uint256 randomness);
-    event RewardParametersUpdated(string paramName, uint256 oldValue, uint256 newValue);
-    event ContractUpdated(string contractName, address oldAddress, address newAddress);
-    event FeatureToggled(string featureName, bool enabled);
-    event EmergencyTokenRecovery(address token, uint256 amount, address recipient);
-    event ParameterUpdateProposed(string paramName, uint256 value, uint256 effectiveTime);
-    event AddressUpdateProposed(string paramName, address value, uint256 effectiveTime);
-    event HalvingMechanismPaused(bool paused);
-    event DistributionPaused(bool paused);
-    event PenaltiesBatchDistributed(uint256 startIndex, uint256 endIndex, uint256 amount);
-    event StakeTotalCacheUpdated(uint256 oldTotal, uint256 newTotal);
-    event DailyDistributionLimitUpdated(uint256 oldLimit, uint256 newLimit);
-    event DailyDistributionReset(uint256 timestamp);
-    event EmergencyCircuitBreakerActivated(address activator, string reason);
-    event PenaltyRewardsAdded(address sender, uint256 amount);
-
-    // -------------------------------------------
-    //  Constructor & Initializer
-    // -------------------------------------------
-    
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor(address _vrfCoordinator) VRFConsumerBaseV2(_vrfCoordinator) {
-        _disableInitializers();
+    struct OracleConfig {
+        IApi3ServerV1 priceFeed;
+        IApi3ServerV1 timeFeed;
+        bytes32 priceFeedId;
+        uint256 maxPriceAge;
+        uint256 maxTimeDeviation;
     }
+
+    struct CrossChainSync {
+        ILayerZeroEndpoint lzEndpoint;
+        uint16 destinationChainId;
+        bytes destinationAddress;
+        uint256 lastSyncTimestamp;
+        uint256 syncInterval;
+        uint256 gasForDestination;
+    }
+
+    // ========== STATE VARIABLES ==========
+    IERC20Upgradeable public immutable REWARD_TOKEN;
+    address public immutable STAKING_CONTRACT;
+    IPoolManager public poolManager;
+    PoolKey public poolKey;
+    PoolId public poolId;
     
+    DistributionParams public distributionParams;
+    OracleConfig public oracleConfig;
+    CrossChainSync public crossChainSync;
+
+    // MEV & Flashloan Protection
+    mapping(address => uint256) public lastUserDistribution;
+    uint256 public distributionCooldown;
+    uint256 private _flashloanStatus;
+    mapping(address => uint256) public lastPostFlashInteraction;
+
+    // Slippage Tracking
+    uint256[5] public recentSlippageSamples;
+    uint256 public slippageSampleIndex;
+    uint256 public lastSlippageUpdate;
+
+    // ========== EVENTS ==========
+    event RewardsDistributed(address indexed user, uint256 amount, uint256 effectivePrice);
+    event CrossChainSynced(uint16 chainId, uint256 rewardRateBps, uint256 timestamp);
+    event SlippageAdjusted(uint256 oldSlippage, uint256 newSlippage);
+    event FlashloanDetected(address indexed borrower, uint256 amount);
+    event EmergencyCircuitBreaker(uint256 blockedAmount);
+    event HalvingExecuted(uint256 oldRate, uint256 newRate);
+    event MessageReceived(uint16 srcChainId, bytes srcAddress, uint64 nonce, bytes payload);
+
+    // ========== ERRORS ==========
+    error InvalidAmount();
+    error DailyLimitExceeded();
+    error PriceDeviationTooHigh();
+    error SlippageTooHigh();
+    error BalanceInconsistency();
+    error FlashloanActive();
+    error CooldownActive();
+    error SyncCooldownActive();
+    error InvalidAddress();
+    error MaxSlippageTooHigh();
+    error UnauthorizedSource();
+
+    // ========== INITIALIZATION ==========
+    constructor(address rewardToken, address stakingContract) {
+        if (rewardToken == address(0) || stakingContract == address(0)) revert InvalidAddress();
+        REWARD_TOKEN = IERC20Upgradeable(rewardToken);
+        STAKING_CONTRACT = stakingContract;
+        _flashloanStatus = _NOT_ENTERED;
+    }
+
     /**
-     * @notice Initialize the reward distributor contract
-     * @param _rewardToken Address of the reward token
-     * @param _rewardSource Address of the reward source
-     * @param _stakingContract Address of the staking contract
-     * @param _uniswapRouter Address of the Uniswap router
-     * @param _liquidityPool Address of the liquidity pool
-     * @param _liquidityGuard Address of the liquidity guard
-     * @param _slashingContract Address of the slashing contract
-     * @param _vrfCoordinator Address of the VRF coordinator
-     * @param _keyHash VRF key hash
-     * @param _subscriptionId VRF subscription ID
-     * @param _admin Initial admin address
+     * @notice Initialize the contract with required parameters
+     * @param admin The address that will have admin role
+     * @param _poolManager Uniswap V4 pool manager
+     * @param _poolKey Uniswap V4 pool key
+     * @param api3PriceFeed API3 price feed address
+     * @param api3TimeFeed API3 time feed address
+     * @param lzEndpoint LayerZero endpoint address
+     * @param destinationChainId LayerZero destination chain ID
+     * @param destinationAddress Destination contract address (in bytes)
      */
     function initialize(
-        address _rewardToken,
-        address _rewardSource,
-        address _stakingContract,
-        address _uniswapRouter,
-        address _liquidityPool,
-        address _liquidityGuard,
-        address _slashingContract,
-        address _vrfCoordinator,
-        bytes32 _keyHash,
-        uint64 _subscriptionId,
-        address _admin
+        address admin,
+        address _poolManager,
+        PoolKey calldata _poolKey,
+        address api3PriceFeed,
+        address api3TimeFeed,
+        address lzEndpoint,
+        uint16 destinationChainId,
+        bytes calldata destinationAddress
     ) external initializer {
         __AccessControlEnumerable_init();
+        __Pausable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
-        
-        if (_rewardToken == address(0)) revert InvalidAddress("rewardToken");
-        if (_rewardSource == address(0)) revert InvalidAddress("rewardSource");
-        if (_stakingContract == address(0)) revert InvalidAddress("stakingContract");
-        if (_admin == address(0)) revert InvalidAddress("admin");
-        
-        rewardToken = IERC20(_rewardToken);
-        rewardSource = _rewardSource;
-        stakingContract = ITerraStakeStaking(_stakingContract);
-        
-        if (_uniswapRouter != address(0)) {
-            uniswapRouter = ISwapRouter(_uniswapRouter);
-        }
-        
-        if (_liquidityPool != address(0)) {
-            liquidityPool = _liquidityPool;
-        }
-        
-        if (_liquidityGuard != address(0)) {
-            liquidityGuard = ITerraStakeLiquidityGuard(_liquidityGuard);
-        }
-        
-        if (_slashingContract != address(0)) {
-            slashingContract = ITerraStakeSlashing(_slashingContract);
-        }
-        
-        vrfCoordinator = VRFCoordinatorV2Interface(_vrfCoordinator);
-        keyHash = _keyHash;
-        subscriptionId = _subscriptionId;
-        callbackGasLimit = 100000; // Default gas limit
-        
-        lastHalvingTime = block.timestamp;
-        halvingReductionRate = 80; // Start at 80% of full rewards
-        liquidityInjectionRate = 5; // Start with 5% injection rate
-        autoBuybackEnabled = true; // Enable by default
-        
-        // Initialize daily distribution limits
-        maxDailyDistribution = type(uint256).max; // Start with no limit
-        lastDistributionReset = block.timestamp;
-        
-        // Initial stake cache update
-        _updateStakeTotalCache();
-        
-        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
-        _grantRole(GOVERNANCE_ROLE, _admin);
-        _grantRole(UPGRADER_ROLE, _admin);
-        _grantRole(STAKING_CONTRACT_ROLE, _stakingContract);
-        _grantRole(MULTISIG_ROLE, _admin); // Initially set admin as multisig
-        _grantRole(EMERGENCY_ROLE, _admin); // Initially set admin as emergency role
+
+        if (admin == address(0)) revert InvalidAddress();
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+
+        // Initialize Uniswap V4
+        poolManager = IPoolManager(_poolManager);
+        poolKey = _poolKey;
+        poolId = _poolKey.toId();
+
+        // Initialize oracles
+        oracleConfig = OracleConfig({
+            priceFeed: IApi3ServerV1(api3PriceFeed),
+            timeFeed: IApi3ServerV1(api3TimeFeed),
+            priceFeedId: bytes32("TSTAKE_USD"),
+            maxPriceAge: 1 hours,
+            maxTimeDeviation: 30 seconds
+        });
+
+        // Initialize distribution
+        distributionParams = DistributionParams({
+            rewardRateBps: 500, // 5% initial
+            maxDailyDistribution: 100_000 * 10**18,
+            distributedToday: 0,
+            lastDistributionTime: block.timestamp,
+            lastHalvingTime: block.timestamp,
+            minSlippageBps: 50,  // 0.5%
+            maxSlippageBps: 200  // 2%
+        });
+
+        // Initialize cross-chain with LayerZero
+        crossChainSync = CrossChainSync({
+            lzEndpoint: ILayerZeroEndpoint(lzEndpoint),
+            destinationChainId: destinationChainId,
+            destinationAddress: destinationAddress,
+            lastSyncTimestamp: 0,
+            syncInterval: 1 days,
+            gasForDestination: 200000  // Default gas limit for destination chain
+        });
+
+        distributionCooldown = 6 hours;
     }
+
+    // ========== CORE DISTRIBUTION ==========
     
     /**
-     * @notice Authorizes contract upgrades
-     * @param newImplementation Address of the new implementation
+     * @notice Distribute rewards to the staking contract
+     * @param amount Amount of reward tokens to distribute
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-    
-    // -------------------------------------------
-    //  Core Reward Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Distribute reward to a user
-     * @param user Address of the user
-     * @param amount Reward amount before halving adjustment
-     */
-    function distributeReward(address user, uint256 amount) 
-        external 
-        override 
-        onlyRole(STAKING_CONTRACT_ROLE) 
-        nonReentrant 
-    {
-        if (user == address(0)) revert InvalidAddress("user");
-        if (amount == 0) revert InvalidParameter("amount");
-        if (distributionPaused) revert CircuitBreakerActive();
-        
-        // Check daily distribution limit
-        _checkAndResetDailyLimit();
-        
-        // Check if halving should be applied
-        _checkAndApplyHalving();
-        
-        // Apply current halving rate to reward amount
-        uint256 adjustedAmount = (amount * halvingReductionRate) / 100;
-        
-        // Ensure we don't exceed daily limit
-        if (dailyDistributed + adjustedAmount > maxDailyDistribution) revert MaxDistributionExceeded();
-        dailyDistributed += adjustedAmount;
-        
-        // Transfer reward to the user
-        rewardToken.safeTransferFrom(rewardSource, user, adjustedAmount);
-        
-        // Track total rewards distributed
-        totalDistributed += adjustedAmount;
-        
-        // Handle liquidity injection if enabled and guard contract is set
-        if (autoBuybackEnabled && address(liquidityGuard) != address(0)) {
-            uint256 injectionAmount = (adjustedAmount * liquidityInjectionRate) / 100;
-            try liquidityGuard.injectLiquidity(injectionAmount) {
-                emit LiquidityInjected(injectionAmount);
-            } catch {
-                // Failed injection should not revert the reward
-                emit LiquidityInjectionFailed(injectionAmount);
-            }
-        }
-        
-        emit RewardDistributed(user, adjustedAmount);
-    }
-    
-    /**
-     * @notice Claim rewards for a user
-     * @param user Address of the user
-     * @return rewardAmount Amount of rewards claimed
-     */
-    function claimRewards(address user) 
+    function distributeRewards(uint256 amount) 
         external 
         nonReentrant 
-        returns (uint256 rewardAmount) 
+        whenNotPaused
+        checkFlashloan
+        checkCooldown(msg.sender)
     {
-        if (user == address(0)) revert InvalidAddress("user");
-        if (distributionPaused) revert CircuitBreakerActive();
-
-        _checkAndResetDailyLimit();
-
-        rewardAmount = stakingContract.calculateRewards(user);
+        // 1. Validate amount
+        if (amount == 0) revert InvalidAmount();
         
-        (uint256 slashedReward, ) = slashingContract.getUserSlashedRewards(user);
-        rewardAmount += slashedReward;
-
-        if (rewardAmount == 0) return 0;
-
-        uint256 adjustedReward = (rewardAmount * halvingReductionRate) / 100;
-
-        if (dailyDistributed + adjustedReward > maxDailyDistribution) revert MaxDistributionExceeded();
-        dailyDistributed += adjustedReward;
-
-        rewardToken.safeTransferFrom(rewardSource, user, adjustedReward);
-        totalDistributed += adjustedReward;
-
-        if (autoBuybackEnabled && address(liquidityGuard) != address(0)) {
-            uint256 injectionAmount = (adjustedReward * liquidityInjectionRate) / 100;
-            try liquidityGuard.injectLiquidity(injectionAmount) {
-                emit LiquidityInjected(injectionAmount);
-            } catch {
-                emit LiquidityInjectionFailed(injectionAmount);
-            }
+        // 2. Check daily limit
+        DistributionParams memory params = distributionParams;
+        if (block.timestamp / 1 days > params.lastDistributionTime / 1 days) {
+            params.distributedToday = 0;
+        }
+        if (params.distributedToday + amount > params.maxDailyDistribution) {
+            revert DailyLimitExceeded();
         }
 
-        emit RewardDistributed(user, adjustedReward);
-        return adjustedReward;
+        // 3. Verify price stability
+        (uint256 twapPrice, uint256 currentPrice) = _getVerifiedPrices();
+        uint256 priceImpact = _calculatePriceImpact(twapPrice, currentPrice);
+        _adjustSlippage();
+        if (priceImpact > params.minSlippageBps) {
+            revert SlippageTooHigh();
+        }
+
+        // 4. Execute distribution
+        uint256 initialBalance = REWARD_TOKEN.balanceOf(address(this));
+        REWARD_TOKEN.safeTransfer(STAKING_CONTRACT, amount);
+        
+        // 5. Post-distribution checks
+        if (REWARD_TOKEN.balanceOf(address(this)) < initialBalance - amount) {
+            emit EmergencyCircuitBreaker(amount);
+            _pause();
+            revert BalanceInconsistency();
+        }
+
+        // 6. Update state
+        params.distributedToday += amount;
+        params.lastDistributionTime = block.timestamp;
+        distributionParams = params;
+        lastUserDistribution[msg.sender] = block.timestamp;
+
+        // 7. Record slippage
+        recentSlippageSamples[slippageSampleIndex] = priceImpact;
+        slippageSampleIndex = (slippageSampleIndex + 1) % 5;
+        lastSlippageUpdate = block.timestamp;
+
+        emit RewardsDistributed(msg.sender, amount, currentPrice);
+        _checkHalvingConditions();
+    }
+
+    // ========== CROSS-CHAIN SYNC (LAYERZERO) ==========
+    
+    /**
+     * @notice Sync reward rate to another chain via LayerZero
+     */
+    function syncCrossChain() external {
+        CrossChainSync memory sync = crossChainSync;
+        if (block.timestamp < sync.lastSyncTimestamp + sync.syncInterval) {
+            revert SyncCooldownActive();
+        }
+        
+        // Prepare message payload with the current reward rate
+        bytes memory payload = abi.encode(distributionParams.rewardRateBps);
+        
+        // Estimate fee for sending message
+        bytes memory adapterParams = abi.encodePacked(uint16(1), sync.gasForDestination);
+        uint256 fee = sync.lzEndpoint.estimateFees(
+            sync.destinationChainId,
+            address(this),
+            payload,
+            false,
+            adapterParams
+        );
+
+        // Send cross-chain message
+        sync.lzEndpoint.send{value: fee}(
+            sync.destinationChainId,
+            sync.destinationAddress,
+            payload,
+            payable(msg.sender),
+            address(0),
+            adapterParams
+        );
+        
+        crossChainSync.lastSyncTimestamp = block.timestamp;
+        emit CrossChainSynced(sync.destinationChainId, distributionParams.rewardRateBps, block.timestamp);
+    }
+    
+    /**
+     * @notice Update gas limit for destination chain
+     * @param newGasLimit New gas limit to use
+     */
+    function updateDestinationGas(uint256 newGasLimit) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        crossChainSync.gasForDestination = newGasLimit;
+    }
+    
+    /**
+     * @notice Implements LayerZero message receiver
+     * @param srcChainId Source chain ID
+     * @param srcAddress Source address (in bytes)
+     * @param nonce Message nonce
+     * @param payload Message payload
+     */
+    function lzReceive(
+        uint16 srcChainId,
+        bytes memory srcAddress,
+        uint64 nonce,
+        bytes memory payload
+    ) external override {
+        // Verify that message is from the LayerZero endpoint
+        if (msg.sender != address(crossChainSync.lzEndpoint)) {
+            revert UnauthorizedSource();
+        }
+        
+        // Validate source chain and address
+        if (srcChainId != crossChainSync.destinationChainId ||
+            keccak256(srcAddress) != keccak256(crossChainSync.destinationAddress)) {
+            revert UnauthorizedSource();
+        }
+
+        // Process message payload
+        uint256 remoteRewardRate = abi.decode(payload, (uint256));
+        
+        // Update local reward rate if remote rate is valid
+        if (remoteRewardRate >= MIN_REWARD_RATE_BPS) {
+            uint256 oldRate = distributionParams.rewardRateBps;
+            distributionParams.rewardRateBps = remoteRewardRate;
+            emit HalvingExecuted(oldRate, remoteRewardRate);
+        }
+
+        emit MessageReceived(srcChainId, srcAddress, nonce, payload);
+    }
+    
+    /**
+     * @notice Update destination chain info
+     * @param newDestinationChainId New destination chain ID
+     * @param newDestinationAddress New destination address
+     */
+    function updateDestination(
+        uint16 newDestinationChainId,
+        bytes calldata newDestinationAddress
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        crossChainSync.destinationChainId = newDestinationChainId;
+        crossChainSync.destinationAddress = newDestinationAddress;
+    }
+
+    // ========== FLASHLOAN PROTECTION ==========
+    
+    /**
+     * @notice Called by flashloan callback to track active loans
+     */
+    function flashLoanCallback(
+        address borrower,
+        uint256 amount
+    ) external {
+        // This is called by the flashloan contract during a loan
+        // We check here if this transaction involves our contract
+        _flashloanStatus = _ENTERED;
+        emit FlashloanDetected(borrower, amount);
+    }
+    
+    /**
+     * @notice Check for active flashloans and enforce cooldown
+     */
+    modifier checkFlashloan() {
+        if (_flashloanStatus == _ENTERED) {
+            revert FlashloanActive();
+        }
+        _;
+        if (_flashloanStatus == _ENTERED) {
+            lastPostFlashInteraction[tx.origin] = block.number + FLASHLOAN_COOLDOWN_BLOCKS;
+        }
+        _flashloanStatus = _NOT_ENTERED;
     }
 
     /**
-     * @notice Redistribute penalties from slashed validators
-     * @param from Address of the slashed validator
-     * @param amount Amount of the penalty
+     * @notice Enforce cooldown between user reward distributions
      */
-    function redistributePenalty(address from, uint256 amount) 
-        external 
-        override 
-        nonReentrant 
-    {
-        // Only slashing contract can call this
-        if (msg.sender != address(slashingContract)) revert Unauthorized();
-        if (amount == 0) revert InvalidParameter("amount");
+    modifier checkCooldown(address user) {
+        if (block.timestamp < lastUserDistribution[user] + distributionCooldown) {
+            revert CooldownActive();
+        }
+        if (lastPostFlashInteraction[user] > block.number) {
+            revert FlashloanActive();
+        }
+        _;
+    }
+
+    // ========== ORACLE LOGIC ==========
+    
+    /**
+     * @notice Get verified prices from multiple sources
+     * @return twapPrice TWAP price from Uniswap V4
+     * @return currentPrice Current price from API3
+     */
+    function _getVerifiedPrices() internal view returns (uint256 twapPrice, uint256 currentPrice) {
+        // 1. Get Uniswap V4 TWAP
+        twapPrice = _getSecureTWAP();
         
-        // Add to pending penalties for redistribution
-        pendingPenalties[from] += amount;
-        totalPendingPenalties += amount;
+        // 2. Get API3 price
+        (int224 api3Price, uint32 timestamp) = oracleConfig.priceFeed.read();
+        currentPrice = uint256(uint224(api3Price)) * PRICE_PRECISION / 1e18;
         
-        emit PenaltyReDistributed(from, amount);
+        // Ensure price is fresh
+        if (block.timestamp - timestamp > oracleConfig.maxPriceAge) {
+            // Fallback to TWAP if API3 is stale
+            currentPrice = twapPrice;
+        }
+        
+        // 3. Verify deviation
+        uint256 deviation = _calculatePriceImpact(twapPrice, currentPrice);
+        if (deviation > MAX_FLASHLOAN_IMPACT_BPS) {
+            revert PriceDeviationTooHigh();
+        }
+        
+        return (twapPrice, currentPrice);
     }
 
     /**
-     * @notice Add penalty rewards to be distributed
-     * @param amount Amount of penalty rewards to add
+     * @notice Get appropriate TWAP based on market conditions
      */
-    function addPenaltyRewards(uint256 amount) external nonReentrant onlyRole(GOVERNANCE_ROLE) {
-        if (amount == 0) revert InvalidParameter("amount");
-        
-        // Transfer penalty tokens from sender
-        IERC20(address(rewardToken)).safeTransferFrom(msg.sender, address(this), amount);
-        
-        // Add to pending penalties for distribution
-        totalPendingPenalties += amount;
-        
-        emit PenaltyRewardsAdded(msg.sender, amount);
+    function _getSecureTWAP() internal view returns (uint256) {
+        return _flashloanStatus == _ENTERED 
+            ? _getCustomTWAP(2 hours)  // Stricter during flashloans
+            : _getV4TWAPPrice();       // Normal 30m window
     }
-
+    
     /**
-     * @notice Distribute accumulated penalties to active stakers in batches
-     * @param startIndex Start index in the stakers array
-     * @param endIndex End index in the stakers array (inclusive)
+     * @notice Get TWAP price from Uniswap V4
      */
-    function batchDistributePenalties(uint256 startIndex, uint256 endIndex) 
-        external 
-        onlyRole(GOVERNANCE_ROLE)
-        nonReentrant
-    {
-        if (totalPendingPenalties == 0) revert InvalidParameter("noPendingPenalties");
-        
-        // Get active stakers from staking contract
-        address[] memory stakers = stakingContract.getActiveStakers();
-        if (stakers.length == 0) return; // No stakers to distribute to
-        
-        // Validate indices
-        if (endIndex >= stakers.length) {
-            endIndex = stakers.length - 1;
+    function _getV4TWAPPrice() internal view returns (uint256) {
+        // Implementation would depend on the specific Uniswap V4 hook being used
+        // This is a placeholder that would need to be replaced with actual implementation
+        try poolManager.getPool(poolId) returns (uint160 sqrtPriceX96, int24 tick, uint8 protocolFee, uint24 swapFee) {
+            return uint256(sqrtPriceX96) * uint256(sqrtPriceX96) * PRICE_PRECISION / (1 << 192);
+        } catch {
+            // Fallback to API3 price on failure
+            (int224 api3Price, ) = oracleConfig.priceFeed.read();
+            return uint256(uint224(api3Price));
         }
-        if (startIndex > endIndex) revert InvalidParameter("invalidIndices");
+    }
+    
+    /**
+     * @notice Get TWAP with custom time window
+     * @param timeWindow Time window for TWAP calculation
+     */
+    function _getCustomTWAP(uint256 timeWindow) internal view returns (uint256) {
+        // Similar to _getV4TWAPPrice but with custom time window
+        // Implementation depends on the specific Uniswap V4 hook being used
+        return _getV4TWAPPrice(); // Simplified for this example
+    }
+    
+    /**
+     * @notice Calculate price impact between two prices
+     * @param basePrice Base price
+     * @param currentPrice Current price
+     * @return Price impact in basis points
+     */
+    function _calculatePriceImpact(uint256 basePrice, uint256 currentPrice) internal pure returns (uint256) {
+        if (basePrice == 0) return BPS_DENOMINATOR; // 100% impact as safety
         
-        // Calculate batch proportions using cached total staked amount if recent
-        if (block.timestamp > lastStakeUpdateTime + 1 days) {
-            _updateStakeTotalCache();
-        }
-        
-        if (totalStakedCache == 0) return; // No stake to calculate proportion
-        
-        // Calculate total staked for this batch
-        uint256 batchStaked = 0;
-        for (uint256 i = startIndex; i <= endIndex; i++) {
-            batchStaked += stakingContract.getUserTotalStake(stakers[i]);
-        }
-        
-        if (batchStaked == 0) return; // No stake in this batch
-        
-        // Calculate batch's share of penalties
-        uint256 batchPenaltyShare = (totalPendingPenalties * batchStaked) / totalStakedCache;
-        uint256 distributedInBatch = 0;
-        
-        // Distribute penalties for this batch
-        for (uint256 i = startIndex; i <= endIndex; i++) {
-            address staker = stakers[i];
-            uint256 stakerAmount = stakingContract.getUserTotalStake(staker);
+        uint256 diff = basePrice > currentPrice 
+            ? basePrice - currentPrice
+            : currentPrice - basePrice;
             
-            if (stakerAmount > 0) {
-                uint256 penaltyShare = (batchPenaltyShare * stakerAmount) / batchStaked;
-                if (penaltyShare > 0) {
-                    try rewardToken.transfer(staker, penaltyShare) {
-                        distributedInBatch += penaltyShare;
-                    } catch {
-                        // Failed transfer should not block other distributions
-                        continue;
-                    }
+        return diff * BPS_DENOMINATOR / basePrice;
+    }
+    
+    /**
+     * @notice Dynamically adjust slippage tolerance based on recent market conditions
+     */
+    function _adjustSlippage() internal {
+        if (block.timestamp < lastSlippageUpdate + 1 hours) return;
+        
+        uint256 sum = 0;
+        for (uint i = 0; i < 5; i++) {
+            sum += recentSlippageSamples[i];
+        }
+        
+        uint256 avgSlippage = sum / 5;
+        uint256 oldSlippage = distributionParams.minSlippageBps;
+        uint256 newSlippage;
+        
+        // If average slippage is higher, gradually increase our tolerance
+        if (avgSlippage > oldSlippage) {
+            newSlippage = oldSlippage + (avgSlippage - oldSlippage) / 10;
+            if (newSlippage > distributionParams.maxSlippageBps) {
+                newSlippage = distributionParams.maxSlippageBps;
+            }
+        } else if (avgSlippage < oldSlippage) {
+            // If lower, gradually decrease
+            newSlippage = oldSlippage - (oldSlippage - avgSlippage) / 20;
+            if (newSlippage < 50) newSlippage = 50; // Minimum 0.5%
+        } else {
+            newSlippage = oldSlippage;
+        }
+        
+        if (newSlippage != oldSlippage) {
+            distributionParams.minSlippageBps = newSlippage;
+            emit SlippageAdjusted(oldSlippage, newSlippage);
+        }
+    }
+    
+    /**
+     * @notice Check if halving conditions are met and execute if needed
+     */
+    function _checkHalvingConditions() internal {
+        DistributionParams memory params = distributionParams;
+        if (block.timestamp >= params.lastHalvingTime + HALVING_INTERVAL) {
+            uint256 oldRate = params.rewardRateBps;
+            uint256 newRate = params.rewardRateBps / 2;
+            if (newRate < MIN_REWARD_RATE_BPS) {
+                newRate = MIN_REWARD_RATE_BPS;
+            }
+            
+            distributionParams.rewardRateBps = newRate;
+            distributionParams.lastHalvingTime = block.timestamp;
+            
+            emit HalvingExecuted(oldRate, newRate);
+            
+            // Sync to other chains
+            if (address(crossChainSync.lzEndpoint) != address(0)) {
+                try this.syncCrossChain() {
+                    // Successfully triggered cross-chain sync
+                } catch {
+                    // Failed to sync, but we still executed the local halving
                 }
             }
         }
-        
-        // Update total pending penalties
-        if (distributedInBatch > 0) {
-            totalPendingPenalties -= distributedInBatch;
-        }
-        
-        emit PenaltiesBatchDistributed(startIndex, endIndex, distributedInBatch);
     }
-    
-    /**
-     * @notice Update the cached total staked amount
-     * @dev This reduces gas costs for batch operations by avoiding multiple calls
-     */
-    function _updateStakeTotalCache() internal {
-        uint256 oldTotal = totalStakedCache;
-        
-        address[] memory stakers = stakingContract.getActiveStakers();
-        uint256 newTotal = 0;
-        
-        for (uint256 i = 0; i < stakers.length; i++) {
-            newTotal += stakingContract.getUserTotalStake(stakers[i]);
-        }
-        
-        totalStakedCache = newTotal;
-        lastStakeUpdateTime = block.timestamp;
-        
-        emit StakeTotalCacheUpdated(oldTotal, newTotal);
-    }
-    
-    /**
-     * @notice Force update of the stake total cache
-     * @dev Can be called by governance to ensure accurate distributions
-     */
-    function updateStakeTotalCache() external onlyRole(GOVERNANCE_ROLE) {
-        _updateStakeTotalCache();
-    }
-    
-    /**
-     * @notice Check and reset daily distribution limits
-     */
-    function _checkAndResetDailyLimit() internal {
-        // Reset daily counter if a day has passed
-        if (block.timestamp >= lastDistributionReset + 1 days) {
-            dailyDistributed = 0;
-            lastDistributionReset = block.timestamp;
-            emit DailyDistributionReset(block.timestamp);
-        }
-    }
-    
-    // -------------------------------------------
-    //  Halving Mechanism
-    // -------------------------------------------
-    
-    /**
-     * @notice Check if halving should be applied and apply it
-     */
-    function _checkAndApplyHalving() internal {
-        if (halvingMechanismPaused) return;
-        
-        if (block.timestamp >= lastHalvingTime + TWO_YEARS_IN_SECONDS) {
-            // If enough time has passed, apply standard halving
-            _applyHalving();
-        }
-    }
-    
-    /**
-     * @notice Apply halving to reward rate
-     */
-    function _applyHalving() internal {
-        // Record new halving time
-        lastHalvingTime = block.timestamp;
-        halvingEpoch++;
-        
-        // Reduce the reward rate (but never below MIN_REWARD_RATE)
-        uint256 newRate = (halvingReductionRate * MAX_HALVING_REDUCTION_RATE) / 100;
-        halvingReductionRate = newRate < MIN_REWARD_RATE ? MIN_REWARD_RATE : newRate;
-        
-        emit HalvingApplied(halvingReductionRate, halvingEpoch);
-    }
-    
-    /**
-     * @notice Request randomness for halving from Chainlink VRF
-     * @return requestId The VRF request ID
-     */
-    function requestRandomHalving() external onlyRole(GOVERNANCE_ROLE) returns (uint256) {
-        // Ensure we're not already processing a VRF request
-        if (pendingRandomnessRequest) revert HalvingAlreadyRequested();
-        
-        // Set flag and request randomness
-        pendingRandomnessRequest = true;
-        
-        uint256 requestId = vrfCoordinator.requestRandomWords(
-            keyHash,
-            subscriptionId,
-            3, // requestConfirmations
-            callbackGasLimit,
-            1  // numWords
-        );
-        
-        vrfRequests[bytes32(requestId)] = true;
-        emit HalvingRequested(requestId);
-        
-        return requestId;
-    }
-    
-    /**
-     * @notice Callback function used by VRF Coordinator
-     * @param requestId ID of the request
-     * @param randomWords Array of random results from VRF Coordinator
-     */
-    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
-        bytes32 requestIdBytes = bytes32(requestId);
-        
-        if (!vrfRequests[requestIdBytes]) revert RandomizationFailed();
-        
-        // Apply randomized adjustment to halvingReductionRate (within bounds)
-        uint256 oldRate = halvingReductionRate;
-        
-        // Use randomness to adjust halving rate within +/-5% of standard rate
-        uint256 randomAdjustment = randomWords[0] % 11; // 0-10 range
-        int256 adjustmentDirection = randomAdjustment >= 5 ? int256(1) : int256(-1);
-        uint256 adjustmentAmount = randomAdjustment % 6; // 0-5 range
-        
-        int256 newRateInt = int256(oldRate) + (adjustmentDirection * int256(adjustmentAmount));
-        uint256 newRate = uint256(newRateInt < int256(MIN_REWARD_RATE) ? int256(MIN_REWARD_RATE) : newRateInt);
-        
-        halvingReductionRate = newRate;
-        lastHalvingTime = block.timestamp;
-        halvingEpoch++;
-        
-        // Clear request data
-        delete vrfRequests[requestIdBytes];
-        pendingRandomnessRequest = false;
-        
-        emit RandomnessReceived(requestIdBytes, randomWords[0]);
-        emit HalvingApplied(halvingReductionRate, halvingEpoch);
-    }
-    
-    /**
-     * @notice Manually force a halving (emergency only)
-     */
-    function forceHalving() external onlyRole(MULTISIG_ROLE) {
-        _applyHalving();
-    }
-    
-    /**
-     * @notice Pause or unpause the halving mechanism
-     * @param paused Whether the halving mechanism should be paused
-     */
-    function pauseHalvingMechanism(bool paused) external onlyRole(MULTISIG_ROLE) {
-        halvingMechanismPaused = paused;
-        emit HalvingMechanismPaused(paused);
-    }
-    
-    /**
-     * @notice Pause or unpause reward distribution
-     * @param paused Whether distribution should be paused
-     */
-    function pauseDistribution(bool paused) external onlyRole(MULTISIG_ROLE) {
-        distributionPaused = paused;
-        emit DistributionPaused(paused);
-    }
-    
-    /**
-     * @notice Emergency circuit breaker to pause all operations
-     * @param reason Reason for activation
-     */
-    function activateEmergencyCircuitBreaker(string calldata reason) external onlyRole(EMERGENCY_ROLE) {
-        distributionPaused = true;
-        halvingMechanismPaused = true;
-        emit EmergencyCircuitBreakerActivated(msg.sender, reason);
-    }
-    
-    // -------------------------------------------
-    //  Parameter Management
-    // -------------------------------------------
-    
-    /**
-     * @notice Propose update to the reward source address
-     * @param newRewardSource New reward source address
-     */
-    function proposeRewardSource(address newRewardSource) external onlyRole(GOVERNANCE_ROLE) {
-        if (newRewardSource == address(0)) revert InvalidAddress("newRewardSource");
-        
-        bytes32 updateKey = keccak256("rewardSource");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: 0,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: true,
-            addrValue: newRewardSource
-        });
-        
-        emit AddressUpdateProposed("rewardSource", newRewardSource, block.timestamp + PARAMETER_TIMELOCK);
-    }
-    
-    /**
-     * @notice Execute proposed reward source update after timelock
-     */
-    function executeRewardSourceUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("rewardSource");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("rewardSource");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        if (!update.isAddress) revert InvalidParameter("notAddressUpdate");
-        
-        address oldRewardSource = rewardSource;
-        rewardSource = update.addrValue;
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        emit ContractUpdated("rewardSource", oldRewardSource, update.addrValue);
-    }
-    
-    /**
-     * @notice Propose new liquidity injection rate
-     * @param newRate New liquidity injection rate (percentage)
-     */
-    function proposeLiquidityInjectionRate(uint256 newRate) external onlyRole(GOVERNANCE_ROLE) {
-        if (newRate > MAX_LIQUIDITY_INJECTION_RATE) revert InvalidParameter("newRate");
-        
-        bytes32 updateKey = keccak256("liquidityInjectionRate");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: newRate,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: false,
-            addrValue: address(0)
-        });
-        
-        emit ParameterUpdateProposed("liquidityInjectionRate", newRate, block.timestamp + PARAMETER_TIMELOCK);
-    }
-    
-    /**
-     * @notice Execute proposed liquidity injection rate update after timelock
-     */
-    function executeLiquidityInjectionRateUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("liquidityInjectionRate");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("liquidityInjectionRate");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        
-        uint256 oldRate = liquidityInjectionRate;
-        liquidityInjectionRate = update.value;
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        emit RewardParametersUpdated("liquidityInjectionRate", oldRate, update.value);
-    }
-    
-    /**
-     * @notice Set the maximum daily distribution limit
-     * @param newLimit New maximum daily distribution amount
-     */
-    function setMaxDailyDistribution(uint256 newLimit) external onlyRole(GOVERNANCE_ROLE) {
-        uint256 oldLimit = maxDailyDistribution;
-        maxDailyDistribution = newLimit;
-        
-        emit DailyDistributionLimitUpdated(oldLimit, newLimit);
-    }
-    
-    /**
-     * @notice Toggle auto-buyback functionality
-     * @param enabled Whether buybacks should be enabled
-     */
-    function setAutoBuyback(bool enabled) external onlyRole(GOVERNANCE_ROLE) {
-        autoBuybackEnabled = enabled;
-        
-        emit FeatureToggled("autoBuyback", enabled);
-    }
-    
-    /**
-     * @notice Update the Chainlink VRF callback gas limit
-     * @param newLimit New gas limit for VRF callbacks
-     */
-    function setCallbackGasLimit(uint32 newLimit) external onlyRole(GOVERNANCE_ROLE) {
-        if (newLimit < 100000) revert InvalidParameter("newLimit");
-        
-        uint32 oldLimit = callbackGasLimit;
-        callbackGasLimit = newLimit;
-        
-        emit RewardParametersUpdated("callbackGasLimit", oldLimit, newLimit);
-    }
-    
-    /**
-     * @notice Update Chainlink VRF subscription
-     * @param newSubscriptionId New VRF subscription ID
-     */
-    function setSubscriptionId(uint64 newSubscriptionId) external onlyRole(GOVERNANCE_ROLE) {
-        uint64 oldSubscriptionId = subscriptionId;
-        subscriptionId = newSubscriptionId;
-        
-        emit RewardParametersUpdated("subscriptionId", oldSubscriptionId, newSubscriptionId);
-    }
-    
-    // -------------------------------------------
-    //  Contract Updates
-    // -------------------------------------------
-    
-    /**
-     * @notice Propose update to the staking contract
-     * @param newStakingContract New staking contract address
-     */
-    function proposeStakingContract(address newStakingContract) external onlyRole(GOVERNANCE_ROLE) {
-        if (newStakingContract == address(0)) revert InvalidAddress("newStakingContract");
-        
-        bytes32 updateKey = keccak256("stakingContract");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: 0,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: true,
-            addrValue: newStakingContract
 
-        });
+    // ========== GOVERNANCE ==========
+    
+    /**
+     * @notice Set slippage tolerance bounds
+     * @param minBps Minimum slippage tolerance (basis points)
+     * @param maxBps Maximum slippage tolerance (basis points)
+     */
+    function setSlippageBounds(uint256 minBps, uint256 maxBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (maxBps > MAX_SLIPPAGE_BPS) revert MaxSlippageTooHigh();
+        if (minBps > maxBps) revert("Min cannot exceed max");
         
-        emit AddressUpdateProposed("stakingContract", newStakingContract, block.timestamp + PARAMETER_TIMELOCK);
+        distributionParams.minSlippageBps = minBps;
+        distributionParams.maxSlippageBps = maxBps;
+    }
+
+    /**
+     * @notice Update oracle configuration
+     * @param priceFeed API3 price feed address
+     * @param timeFeed API3 time feed address
+     * @param maxPriceAge Maximum age for price data
+     */
+    function updateOracleConfig(
+        address priceFeed,
+        address timeFeed,
+        uint256 maxPriceAge
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        oracleConfig.priceFeed = IApi3ServerV1(priceFeed);
+        oracleConfig.timeFeed = IApi3ServerV1(timeFeed);
+        oracleConfig.maxPriceAge = maxPriceAge;
     }
     
     /**
-     * @notice Execute proposed staking contract update after timelock
+     * @notice Update distribution cooldown period
+     * @param newCooldown New cooldown period in seconds
      */
-    function executeStakingContractUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("stakingContract");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("stakingContract");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        if (!update.isAddress) revert InvalidParameter("notAddressUpdate");
-        
-        address oldStakingContract = address(stakingContract);
-        stakingContract = ITerraStakeStaking(update.addrValue);
-        
-        // Revoke role from old contract and grant to new one
-        _revokeRole(STAKING_CONTRACT_ROLE, oldStakingContract);
-        _grantRole(STAKING_CONTRACT_ROLE, update.addrValue);
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        // Update stake cache with new contract data
-        _updateStakeTotalCache();
-        
-        emit ContractUpdated("stakingContract", oldStakingContract, update.addrValue);
+    function setDistributionCooldown(uint256 newCooldown) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        distributionCooldown = newCooldown;
     }
     
     /**
-     * @notice Propose update to the liquidity guard contract
-     * @param newLiquidityGuard New liquidity guard address
+     * @notice Update maximum daily distribution amount
+     * @param newMax New maximum daily distribution
      */
-    function proposeLiquidityGuard(address newLiquidityGuard) external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("liquidityGuard");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: 0,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: true,
-            addrValue: newLiquidityGuard
-        });
-        
-        emit AddressUpdateProposed("liquidityGuard", newLiquidityGuard, block.timestamp + PARAMETER_TIMELOCK);
+    function setMaxDailyDistribution(uint256 newMax) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        distributionParams.maxDailyDistribution = newMax;
     }
     
     /**
-     * @notice Execute proposed liquidity guard update after timelock
+     * @notice Emergency pause all contract operations
      */
-    function executeLiquidityGuardUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("liquidityGuard");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("liquidityGuard");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        if (!update.isAddress) revert InvalidParameter("notAddressUpdate");
-        
-        address oldLiquidityGuard = address(liquidityGuard);
-        liquidityGuard = ITerraStakeLiquidityGuard(update.addrValue);
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        emit ContractUpdated("liquidityGuard", oldLiquidityGuard, update.addrValue);
+    function emergencyPause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
     }
     
     /**
-     * @notice Propose update to the slashing contract
-     * @param newSlashingContract New slashing contract address
+     * @notice Resume contract operations after pause
      */
-    function proposeSlashingContract(address newSlashingContract) external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("slashingContract");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: 0,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: true,
-            addrValue: newSlashingContract
-        });
-        
-        emit AddressUpdateProposed("slashingContract", newSlashingContract, block.timestamp + PARAMETER_TIMELOCK);
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
     }
+
+    /**
+     * @notice Authorize contract upgrades
+     * @param newImplementation Address of new implementation
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
     
     /**
-     * @notice Execute proposed slashing contract update after timelock
+     * @notice Allow contract to receive ETH (needed for LayerZero fees)
      */
-    function executeSlashingContractUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("slashingContract");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("slashingContract");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        if (!update.isAddress) revert InvalidParameter("notAddressUpdate");
-        
-        address oldSlashingContract = address(slashingContract);
-        slashingContract = ITerraStakeSlashing(update.addrValue);
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        emit ContractUpdated("slashingContract", oldSlashingContract, update.addrValue);
-    }
-    
-    /**
-     * @notice Propose update to the Uniswap router
-     * @param newUniswapRouter New Uniswap router address
-     */
-    function proposeUniswapRouter(address newUniswapRouter) external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("uniswapRouter");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: 0,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: true,
-            addrValue: newUniswapRouter
-        });
-        
-        emit AddressUpdateProposed("uniswapRouter", newUniswapRouter, block.timestamp + PARAMETER_TIMELOCK);
-    }
-    
-    /**
-     * @notice Execute proposed Uniswap router update after timelock
-     */
-    function executeUniswapRouterUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("uniswapRouter");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("uniswapRouter");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        if (!update.isAddress) revert InvalidParameter("notAddressUpdate");
-        
-        address oldUniswapRouter = address(uniswapRouter);
-        uniswapRouter = ISwapRouter(update.addrValue);
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        emit ContractUpdated("uniswapRouter", oldUniswapRouter, update.addrValue);
-    }
-    
-    /**
-     * @notice Propose update to the liquidity pool address
-     * @param newLiquidityPool New liquidity pool address
-     */
-    function proposeLiquidityPool(address newLiquidityPool) external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("liquidityPool");
-        pendingParameterUpdates[updateKey] = PendingUpdate({
-            value: 0,
-            effectiveTime: block.timestamp + PARAMETER_TIMELOCK,
-            isAddress: true,
-            addrValue: newLiquidityPool
-        });
-        
-        emit AddressUpdateProposed("liquidityPool", newLiquidityPool, block.timestamp + PARAMETER_TIMELOCK);
-    }
-    
-    /**
-     * @notice Execute proposed liquidity pool update after timelock
-     */
-    function executeLiquidityPoolUpdate() external onlyRole(GOVERNANCE_ROLE) {
-        bytes32 updateKey = keccak256("liquidityPool");
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        
-        if (update.effectiveTime == 0) revert NoUpdatePending("liquidityPool");
-        if (block.timestamp < update.effectiveTime) revert TimelockNotExpired(block.timestamp, update.effectiveTime);
-        if (!update.isAddress) revert InvalidParameter("notAddressUpdate");
-        
-        address oldLiquidityPool = liquidityPool;
-        liquidityPool = update.addrValue;
-        
-        delete pendingParameterUpdates[updateKey];
-        
-        emit ContractUpdated("liquidityPool", oldLiquidityPool, update.addrValue);
-    }
-    
-    // -------------------------------------------
-    //  Emergency Recovery Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Recover ERC20 tokens accidentally sent to the contract
-     * @param tokenAddress Address of the token to recover
-     * @param amount Amount to recover
-     */
-    function recoverERC20(address tokenAddress, uint256 amount) 
-        external 
-        onlyRole(MULTISIG_ROLE) 
-        nonReentrant 
-    {
-        // Prevent recovering the reward token to avoid draining rewards
-        if (tokenAddress == address(rewardToken)) revert CannotRecoverRewardToken();
-        
-        IERC20(tokenAddress).safeTransfer(msg.sender, amount);
-        emit EmergencyTokenRecovery(tokenAddress, amount, msg.sender);
-    }
-    
-    /**
-     * @notice Cancel a pending parameter update
-     * @param paramName Name of the parameter update to cancel
-     */
-    function cancelPendingUpdate(string calldata paramName) external onlyRole(MULTISIG_ROLE) {
-        bytes32 updateKey = keccak256(abi.encodePacked(paramName));
-        
-        if (pendingParameterUpdates[updateKey].effectiveTime == 0) {
-            revert NoUpdatePending(paramName);
-        }
-        
-        delete pendingParameterUpdates[updateKey];
-    }
-    
-    // -------------------------------------------
-    //  View Functions
-    // -------------------------------------------
-    
-    /**
-     * @notice Get the current reward rate after halving
-     * @param baseAmount Base reward amount
-     * @return adjustedAmount Adjusted reward amount after halving
-     */
-    function getAdjustedRewardAmount(uint256 baseAmount) external view returns (uint256) {
-        return (baseAmount * halvingReductionRate) / 100;
-    }
-    
-    /**
-     * @notice Get time until next halving
-     * @return timeRemaining Seconds until next halving
-     */
-    function getTimeUntilNextHalving() external view returns (uint256) {
-        uint256 nextHalvingTime = lastHalvingTime + TWO_YEARS_IN_SECONDS;
-        if (block.timestamp >= nextHalvingTime) {
-            return 0;
-        }
-        return nextHalvingTime - block.timestamp;
-    }
-    
-    /**
-     * @notice Get effective time for a pending parameter update
-     * @param paramName Name of the parameter
-     * @return effectiveTime Time when the update can be executed (0 if no pending update)
-     */
-    function getPendingUpdateTime(string calldata paramName) external view returns (uint256) {
-        bytes32 updateKey = keccak256(abi.encodePacked(paramName));
-        return pendingParameterUpdates[updateKey].effectiveTime;
-    }
-    
-    /**
-     * @notice Get pending parameter value
-     * @param paramName Name of the parameter
-     * @return value Pending numeric value
-     * @return isAddress Whether this is an address update
-     * @return addrValue Pending address value (if isAddress is true)
-     */
-    function getPendingUpdateValue(string calldata paramName) 
-        external 
-        view 
-        returns (uint256 value, bool isAddress, address addrValue) 
-    {
-        bytes32 updateKey = keccak256(abi.encodePacked(paramName));
-        PendingUpdate memory update = pendingParameterUpdates[updateKey];
-        return (update.value, update.isAddress, update.addrValue);
-    }
-    
-    /**
-     * @notice Get pending penalty for a validator
-     * @param validator Validator address
-     * @return amount Pending penalty amount
-     */
-    function getPendingPenalty(address validator) external view returns (uint256) {
-        return pendingPenalties[validator];
-    }
-    
-    /**
-     * @notice Get halving status information
-     * @return currentRate Current halving rate
-     * @return epoch Current halving epoch
-     * @return lastHalvingTimestamp Timestamp of last halving
-     * @return nextHalvingTimestamp Timestamp of next halving
-     * @return isPaused Whether halving mechanism is paused
-     */
-    function getHalvingStatus() external view returns (
-        uint256 currentRate,
-        uint256 epoch,
-        uint256 lastHalvingTimestamp,
-        uint256 nextHalvingTimestamp,
-        bool isPaused
-    ) {
-        uint256 next = lastHalvingTime + TWO_YEARS_IN_SECONDS;
-        return (
-            halvingReductionRate,
-            halvingEpoch,
-            lastHalvingTime,
-            next,
-            halvingMechanismPaused
-        );
-    }
-    
-    /**
-     * @notice Get distribution statistics
-     * @return total Total rewards distributed
-     * @return daily Today's distribution
-     * @return dailyLimit Maximum daily distribution
-     * @return nextResetTime Time when daily counter resets
-     * @return isPaused Whether distribution is paused
-     */
-    function getDistributionStats() external view returns (
-        uint256 total,
-        uint256 daily,
-        uint256 dailyLimit,
-        uint256 nextResetTime,
-        bool isPaused
-    ) {
-        uint256 next = lastDistributionReset + 1 days;
-        return (
-            totalDistributed,
-            dailyDistributed,
-            maxDailyDistribution,
-            next,
-            distributionPaused
-        );
-    }
-    
-    /**
-     * @notice Return the contract version
-     * @return version Contract version
-     */
-    function version() external pure returns (string memory) {
-        return "2.0.0";
-    }
-}
+    receive() external payable {}
+}            

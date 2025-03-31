@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+pragma solidity ^0.8.21;
 
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import "../interfaces/IAPI3PriceFeed.sol";
 import "../interfaces/IAntiBot.sol";
 
 /**
@@ -159,7 +159,7 @@ contract AntiBot is
     // ================================
     //  Oracle Management
     // ================================
-    AggregatorV3Interface public priceOracle;
+    IAPI3PriceFeed public priceOracle;
     address[] private oracleAddresses;
     uint8 private constant MAX_ORACLE_COUNT = 5;
 
@@ -259,7 +259,7 @@ contract AntiBot is
         governanceInactivityThreshold = 30 days;
         
         // Initialize oracle
-        priceOracle = AggregatorV3Interface(_priceOracle);
+        priceOracle = IAPI3PriceFeed(_priceOracle);
         oracleAddresses.push(_priceOracle);
         backupOracles[_priceOracle] = true;
         
@@ -332,6 +332,7 @@ contract AntiBot is
                 }
             } else {
                 // Reset counter if sufficient time has passed
+
                 txCount = 1;
             }
             
@@ -434,18 +435,12 @@ contract AntiBot is
      * @return Latest price
      */
     function _getLatestPrice() internal view returns (int256) {
-        try priceOracle.latestRoundData() returns (
-            uint80 roundId,
-            int256 price,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        ) {
+        try priceOracle.readDataFeedWithDapi() returns (int224 price, uint32 timestamp) {
             // Validate price data
-            if (price <= 0 || updatedAt == 0 || updatedAt + 1 hours < block.timestamp) {
+            if (price <= 0 || timestamp == 0 || uint256(timestamp) + 1 hours < block.timestamp) {
                 revert InvalidPriceData();
             }
-            return price;
+            return int256(price);
         } catch {
             revert NoOracleResponse();
         }
@@ -465,15 +460,12 @@ contract AntiBot is
         uint256 validResponses = 0;
         
         for (uint8 i = 0; i < oracleCount; i++) {
-            try AggregatorV3Interface(oracleAddresses[i]).latestRoundData() returns (
-                uint80,
-                int256 price,
-                uint256,
-                uint256 updatedAt,
-                uint80
+            try IAPI3PriceFeed(oracleAddresses[i]).readDataFeedWithDapi() returns (
+                int224 price,
+                uint32 timestamp
             ) {
-                if (price > 0 && updatedAt + 1 hours >= block.timestamp) {
-                    prices[validResponses] = price;
+                if (price > 0 && uint256(timestamp) + 1 hours >= block.timestamp) {
+                    prices[validResponses] = int256(price);
                     validResponses++;
                 }
             } catch {
@@ -747,276 +739,188 @@ contract AntiBot is
         uint256 _max
     ) external nonReentrant failsafeOrGovernance {
         if (_base == 0 || _rapid == 0 || _window == 0 || _max <= _base) {
-            revert InvalidThresholdRelationship();
+            revert InvalidThresholdValue();
         }
         
         baseMultiplier = _base;
         rapidTransactionThreshold = _rapid;
-        rapidTransactionWindow = _window;
+        transactionTimeWindow = _window;
         maxMultiplier = _max;
         
-        emit DynamicThrottlingUpdated(_base, _rapid, _window, _max);
+        emit ThrottlingParametersUpdated(_base, _rapid, _window, _max);
     }
     
     /**
-     * @notice Updates price impact threshold
-     * @param newThreshold New price impact threshold
+     * @notice Updates price impact thresholds
+     * @param _impact Price impact threshold percentage
+     * @param _surge Price surge threshold percentage
+     * @param _circuit Circuit breaker threshold percentage
      */
-    function updatePriceImpactThreshold(uint256 newThreshold) external nonReentrant failsafeOrGovernance {
-        if (newThreshold == 0 || newThreshold >= circuitBreakerThreshold) {
-            revert InvalidThresholdRelationship();
+    function updatePriceThresholds(
+        uint256 _impact,
+        uint256 _surge,
+        uint256 _circuit
+    ) external nonReentrant failsafeOrGovernance {
+        if (_impact == 0 || _surge == 0 || _circuit == 0) {
+            revert InvalidThresholdValue();
         }
         
-        priceImpactThreshold = newThreshold;
-        emit PriceImpactThresholdUpdated(newThreshold);
-    }
-    
-    /**
-     * @notice Updates circuit breaker threshold
-     * @param newThreshold New circuit breaker threshold
-     */
-    function updateCircuitBreakerThreshold(uint256 newThreshold) external nonReentrant failsafeOrGovernance {
-        if (newThreshold <= priceImpactThreshold) {
-            revert InvalidThresholdRelationship();
-        }
+        priceImpactThreshold = _impact;
+        priceSurgeThreshold = _surge;
+        circuitBreakerThreshold = _circuit;
         
-        circuitBreakerThreshold = newThreshold;
-        emit CircuitBreakerThresholdUpdated(newThreshold);
-    }
-    
-    /**
-     * @notice Updates liquidity lock period
-     * @param newPeriod New liquidity lock period
-     */
-    function updateLiquidityLockPeriod(uint256 newPeriod) external nonReentrant failsafeOrGovernance {
-        if (newPeriod == 0) revert InvalidLockPeriod();
-        
-        liquidityLockPeriod = newPeriod;
-        emit LiquidityLockPeriodUpdated(newPeriod);
+        emit PriceThresholdsUpdated(_impact, _surge, _circuit);
     }
     
     /**
      * @notice Updates price check cooldown
-     * @param newCooldown New price check cooldown
+     * @param cooldown New cooldown in seconds
      */
-    function updatePriceCheckCooldown(uint256 newCooldown) external nonReentrant failsafeOrGovernance {
-        if (newCooldown == 0) revert InvalidThresholdValue();
-        
-        priceCheckCooldown = newCooldown;
-        emit PriceCheckCooldownUpdated(newCooldown);
+    function updatePriceCheckCooldown(uint256 cooldown) external nonReentrant failsafeOrGovernance {
+        if (cooldown < 60 || cooldown > 3600) revert InvalidThresholdValue();
+        priceCheckCooldown = cooldown;
+        emit PriceCheckCooldownUpdated(cooldown);
     }
     
     /**
-     * @notice Updates price surge parameters
-     * @param newThreshold New price surge threshold
-     * @param newCooldown New surge cooldown period
+     * @notice Updates surge cooldown period
+     * @param period New period in seconds
      */
-    function updatePriceSurgeThreshold(uint256 newThreshold, uint256 newCooldown) external nonReentrant failsafeOrGovernance {
-        if (newThreshold == 0 || newCooldown == 0) {
-            revert InvalidThresholdValue();
+    function updateSurgeCooldownPeriod(uint256 period) external nonReentrant failsafeOrGovernance {
+        if (period < 300 || period > 86400) revert InvalidThresholdValue();
+        surgeCooldownPeriod = period;
+        emit SurgeCooldownPeriodUpdated(period);
+    }
+    
+    /**
+     * @notice Updates the primary price oracle
+     * @param newOracle New oracle address
+     */
+    function updatePriceOracle(address newOracle) external nonReentrant failsafeOrGovernance {
+        if (newOracle == address(0)) revert ZeroAddressProvided();
+        
+        address oldOracle = address(priceOracle);
+        priceOracle = IAPI3PriceFeed(newOracle);
+        
+        // Add to backup oracles if not already there
+        if (!backupOracles[newOracle]) {
+            backupOracles[newOracle] = true;
+            oracleAddresses.push(newOracle);
+            oracleCount++;
         }
         
-        priceSurgeThreshold = newThreshold;
-        surgeCooldownPeriod = newCooldown;
-        
-        emit PriceSurgeThresholdUpdated(newThreshold, newCooldown);
+        emit PriceOracleUpdated(oldOracle, newOracle);
     }
     
     /**
-     * @notice Updates governance inactivity threshold
-     * @param newThreshold New governance inactivity threshold
+     * @notice Updates rate limit parameters
+     * @param _capacity Maximum tokens per period
+     * @param _refillRate Tokens refilled per second
      */
-    function updateGovernanceInactivityThreshold(uint256 newThreshold) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newThreshold == 0) revert InvalidThresholdValue();
+    function updateRateLimitParams(
+        uint256 _capacity,
+        uint256 _refillRate
+    ) external nonReentrant failsafeOrGovernance {
+        if (_capacity == 0 || _refillRate == 0) revert InvalidThresholdValue();
         
-        governanceInactivityThreshold = newThreshold;
-        emit GovernanceInactivityThresholdUpdated(newThreshold);
+        defaultBucketCapacity = uint128(_capacity);
+        defaultRefillRate = uint128(_refillRate);
+        
+        emit RateLimitParamsUpdated(_capacity, _refillRate);
     }
     
     /**
-     * @notice Updates rate limit configuration for a user
-     * @param user Address to configure
-     * @param capacity Maximum tokens capacity
-     * @param refillRate Tokens added per minute
+     * @notice Sets a custom rate limit for a specific address
+     * @param user Address to set custom rate limit for
+     * @param capacity Maximum tokens per period
+     * @param refillRate Tokens refilled per second
      */
-    function updateRateLimitConfig(address user, uint128 capacity, uint128 refillRate) external nonReentrant onlyRole(CONFIG_MANAGER_ROLE) {
+    function setCustomRateLimit(
+        address user,
+        uint256 capacity,
+        uint256 refillRate
+    ) external nonReentrant failsafeOrGovernance {
         if (user == address(0)) revert ZeroAddressProvided();
         if (capacity == 0 || refillRate == 0) revert InvalidThresholdValue();
         
         TokenBucket storage bucket = rateLimitBuckets[user];
-        bucket.capacity = capacity;
-        bucket.refillRate = refillRate;
+        bucket.capacity = uint128(capacity);
+        bucket.refillRate = uint128(refillRate);
+        bucket.tokens = uint128(capacity); // Reset tokens to full capacity
+        bucket.lastRefill = uint64(block.timestamp);
         
-        // Reset tokens to current capacity
-        bucket.tokens = capacity;
-        bucket.lastRefill = uint128(block.timestamp);
-        
-        emit RateLimitConfigUpdated(capacity, refillRate);
-    }
-
-    // ================================
-    //  Trusted Contract Management
-    // ================================
-    
-    /**
-     * @notice Adds a trusted contract
-     * @param contractAddress Address to exempt
-     */
-    function addTrustedContract(address contractAddress) external nonReentrant failsafeOrGovernance {
-        if (contractAddress == address(0)) revert ZeroAddressProvided();
-        trustedContracts[contractAddress] = true;
-        emit TrustedContractAdded(contractAddress);
+        emit CustomRateLimitSet(user, capacity, refillRate);
     }
     
     /**
-     * @notice Removes a trusted contract
-     * @param contractAddress Address to remove
+     * @notice Resets rate limit for a specific address to defaults
+     * @param user Address to reset
      */
-    function removeTrustedContract(address contractAddress) external nonReentrant failsafeOrGovernance {
-        trustedContracts[contractAddress] = false;
-        emit TrustedContractRemoved(contractAddress, GOVERNANCE_ROLE);
-    }
-
-    // ================================
-    //  Liquidity Management
-    // ================================
-    
-    /**
-     * @notice Records a liquidity injection
-     * @param provider Liquidity provider address
-     */
-    function recordLiquidityInjection(address provider) external override nonReentrant onlyRole(STAKING_CONTRACT_ROLE) {
-        if (provider == address(0)) revert ZeroAddressProvided();
-        liquidityInjectionTimestamp[provider] = block.timestamp;
+    function resetRateLimit(address user) external nonReentrant failsafeOrGovernance {
+        if (user == address(0)) revert ZeroAddressProvided();
+        
+        TokenBucket storage bucket = rateLimitBuckets[user];
+        bucket.capacity = defaultBucketCapacity;
+        bucket.refillRate = defaultRefillRate;
+        bucket.tokens = defaultBucketCapacity;
+        bucket.lastRefill = uint64(block.timestamp);
+        
+        emit RateLimitReset(user);
     }
     
     /**
-     * @notice Checks if liquidity can be withdrawn
-     * @param provider Liquidity provider address
-     * @return Whether liquidity can be withdrawn
+     * @notice Adds an address to the whitelist
+     * @param user Address to whitelist
      */
-    function canWithdrawLiquidity(address provider) external view override returns (bool) {
-        if (isCircuitBreakerTriggered) return false;
-        if (_isExempt(provider)) return true;
-        
-        uint256 injectionTime = liquidityInjectionTimestamp[provider];
-        if (injectionTime == 0) return true; // No record of injection
-        
-        return block.timestamp >= injectionTime + liquidityLockPeriod;
-    }
-
-    // ================================
-    //  Governance Exemption Management
-    // ================================
-    
-    /**
-     * @notice Requests governance exemption
-     * @param accountToExempt Address to exempt
-     */
-    function requestGovernanceExemption(address accountToExempt) external nonReentrant {
-        if (accountToExempt == address(0)) revert ZeroAddressProvided();
-        if (governanceExemptionCount >= MAX_GOVERNANCE_EXEMPTIONS) {
-            revert MaxGovernanceExemptionsReached();
-        }
-        
-        // Only allow the account itself or a transaction monitor
-        if (msg.sender != accountToExempt && !hasRole(TRANSACTION_MONITOR_ROLE, msg.sender)) {
-            revert NotAuthorized();
-        }
-        
-        pendingExemptions[accountToExempt] = GovernanceRequest({
-            account: accountToExempt,
-            unlockTime: uint64(block.timestamp + 24 hours)
-        });
-        
-        emit GovernanceExemptionRequested(accountToExempt, block.timestamp + 24 hours);
+    function addToWhitelist(address user) external nonReentrant failsafeOrGovernance {
+        if (user == address(0)) revert ZeroAddressProvided();
+        whitelist[user] = true;
+        emit WhitelistUpdated(user, true);
     }
     
     /**
-     * @notice Approves governance exemption
-     * @param accountToExempt Address to exempt
+     * @notice Removes an address from the whitelist
+     * @param user Address to remove from whitelist
      */
-    function approveGovernanceExemption(address accountToExempt) external nonReentrant failsafeOrGovernance {
-        if (accountToExempt == address(0)) revert ZeroAddressProvided();
-        
-        GovernanceRequest memory request = pendingExemptions[accountToExempt];
-        if (request.account != accountToExempt) revert NotAuthorized();
-        
-        if (block.timestamp < request.unlockTime) {
-            revert TimelockNotExpired(request.account, request.unlockTime);
-        }
-        
-        // Grant exemption
-        _grantRole(GOVERNANCE_ROLE, accountToExempt);
-        governanceExemptionCount++;
-        
-        // Clean up request
-        delete pendingExemptions[accountToExempt];
-        
-        emit GovernanceExemptionApproved(accountToExempt, GOVERNANCE_ROLE);
+    function removeFromWhitelist(address user) external nonReentrant failsafeOrGovernance {
+        whitelist[user] = false;
+        emit WhitelistUpdated(user, false);
     }
     
     /**
-     * @notice Revokes governance exemption
-     * @param accountToRevoke Address to revoke exemption from
+     * @notice Adds an address to the blacklist
+     * @param user Address to blacklist
      */
-    function revokeGovernanceExemption(address accountToRevoke) external nonReentrant failsafeOrGovernance {
-        if (!hasRole(GOVERNANCE_ROLE, accountToRevoke)) return;
-        
-        // Don't allow revoking original governance and staking contract roles
-        if (accountToRevoke == getRoleMember(GOVERNANCE_ROLE, 0) || 
-            accountToRevoke == getRoleMember(STAKING_CONTRACT_ROLE, 0)) {
-            revert NotAuthorized();
-        }
-        
-        _revokeRole(GOVERNANCE_ROLE, accountToRevoke);
-        governanceExemptionCount--;
-        
-        emit ExemptionRevoked(accountToRevoke, GOVERNANCE_ROLE);
+    function addToBlacklist(address user) external nonReentrant failsafeOrGovernance {
+        if (user == address(0)) revert ZeroAddressProvided();
+        blacklist[user] = true;
+        emit BlacklistUpdated(user, true);
+    }
+    
+    /**
+     * @notice Removes an address from the blacklist
+     * @param user Address to remove from blacklist
+     */
+    function removeFromBlacklist(address user) external nonReentrant failsafeOrGovernance {
+        blacklist[user] = false;
+        emit BlacklistUpdated(user, false);
     }
 
     // ================================
     //  Failsafe Management
     // ================================
     
-    // Failsafe admin
-    address private failsafeAdmin;
-    
-    /**
-     * @notice Checks if governance is potentially compromised
-     * @return Whether governance is inactive
-     */
-    function isGovernanceInactive() public view returns (bool) {
-        return block.timestamp > lastGovernanceActivity + governanceInactivityThreshold;
-    }
-    
-    /**
-     * @notice Updates failsafe admin
-     * @param newAdmin New failsafe admin address
-     */
-    function updateFailsafeAdmin(address newAdmin) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newAdmin == address(0)) revert ZeroAddressProvided();
-        failsafeAdmin = newAdmin;
-        emit FailsafeAdminUpdated(newAdmin);
-    }
-    
     /**
      * @notice Activates failsafe mode
      */
     function activateFailsafeMode() external nonReentrant {
-        if (msg.sender != failsafeAdmin && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
-            revert NotAuthorized();
-        }
-        
-        if (!isGovernanceInactive()) {
+        // Only allow if governance has been inactive for a long time
+        if (block.timestamp < lastGovernanceActivity + governanceInactivityThreshold) {
             revert GovernanceStillActive();
         }
         
-        if (failsafeMode) {
-            revert FailsafeModeAlreadyActive();
-        }
-        
         failsafeMode = true;
+        failsafeAdmin = msg.sender;
         emit FailsafeModeActivated(msg.sender);
     }
     
@@ -1024,107 +928,41 @@ contract AntiBot is
      * @notice Deactivates failsafe mode
      */
     function deactivateFailsafeMode() external nonReentrant {
-        if (msg.sender != failsafeAdmin && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+        // Only governance or the failsafe admin can deactivate
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender) && msg.sender != failsafeAdmin) {
             revert NotAuthorized();
-        }
-        
-        if (!failsafeMode) {
-            revert FailsafeModeInactive();
         }
         
         failsafeMode = false;
         emit FailsafeModeDeactivated(msg.sender);
     }
-
-    // ================================
-    //  External Antibot Interface
-    // ================================
     
     /**
-     * @notice Checks if a transaction would be throttled
-     * @param from Sender address
-     * @return wouldThrottle Whether the transaction would be throttled
-     * @return cooldownEnds Timestamp when cooldown ends
-     * @return appliedMultiplier Multiplier that would be applied
+     * @notice Updates governance inactivity threshold
+     * @param threshold New threshold in seconds
      */
-    function checkWouldThrottle(address from) external view returns (
-        bool wouldThrottle, 
-        uint256 cooldownEnds,
-        uint256 appliedMultiplier
-    ) {
-        if (!isAntibotEnabled || _isExempt(from)) return (false, 0, 0);
-        
-        uint256 cooldown = userCooldown[from];
-        uint256 multiplier = baseMultiplier;
-        uint256 txCount = userTransactionCount[from];
-        uint256 lastTxTime = lastTransactionTime[from];
-        
-        if (txCount > 0 && block.timestamp - lastTxTime < rapidTransactionWindow) {
-            if (txCount >= rapidTransactionThreshold) {
-                uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
-                multiplier = baseMultiplier * factor;
-                if (multiplier > maxMultiplier) multiplier = maxMultiplier;
-            }
-        }
-        
-        wouldThrottle = block.timestamp <= cooldown + (blockThreshold * multiplier);
-        cooldownEnds = cooldown + (blockThreshold * multiplier);
-        appliedMultiplier = multiplier;
-        return (wouldThrottle, cooldownEnds, appliedMultiplier);
-    }
-    
-    /**
-     * @notice Checks if circuit breaker is active
-     * @return Whether circuit breaker is active
-     */
-    function isCircuitBreakerActive() external view override returns (bool) {
-        return isCircuitBreakerTriggered || isPriceSurgeActive;
-    }
-    
-    /**
-     * @notice Checks if buyback is paused
-     * @return Whether buyback is paused
-     */
-    function isBuybackActive() external view override returns (bool) {
-        return !isBuybackPaused;
-    }
-    /**
-     * @notice Validates a token transfer
-     * @param from Address sending the token
-     * @param to Address receiving the token
-     * @param amount Transaction amount (unused in current implementation)
-     * @return isValid Whether the transaction passes anti-bot checks
-     */
-    function validateTransfer(address from, address to, uint256 amount) external override checkThrottle(from) circuitBreakerCheck returns (bool) {
-        // The modifiers will revert if the transaction fails validation
-        // If we reach here, it means the transaction passed validation
-        return false;
-    }
-    
-    /**
-     * @notice Sets antibot status
-     * @param status New antibot status
-     */
-    function setAntibotStatus(bool status) external nonReentrant failsafeOrGovernance {
-        isAntibotEnabled = status;
-        emit AntibotStatusUpdated(status);
+    function updateGovernanceInactivityThreshold(uint256 threshold) external nonReentrant onlyRole(GOVERNANCE_ROLE) {
+        if (threshold < 7 days || threshold > 90 days) revert InvalidThresholdValue();
+        governanceInactivityThreshold = threshold;
+        emit GovernanceInactivityThresholdUpdated(threshold);
     }
 
     // ================================
-    //  Internal Helper Functions
+    //  Utility Functions
     // ================================
     
     /**
-     * @notice Checks if address is exempt from antibot
-     * @param account Address to check
-     * @return Whether the address is exempt
+     * @notice Returns the maximum of two values
+     * @param a First value
+     * @param b Second value
+     * @return Maximum value
      */
-    function _isExempt(address account) internal view returns (bool) {
-        return hasRole(GOVERNANCE_ROLE, account) || trustedContracts[account];
+    function max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a : b;
     }
     
     /**
-     * @notice Returns minimum of two values
+     * @notice Returns the minimum of two values
      * @param a First value
      * @param b Second value
      * @return Minimum value
@@ -1134,347 +972,98 @@ contract AntiBot is
     }
     
     /**
-     * @notice Returns maximum of two values
-     * @param a First value
-     * @param b Second value
-     * @return Maximum value
+     * @notice Gets the current throttling multiplier for a user
+     * @param user Address to check
+     * @return Current multiplier
      */
-    function max(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a > b ? a : b;
-    }
-
-    // ================================
-    //  View Utility Functions
-    // ================================
-    
-    /**
-     * @notice Gets user throttling information
-     * @param user Address to query
-     * @return cooldownEnds Timestamp when cooldown ends
-     * @return transactionCount Number of recent transactions
-     * @return multiplier Current throttling multiplier
-     */
-    function getUserThrottlingInfo(address user) external view returns (
-        uint256 cooldownEnds,
-        uint256 transactionCount,
-        uint256 multiplier
-    ) {
-        uint256 cooldown = userCooldown[user];
+    function getThrottlingMultiplier(address user) external view returns (uint256) {
+        if (whitelist[user]) return 1;
+        if (blacklist[user]) return maxMultiplier;
+        
         uint256 txCount = userTransactionCount[user];
-        multiplier = baseMultiplier;
+        uint256 lastTx = lastTransactionTime[user];
         
-        uint256 lastTxTime = lastTransactionTime[user];
-        if (txCount > 0 && block.timestamp - lastTxTime < rapidTransactionWindow) {
-            if (txCount >= rapidTransactionThreshold) {
-                uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
-                multiplier = baseMultiplier * factor;
-                if (multiplier > maxMultiplier) multiplier = maxMultiplier;
-            }
+        // If no recent transactions, return base multiplier
+        if (lastTx == 0 || block.timestamp > lastTx + transactionTimeWindow) {
+            return baseMultiplier;
         }
         
-        cooldownEnds = cooldown + (blockThreshold * multiplier);
-        transactionCount = txCount;
-        
-        return (cooldownEnds, transactionCount, multiplier);
+        // Calculate dynamic multiplier based on transaction count
+        if (txCount <= rapidTransactionThreshold) {
+            return baseMultiplier;
+        } else {
+            uint256 multiplier = baseMultiplier + ((txCount - rapidTransactionThreshold) / 2);
+            return min(multiplier, maxMultiplier);
+        }
     }
     
     /**
-     * @notice Gets token bucket rate limiting info for a user
-     * @param user Address to query
-     * @return tokens Current available tokens
-     * @return capacity Maximum token capacity
-     * @return refillRate Tokens added per minute
-     * @return nextRefill Timestamp of next refill
+     * @notice Gets the current rate limit status for a user
+     * @param user Address to check
+     * @return available Available tokens
+     * @return capacity Maximum capacity
+     * @return refillRate Tokens per second refill rate
      */
-    function getRateLimitInfo(address user) external view returns (
-        uint256 tokens,
+    function getRateLimitStatus(address user) external view returns (
+        uint256 available,
         uint256 capacity,
-        uint256 refillRate,
-        uint256 nextRefill
+        uint256 refillRate
     ) {
-        TokenBucket memory bucket = rateLimitBuckets[user];
+        TokenBucket storage bucket = rateLimitBuckets[user];
         
-        // If bucket not initialized, return defaults
+        // If no custom bucket, use defaults
         if (bucket.capacity == 0) {
-            return (5, 5, 1, 0);
+            return (defaultBucketCapacity, defaultBucketCapacity, defaultRefillRate);
         }
         
-        // Calculate current tokens based on time elapsed
+        // Calculate current tokens
         uint256 elapsed = block.timestamp - bucket.lastRefill;
-        uint256 tokensToAdd = (elapsed * bucket.refillRate) / 60; // Tokens per minute
-        uint256 currentTokens = min(bucket.capacity, bucket.tokens + tokensToAdd);
-        
-        return (
-            currentTokens,
-            bucket.capacity,
-            bucket.refillRate,
-            bucket.lastRefill + (currentTokens < bucket.capacity ? 60 / bucket.refillRate : 0)
+        uint256 tokens = min(
+            uint256(bucket.capacity),
+            uint256(bucket.tokens) + (elapsed * uint256(bucket.refillRate))
         );
+        
+        return (tokens, bucket.capacity, bucket.refillRate);
     }
     
     /**
-     * @notice Gets price monitoring status
-     * @return lastPrice Last checked price
-     * @return lastCheckTime Last price check timestamp
-     * @return isBreaker Whether circuit breaker is active
-     * @return isSurge Whether price surge breaker is active
-     * @return surgeCooldownEnd Timestamp when surge cooldown ends
+     * @notice Gets the current circuit breaker status
+     * @return status Circuit breaker status
      */
-    function getPriceMonitoringStatus() external view returns (
+    function getCircuitBreakerStatus() external view returns (
+        bool circuitBreakerActive,
+        bool priceSurgeActive,
+        bool buybackPaused,
         int256 lastPrice,
-        uint256 lastCheckTime,
-        bool isBreaker,
-        bool isSurge,
-        uint256 surgeCooldownEnd
+        uint256 lastCheck
     ) {
         return (
-            lastCheckedPrice,
-            lastPriceCheckTime,
             isCircuitBreakerTriggered,
             isPriceSurgeActive,
-            isPriceSurgeActive ? lastSurgeTime + surgeCooldownPeriod : 0
+            isBuybackPaused,
+            lastCheckedPrice,
+            lastPriceCheckTime
         );
     }
     
     /**
-     * @notice Gets liquidity lock status for a user
-     * @param user Address to check
-     * @return lockUntil Timestamp when lock expires
-     * @return isLocked Whether liquidity is locked
-     * @return remainingTime Time remaining until unlock
-     */
-    function getLiquidityLockStatus(address user) external view returns (
-        uint256 lockUntil,
-        bool isLocked,
-        uint256 remainingTime
-    ) {
-        uint256 injectionTime = liquidityInjectionTimestamp[user];
-        if (injectionTime == 0) return (0, false, 0);
-        
-        lockUntil = injectionTime + liquidityLockPeriod;
-        isLocked = block.timestamp < lockUntil;
-        remainingTime = isLocked ? lockUntil - block.timestamp : 0;
-        
-        return (lockUntil, isLocked, remainingTime);
-    }
-
-    /**
-     * @notice Gets security threshold parameters
-     * @return blockLimit Block threshold
-     * @return priceImpact Price impact threshold
-     * @return circuitBreaker Circuit breaker threshold
-     * @return lockPeriod Liquidity lock period
-     * @return priceCooldown Price check cooldown
-     * @return surgeThreshold Price surge threshold
-     * @return surgeCooldown Surge cooldown period
-     */
-    function getSecurityThresholds() external view returns (
-        uint256 blockLimit,
-        uint256 priceImpact,
-        uint256 circuitBreaker,
-        uint256 lockPeriod,
-        uint256 priceCooldown,
-        uint256 surgeThreshold,
-        uint256 surgeCooldown
-    ) {
-        return (
-            blockThreshold,
-            priceImpactThreshold,
-            circuitBreakerThreshold,
-            liquidityLockPeriod,
-            priceCheckCooldown,
-            priceSurgeThreshold,
-            surgeCooldownPeriod
-        );
-    }
-
-    /**
-     * @notice Gets TWAP price history
-     * @return prices Array of price observations
+     * @notice Gets the price history
      * @return timestamps Array of timestamps
-     * @return currentTWAP Current TWAP value
+     * @return prices Array of prices
      */
-    function getTWAPHistory() external view returns (
-        int256[] memory prices,
+    function getPriceHistory() external view returns (
         uint256[] memory timestamps,
-        int256 currentTWAP
+        int256[] memory prices
     ) {
-        prices = new int256[](priceHistoryCount);
         timestamps = new uint256[](priceHistoryCount);
+        prices = new int256[](priceHistoryCount);
         
         for (uint8 i = 0; i < priceHistoryCount; i++) {
-            uint8 idx = (priceHistoryIndex + MAX_PRICE_OBSERVATIONS - i - 1) % MAX_PRICE_OBSERVATIONS;
-            PriceObservation memory obs = priceHistory[idx];
-            prices[i] = obs.price;
-            timestamps[i] = obs.timestamp;
+            uint8 idx = (priceHistoryIndex + i) % MAX_PRICE_OBSERVATIONS;
+            timestamps[i] = priceHistory[idx].timestamp;
+            prices[i] = priceHistory[idx].price;
         }
         
-        currentTWAP = calculateTWAP();
-        
-        return (prices, timestamps, currentTWAP);
+        return (timestamps, prices);
     }
-    
-    /**
-     * @notice Gets oracle configuration
-     * @return primary Primary oracle address
-     * @return backups Array of backup oracle addresses
-     * @return required Minimum required oracle responses
-     */
-    function getOracleConfig() external view returns (
-        address primary,
-        address[] memory backups,
-        uint8 required
-    ) {
-        primary = address(priceOracle);
-        backups = oracleAddresses;
-        required = minimumOracleResponses;
-        
-        return (primary, backups, required);
-    }
-    
-    /**
-     * @notice Verifies if an account is exempt from antibot
-     * @param account Address to check
-     * @return Whether the account is exempt
-     */
-    function isExempt(address account) external view returns (bool) {
-        return _isExempt(account);
-    }
-    
-    /**
-     * @notice Gets the address's transaction pattern information
-     * @param user Address to query
-     * @return highFreq High frequency transaction count
-     * @return suspicious Suspicious pattern count
-     * @return lastReset Last pattern reset timestamp
-     * @return isSuspicious Whether account is considered suspicious
-     */
-    function getUserPatternInfo(address user) external view returns (
-        uint64 highFreq,
-        uint64 suspicious,
-        uint64 lastReset,
-        bool isSuspicious
-    ) {
-        TransactionPattern memory pattern = userPatterns[user];
-        return (
-            pattern.highFrequencyCount,
-            pattern.suspiciousPatternCount,
-            pattern.lastPatternReset,
-            pattern.suspiciousPatternCount > 2
-        );
-    }
-
-    /**
-     * @notice Gets user cooldown status
-     * @param user Address to check
-     * @return blockNum Current block number
-     * @return threshold Block threshold
-     * @return canTransact Whether user can transact
-     * @return currentMultiplier Applied throttling multiplier
-     */
-    function getUserCooldownStatus(address user) external view returns (
-        uint256 blockNum,
-        uint256 threshold,
-        bool canTransact,
-        uint256 currentMultiplier
-    ) {
-        blockNum = block.number;
-        threshold = blockThreshold;
-        
-        uint256 cooldown = userCooldown[user];
-        uint256 txCount = userTransactionCount[user];
-        currentMultiplier = baseMultiplier;
-        
-        uint256 lastTxTime = lastTransactionTime[user];
-        if (txCount > 0 && block.timestamp - lastTxTime < rapidTransactionWindow) {
-            if (txCount >= rapidTransactionThreshold) {
-                uint256 factor = 1 + ((txCount - rapidTransactionThreshold + 1) / 2);
-                currentMultiplier = baseMultiplier * factor;
-                if (currentMultiplier > maxMultiplier) currentMultiplier = maxMultiplier;
-            }
-        }
-        
-        canTransact = block.timestamp > cooldown + (blockThreshold * currentMultiplier);
-        
-        return (blockNum, threshold, canTransact, currentMultiplier);
-    }
-
-    /**
-     * @notice Gets dynamic throttling parameters
-     * @return base Base multiplier
-     * @return rapid Rapid transaction threshold
-     * @return window Time window for rapid transactions
-     * @return maxMult Maximum multiplier
-     */
-    function getDynamicThrottlingParams() external view returns (
-        uint256 base,
-        uint256 rapid,
-        uint256 window,
-        uint256 maxMult
-    ) {
-        return (baseMultiplier, rapidTransactionThreshold, rapidTransactionWindow, maxMultiplier);
-    }
-    
-    /**
-     * @notice Gets the failsafe mode status
-     * @return active Whether failsafe mode is active
-     * @return admin Current failsafe admin address
-     * @return governanceActive Whether governance is considered active
-     * @return lastActivity Last governance activity timestamp
-     * @return inactivityThreshold Governance inactivity threshold
-     */
-    function getFailsafeStatus() external view returns (
-        bool active,
-        address admin,
-        bool governanceActive,
-        uint256 lastActivity,
-        uint256 inactivityThreshold
-    ) {
-        return (
-            failsafeMode,
-            failsafeAdmin,
-            !isGovernanceInactive(),
-            lastGovernanceActivity,
-            governanceInactivityThreshold
-        );
-    }
-    
-    /**
-     * @notice Checks if a liquidity provider can withdraw
-     * @param provider Liquidity provider address
-     * @return canWithdraw Whether provider can withdraw liquidity
-     * @return timeRemaining Time remaining until withdrawal is allowed (0 if can withdraw)
-     */
-    function checkLiquidityWithdrawal(address provider) external view returns (
-        bool canWithdraw,
-        uint256 timeRemaining
-    ) {
-        if (isCircuitBreakerTriggered) {
-            return (false, type(uint256).max); // Cannot withdraw during circuit breaker
-        }
-        
-        if (_isExempt(provider)) {
-            return (true, 0); // Exempt accounts can always withdraw
-        }
-        
-        uint256 injectionTime = liquidityInjectionTimestamp[provider];
-        if (injectionTime == 0) {
-            return (true, 0); // No record of injection
-        }
-        
-        uint256 unlockTime = injectionTime + liquidityLockPeriod;
-        if (block.timestamp >= unlockTime) {
-            return (true, 0); // Lock period expired
-        } else {
-            return (false, unlockTime - block.timestamp); // Still locked
-        }
-    }
-    
-    /**
-     * @notice Gets version information
-     * @return version Contract version string
-     */
-    function getVersion() external pure returns (string memory) {
-        return "AntiBot v4.0";
-    }
-}
+}            

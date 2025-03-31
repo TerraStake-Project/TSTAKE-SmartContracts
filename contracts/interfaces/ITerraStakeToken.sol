@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+pragma solidity ^0.8.21;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 
 /**
  * @title ITerraStakeToken
- * @notice Interface for the core TerraStake token functionality
- * @dev Defines token operations including standard ERC20, governance, and liquidity functions
+ * @notice Interface for TerraStake's enhanced ERC20 token with governance, staking, and economic controls
+ * @dev Includes all public/external functionality including cross-chain and halving mechanisms
  */
-interface ITerraStakeToken is IERC20 {
-    // ================================
-    //  Structs
-    // ================================
-    
+interface ITerraStakeToken is IERC20Upgradeable {
+    // ============ Structs ============
     struct BuybackStats {
         uint256 totalTokensBought;
         uint256 totalUSDCSpent;
@@ -20,68 +17,84 @@ interface ITerraStakeToken is IERC20 {
         uint256 buybackCount;
     }
 
-    // ================================
-    //  Token & Supply Information
-    // ================================
-    
-    /**
-     * @notice Returns the maximum token supply cap
-     * @return The maximum supply value
-     */
-    function MAX_SUPPLY() external view returns (uint256);
+    struct CrossChainHalving {
+        uint256 epoch;
+        uint256 timestamp;
+        uint256 totalSupply;
+        uint256 halvingPeriod;
+    }
 
-    // ================================
-    //  Blacklist Management
-    // ================================
-    
-    /**
-     * @notice Adds or removes an address from the blacklist
-     * @param account Address to update
-     * @param status True to blacklist, false to remove from blacklist
-     */
-    function setBlacklist(address account, bool status) external;
-    
-    /**
-     * @notice Batch blacklist management for multiple addresses
-     * @param accounts Addresses to update
-     * @param status True to blacklist, false to remove from blacklist
-     */
-    function batchBlacklist(address[] calldata accounts, bool status) external;
-    
-    /**
-     * @notice Checks if an address is blacklisted
-     * @param account Address to check
-     * @return True if blacklisted, false otherwise
-     */
+    // ============ Constants ============
+    function MAX_SUPPLY() external pure returns (uint256);
+    function MIN_TWAP_PERIOD() external pure returns (uint32);
+    function MAX_BATCH_SIZE() external pure returns (uint256);
+    function PRICE_DECIMALS() external pure returns (uint256);
+    function LARGE_TRANSFER_THRESHOLD() external pure returns (uint256);
+    function MAX_VOLATILITY_THRESHOLD() external pure returns (uint256);
+    function TWAP_UPDATE_COOLDOWN() external pure returns (uint256);
+    function BUYBACK_TAX_BASIS_POINTS() external pure returns (uint256);
+    function MAX_TAX_BASIS_POINTS() external pure returns (uint256);
+    function BURN_RATE_BASIS_POINTS() external pure returns (uint256);
+    function HALVING_RATE() external pure returns (uint256);
+
+    // ============ State Getters ============
+    function poolManager() external view returns (IPoolManager);
+    function poolKey() external view returns (PoolKey memory);
+    function poolId() external view returns (bytes32);
+    function governanceContract() external view returns (ITerraStakeGovernance);
+    function stakingContract() external view returns (ITerraStakeStaking);
+    function liquidityGuard() external view returns (ITerraStakeLiquidityGuard);
+    function aiEngine() external view returns (IAIEngine);
+    function neuralManager() external view returns (ITerraStakeNeural);
+    function crossChainHandler() external view returns (ICrossChainHandler);
+    function antiBot() external view returns (IAntiBot);
+    function priceFeed() external view returns (IProxy);
+    function gasOracle() external view returns (IProxy);
+    function lastTWAPPrice() external view returns (uint256);
+    function lastTWAPUpdate() external view returns (uint256);
+    function maxGasPrice() external view returns (uint256);
+    function buybackBudget() external view returns (uint256);
+    function buybackTotalAmount() external view returns (uint256);
+    function buybackStatistics() external view returns (BuybackStats memory);
+    function currentHalvingEpoch() external view returns (uint256);
+    function lastHalvingTime() external view returns (uint256);
+    function applyHalvingToMint() external view returns (bool);
+    function emissionRate() external view returns (uint256);
     function isBlacklisted(address account) external view returns (bool);
+    function taxExempt(address account) external view returns (bool);
+    function supportedChainIds(uint16 chainId) external view returns (bool);
+    function buybackTaxBasisPoints() external view returns (uint256);
+    function burnRateBasisPoints() external view returns (uint256);
+    function twapDeviationThreshold() external view returns (uint256);
+    function lastConfirmedTWAPPrice() external view returns (uint256);
 
-    // ================================
-    //  Minting
-    // ================================
-    
-    /**
-     * @notice Mint new tokens
-     * @param to Recipient address
-     * @param amount Amount to mint
-     */
+    // ============ Role Getters ============
+    function MINTER_ROLE() external pure returns (bytes32);
+    function ADMIN_ROLE() external pure returns (bytes32);
+    function UPGRADER_ROLE() external pure returns (bytes32);
+    function LIQUIDITY_MANAGER_ROLE() external pure returns (bytes32);
+    function NEURAL_INDEXER_ROLE() external pure returns (bytes32);
+    function AI_MANAGER_ROLE() external pure returns (bytes32);
+    function PRICE_ORACLE_ROLE() external pure returns (bytes32);
+    function CROSS_CHAIN_OPERATOR_ROLE() external pure returns (bytes32);
+    function GOVERNANCE_ROLE() external pure returns (bytes32);
+
+    // ============ Core Functions ============
+    function initialize(
+        address _poolManager,
+        address _governanceContract,
+        address _stakingContract,
+        address _liquidityGuard,
+        address _aiEngine,
+        address _priceFeed,
+        address _gasOracle,
+        address _neuralManager,
+        address _crossChainHandler,
+        address _antiBot
+    ) external;
+
     function mint(address to, uint256 amount) external;
-
-    // ================================
-    //  Permit Functions
-    // ================================
-        
-    /**
-     * @notice Executes a permit operation and transfers tokens in one transaction
-     * @param owner Token owner
-     * @param spender Token spender
-     * @param value Approval amount
-     * @param deadline Permit deadline
-     * @param v Signature parameter
-     * @param r Signature parameter
-     * @param s Signature parameter
-     * @param to Transfer recipient
-     * @param amount Transfer amount
-     */
+    function burnFrom(address from, uint256 amount) external;
     function permitAndTransfer(
         address owner,
         address spender,
@@ -94,205 +107,84 @@ interface ITerraStakeToken is IERC20 {
         uint256 amount
     ) external;
 
-    // ================================
-    //  Airdrop Function
-    // ================================
-    
-    /**
-     * @notice Perform an airdrop to multiple addresses
-     * @param recipients Recipient addresses
-     * @param amount Amount per recipient
-     */
-    function airdrop(address[] calldata recipients, uint256 amount) external;
+    // ============ Cross-Chain Functions ============
+    function setCrossChainHandler(address _crossChainHandler) external;
+    function setAntiBot(address _antiBot) external;
+    function addSupportedChain(uint16 chainId) external;
+    function removeSupportedChain(uint16 chainId) external;
+    function syncStateToChains() external;
+    function executeRemoteTokenAction(
+        uint16 srcChainId,
+        address recipient,
+        uint256 amount,
+        bytes32 reference
+    ) external;
+    function updateFromCrossChain(
+        uint16 srcChainId,
+        ICrossChainHandler.CrossChainState calldata state
+    ) external;
 
-    // ================================
-    //  Security Functions
-    // ================================
-    
-    /**
-     * @notice Pause all token transfers
-     */
-    function pause() external;
-    
-    /**
-     * @notice Unpause token transfers
-     */
-    function unpause() external;
-    
-    // ================================
-    //  Ecosystem Integrations
-    // ================================
-    
-    /**
-     * @notice Update the governance contract
-     * @param _governanceContract New governance contract address
-     */
-    function updateGovernanceContract(address _governanceContract) external;
-    
-    /**
-     * @notice Update the staking contract
-     * @param _stakingContract New staking contract address
-     */
-    function updateStakingContract(address _stakingContract) external;
-    
-    /**
-     * @notice Update the liquidity guard
-     * @param _liquidityGuard New liquidity guard address
-     */
-    function updateLiquidityGuard(address _liquidityGuard) external;
-    
-    // ================================
-    //  Staking Integration
-    // ================================
-    
-    /**
-     * @notice Stake tokens from a user
-     * @param from User address
-     * @param amount Amount to stake
-     * @return success Operation status
-     */
-    function stakeTokens(address from, uint256 amount) external returns (bool);
-    
-    /**
-     * @notice Unstake tokens to a user
-     * @param to User address
-     * @param amount Amount to unstake
-     * @return success Operation status
-     */
-    function unstakeTokens(address to, uint256 amount) external returns (bool);
-    
-    /**
-     * @notice Get governance votes for an account
-     * @param account The address to query
-     * @return The number of governance votes
-     */
-    function getGovernanceVotes(address account) external view returns (uint256);
-    
-    /**
-     * @notice Check if an account is penalized for governance violations
-     * @param account The address to check
-     * @return True if penalized, false otherwise
-     */
-    function isGovernorPenalized(address account) external view returns (bool);
-
-    // ================================
-    //  TWAP Oracle & Liquidity
-    // ================================
-    
-    /**
-     * @notice Get the TWAP price from Uniswap
-     * @param twapInterval Time period for TWAP
-     * @return price The TWAP price
-     */
-    function getTWAPPrice(uint32 twapInterval) external returns (uint256 price);
-    
-    /**
-     * @notice Execute buyback
-     * @param usdcAmount Amount of USDC to use
-     * @return tokensReceived Amount of tokens received
-     */
-    function executeBuyback(uint256 usdcAmount) external returns (uint256 tokensReceived);
-    
-    /**
-     * @notice Get buyback statistics
-     * @return The buyback statistics struct
-     */
-    function getBuybackStatistics() external view returns (BuybackStats memory);
-
-    // ================================
-    //  Halving & Governance
-    // ================================
-    
-    /**
-     * @notice Trigger halving mechanism
-     * @return Current halving epoch
-     */
+    // ============ Halving Mechanism ============
+    function applyHalving() external;
     function triggerHalving() external returns (uint256);
-    
-    /**
-     * @notice Get halving details
-     * @return period Halving period
-     * @return lastTime Last halving time
-     * @return epoch Current epoch
-     */
-    function getHalvingDetails() external view returns (
-        uint256 period,
-        uint256 lastTime,
-        uint256 epoch
-    );
-    
-    /**
-     * @notice Get the current halving epoch
-     * @return The current epoch
-     */
-    function currentHalvingEpoch() external view returns (uint256);
-    
-    /**
-     * @notice Get the timestamp of the last halving
-     * @return The timestamp
-     */
-    function lastHalvingTime() external view returns (uint256);
-    
-    /**
-     * @notice Check governance approval for a transaction
-     * @param account Address to check
-     * @param amount Amount to check
-     * @return approval status
-     */
-    function checkGovernanceApproval(address account, uint256 amount) external view returns (bool);
-    
-    /**
-     * @notice Penalize governance violator
-     * @param account Address to penalize
-     */
-    function penalizeGovernanceViolator(address account) external;
 
-    // ================================
-    //  Emergency Functions
-    // ================================
-    
-    /**
-     * @notice Emergency withdraw stuck tokens
-     * @param token Token address
-     * @param to Recipient address
-     * @param amount Amount to withdraw
-     */
+    // ============ Token Economics ============
+    function executeBuyback(uint256 usdcAmount) external;
+
+    // ============ Security Functions ============
+    function pause() external;
+    function unpause() external;
+
+    // ============ Admin Functions ============
+    function setBlacklist(address account, bool status) external;
+    function batchBlacklist(address[] calldata accounts, bool status) external;
+    function setTaxExemption(address account, bool exempt) external;
+    function batchSetTaxExemption(address[] calldata accounts, bool exempt) external;
+    function setBuybackTax(uint256 taxBps) external;
+    function setBurnRate(uint256 burnBps) external;
+    function setBuybackBudget(uint256 budget) external;
+    function setTWAPDeviationThreshold(uint256 threshold) external;
+    function setApplyHalvingToMint(bool apply) external;
     function emergencyWithdraw(address token, address to, uint256 amount) external;
-    
-    /**
-     * @notice Emergency withdraw multiple tokens
-     * @param tokens Array of token addresses
-     * @param to Recipient address
-     * @param amounts Array of amounts
-     */
     function emergencyWithdrawMultiple(
         address[] calldata tokens,
         address to,
         uint256[] calldata amounts
     ) external;
-    
-    /**
-     * @notice Activate circuit breaker
-     */
-    function activateCircuitBreaker() external;
 
-    // ================================
-    //  Events
-    // ================================
-    
+    // ============ Events ============
     event BlacklistUpdated(address indexed account, bool status);
     event AirdropExecuted(address[] recipients, uint256 amount, uint256 totalAmount);
-    event TWAPPriceQueried(uint32 twapInterval, uint256 price);
-    event EmergencyWithdrawal(address token, address to, uint256 amount);
+    event TWAPPriceUpdated(uint256 price);
     event TokenBurned(address indexed burner, uint256 amount);
     event GovernanceUpdated(address indexed governanceContract);
     event StakingUpdated(address indexed stakingContract);
     event LiquidityGuardUpdated(address indexed liquidityGuard);
-    event BuybackExecuted(uint256 amount, uint256 tokensReceived);
+    event BuybackExecuted(uint256 amount, uint256 tokensReceived, uint256 price);
     event LiquidityInjected(uint256 amount, uint256 tokensUsed);
     event HalvingTriggered(uint256 epochNumber, uint256 timestamp);
-    event TransferBlocked(address indexed from, address indexed to, uint256 amount, string reason);
-    event StakingOperationExecuted(address indexed user, uint256 amount, bool isStake);
-    event PermitUsed(address indexed owner, address indexed spender, uint256 amount);
-    event ITOContractUpdated(address indexed itoContract);
+    event CrossChainSyncSuccessful(uint256 epoch);
+    event HalvingSyncFailed();
+    event CrossChainHandlerUpdated(address indexed crossChainHandler);
+    event CrossChainMessageSent(uint16 indexed destChainId, bytes32 indexed payloadHash, uint256 nonce);
+    event CrossChainStateUpdated(uint16 indexed srcChainId, ICrossChainHandler.CrossChainState state);
+    event AntiBotUpdated(address indexed newAntiBot);
+    event TransactionThrottled(address indexed user, uint256 cooldownEnds);
+    event ChainSupportUpdated(uint16 indexed chainId, bool supported);
+    event EmissionRateUpdated(uint256 newRate);
+
+    // ============ Errors ============
+    error NotAuthorized();
+    error ZeroAddress();
+    error ZeroAmount();
+    error TWAPUpdateCooldown();
+    error MaxSupplyExceeded();
+    error InvalidPool();
+    error PoolNotInitialized();
+    error NeuralManagerNotSet();
+    error CrossChainHandlerNotSet();
+    error CrossChainSyncFailed(bytes reason);
+    error InvalidChainId();
+    error StaleMessage();
+    error TransactionThrottled();
 }

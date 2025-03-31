@@ -42,6 +42,8 @@ interface ITerraStakeSlashing {
     
     function updateCoolingOffPeriod(uint256 _coolingOffPeriod) external;
     
+    function updateTreasuryWallet(address _treasuryWallet) external;
+    
     function toggleEmergencyPause(bool paused) external;
     
     function recoverERC20(address token, uint256 amount) external;
@@ -117,9 +119,9 @@ interface ITerraStakeSlashing {
     );
     
     event EmergencyPauseToggled(bool paused);
-    event TreasuryWalletUpdated(address treasuryWallet);
     
     // Additional matching events to ensure full compatibility
     event ValidatorStatusUpdated(address indexed validator, bool isActive);
+    event TreasuryWalletUpdated(address indexed newWallet);
     event CoolingOffPeriodUpdated(uint256 newPeriod);
 }
