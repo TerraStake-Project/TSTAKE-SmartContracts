@@ -7,29 +7,7 @@ pragma solidity ^0.8.21;
  * front-running, flash crashes, sandwich attacks, and excessive transactions
  */
 interface IAntiBot {
-    // ================================
-    // Custom Errors
-    // ================================
-    error InvalidPriceOracle();
-    error InvalidPriceData();
-    error TransactionThrottled(address user, uint256 cooldownEnds, uint256 multiplier);
-    error TimelockNotExpired(address account, uint256 unlockTime);
-    error InvalidLockPeriod();
-    error CircuitBreakerActive();
-    error CircuitBreakerNotActive();
-    error OnlyRoleCanAccess(bytes32 requiredRole);
-    error ZeroAddressProvided();
-    error InvalidThresholdValue();
-    error InvalidThresholdRelationship();
-    error MaxGovernanceExemptionsReached();
-    error NotAuthorized();
-    error GovernanceStillActive();
-    error FailsafeModeInactive();
-    error FailsafeModeAlreadyActive();
-    error RateLimitExceeded(address user, uint256 resetTime);
-    error NoOracleResponse();
-    error InsufficientOracleConsensus();
-
+ 
     // ================================
     // Events
     // ================================
