@@ -1,996 +1,535 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+pragma solidity ^0.8.21;
 
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 
-import "../interfaces/ITerraStakeGovernance.sol";
-import "../interfaces/ITerraStakeStaking.sol";
-import "../interfaces/ITerraStakeRewardDistributor.sol";
-import "../interfaces/ITerraStakeLiquidityGuard.sol";
-import "../interfaces/ITerraStakeTreasuryManager.sol";
-import "../interfaces/ITerraStakeValidatorSafety.sol";
-import "../interfaces/ITerraStakeGuardianCouncil.sol";
+interface ITerraStakeLiabilityManager {
+    function configureOracle(address token, address api3Proxy, uint256 heartbeatPeriod, uint256 minPrice, uint256 maxPrice, uint256 updateInterval) external;
+    function setCustomTWAPWindow(address token, uint32 windowSize) external;
+    function updateFeeStructure(uint256 governanceShare, uint256 offsetFundShare) external;
+}
 
 /**
  * @title TerraStakeGovernance
- * @author TerraStake Protocol Team
- * @notice Governance contract for the TerraStake Protocol with advanced voting, 
- * proposal management, treasury control, economic adjustments, and validator safety
+ * @notice Complete governance system with dynamic thresholds and cross-chain sync
+ * @dev Features:
+ * - 0.4% dynamic proposal threshold
+ * - 8 proposal types with execution logic
+ * - Multi-sig protected upgrades
+ * - Comprehensive error handling
  */
 contract TerraStakeGovernance is 
     Initializable, 
     AccessControlEnumerableUpgradeable, 
     ReentrancyGuardUpgradeable, 
-    UUPSUpgradeable,
-    ITerraStakeGovernance
+    UUPSUpgradeable 
 {
-    using ECDSA for bytes32;
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
-    // Custom errors
+    // Constants
+    uint256 public constant PROPOSAL_THRESHOLD_BASIS_POINTS = 40; // 0.4%
+    uint256 public constant BASIS_POINTS_DIVISOR = 10000;
+    uint16 public constant CHAIN_ID_BSC = 102;
+    uint16 public constant CHAIN_ID_POLYGON = 109;
+    uint16 public constant CHAIN_ID_ARBITRUM = 110;
+    uint16 public constant CHAIN_ID_OPTIMISM = 111;
+
+    // Proposal Types
+    uint8 public constant PROPOSAL_TYPE_TREASURY = 1;
+    uint8 public constant PROPOSAL_TYPE_VALIDATOR = 2;
+    uint8 public constant PROPOSAL_TYPE_LIQUIDITY = 3;
+    uint8 public constant PROPOSAL_TYPE_UPGRADE = 4;
+    uint8 public constant PROPOSAL_TYPE_AI_BRIDGE = 5;
+    uint8 public constant PROPOSAL_TYPE_GOVERNANCE_PARAMS = 6;
+    uint8 public constant PROPOSAL_TYPE_HALVING = 7;
+    uint8 public constant PROPOSAL_TYPE_LIABILITY_MANAGER = 8;
+
+    // Errors
     error Unauthorized();
-    error InvalidParameters();
     error InvalidProposalState();
     error ProposalNotActive();
     error ProposalExpired();
     error AlreadyVoted();
     error InsufficientVotingPower();
-    error InvalidTargetCount();
-    error EmptyProposal();
-    error TooManyActions();
-    error InvalidState();
-    error GovernanceThresholdNotMet();
     error ProposalNotReady();
     error ProposalDoesNotExist();
-    error InvalidVote();
-    error TimelockNotExpired();
     error ProposalAlreadyExecuted();
-    error GovernanceViolation();
-    error InsufficientValidators();
-    error ProposalTypeNotAllowed();
-    error InvalidGuardianSignatures();
-    error NonceAlreadyExecuted();
+    error QuorumNotReached();
+    error InvalidVotingPeriod();
+    error InvalidTimelockPeriod();
+    error ExecutionFailed(string reason);
+    error NotEnoughMultiSigApprovals();
+    error ProposalAlreadyCanceled();
+    error ZeroAddress();
+    error InvalidProposalType();
+    error InvalidThreshold();
+    error CrossChainSyncFailed(uint16 chainId, bytes32 payloadHash);
+    error InvalidHalvingEpoch();
+    error LiabilityManagerError(string reason);
+    error EmergencyPauseActive();
+    error NoTokensToUnlock();
+    error InvalidQuorum();
 
-    // Packed storage
-    struct GovernanceParams {
-        uint48 votingDelay;          // Added for interface
-        uint48 votingPeriod;
-        uint48 executionDelay;       // Added for interface
-        uint48 executionPeriod;      // Added for interface
-        uint48 feeUpdateCooldown;
-        uint96 proposalThreshold;
-        uint96 minimumHolding;
-        address treasuryWallet;
+    // State
+    IERC20Upgradeable public governanceToken;
+    address public treasuryExecutor;
+    address public validatorSafety;
+    address public liquidityManager;
+    address public aiBridge;
+    address public crossChainHandler;
+    ITerraStakeLiabilityManager public liabilityManager;
+
+    uint256 public proposalCount;
+    uint256 public votingPeriod;
+    uint256 public timelockPeriod;
+    uint256 public proposalThreshold;
+    uint256 public quorumThreshold;
+    uint256 public requiredMultisigApprovals;
+    bool public emergencyPause;
+
+    struct Proposal {
+        uint256 id;
+        address proposer;
+        string description;
+        uint8 proposalType;
+        uint256 voteStart;
+        uint256 voteEnd;
+        uint256 forVotes;
+        uint256 againstVotes;
+        bool executed;
+        bool canceled;
+        uint256 totalVotingPower;
     }
 
-    struct SystemState {
-        uint48 lastFeeUpdateTime;
-        uint48 lastHalvingTime;
-        uint32 proposalCount;
-        uint32 totalVotesCast;
-        uint32 totalProposalsExecuted;
-        uint32 halvingEpoch;
-        uint32 currentNonce;
-        bool liquidityPairingEnabled;
+    struct ExtendedProposalData {
+        bytes customData;
+        uint256 timelockExpiry;
+        bytes32 proposalHash;
     }
 
-    // -------------------------------------------
-    //  Constants
-    // -------------------------------------------
-    bytes32 public constant override GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant override UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant override GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
-    bytes32 public constant override VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    
-    uint8 public constant PROPOSAL_TYPE_STANDARD = 0;
-    uint8 public constant PROPOSAL_TYPE_FEE_UPDATE = 1;
-    uint8 public constant PROPOSAL_TYPE_PARAM_UPDATE = 2;
-    uint8 public constant PROPOSAL_TYPE_CONTRACT_UPDATE = 3;
-    uint8 public constant PROPOSAL_TYPE_PENALTY = 4;
-    uint8 public constant PROPOSAL_TYPE_EMERGENCY = 5;
-    uint8 public constant PROPOSAL_TYPE_VALIDATOR = 6;
-    
-    uint256 public constant TIMELOCK_DURATION = 2 days;
-    uint256 public constant PENALTY_FOR_VIOLATION = 5;
-    uint256 public constant TWO_YEARS = 730 days;
-    uint24 public constant POOL_FEE = 3000;
-    
-    uint256 public constant CRITICAL_VALIDATOR_THRESHOLD = 3;
-    uint256 public constant REDUCED_VALIDATOR_THRESHOLD = 7;
-    uint256 public constant OPTIMAL_VALIDATOR_THRESHOLD = 15;
-    uint8 public constant GUARDIAN_QUORUM = 3;
-    uint8 public constant MAX_ACTIONS = 10; // Added to prevent gas limit issues
-    
-    // -------------------------------------------
-    //  State Variables
-    // -------------------------------------------
-    ITerraStakeStaking public stakingContract;
-    ITerraStakeRewardDistributor public rewardDistributor;
-    ITerraStakeLiquidityGuard public liquidityGuard;
-    ISwapRouter public uniswapRouter;
-    IERC20 public override tStakeToken;
-    IERC20 public usdcToken;
-    
-    ITerraStakeTreasuryManager public override treasuryManager;
-    ITerraStakeValidatorSafety public override validatorSafety;
-    ITerraStakeGuardianCouncil public override guardianCouncil;
-    
-    GovernanceParams public govParams;
-    SystemState public systemState;
-    FeeProposal public currentFeeStructure;
-    
-    mapping(uint256 => Proposal) public override proposals;
+    struct Vote {
+        bool support;
+        uint256 votingPower;
+        bool hasVoted;
+    }
+
+    mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => ExtendedProposalData) public proposalExtendedData;
-    mapping(uint256 => mapping(address => Receipt)) public override receipts;
-    mapping(bytes32 => bool) public executedHashes;
-    mapping(address => bool) public penalizedGovernors;
-    mapping(uint256 => bool) public executedNonces;
-    mapping(address => uint256) public override latestProposalIds;
-    
-    uint8 public governanceTier;
-    bool public bootstrapMode;
-    uint48 public bootstrapEndTime;
-    uint48 public temporaryThresholdEndTime;
-    uint96 public originalValidatorThreshold;
-    mapping(address => bool) public guardianCouncilMembers;
-    uint8 public guardianCount;
-    
-    bool public paused; // Added for pause/unpause
-    
-    // -------------------------------------------
-    //  Modifiers
-    // -------------------------------------------
-    modifier validatorSafetyCheck() {
-        if (!bootstrapMode && stakingContract.getValidatorCount() < CRITICAL_VALIDATOR_THRESHOLD) {
-            revert InsufficientValidators();
-        }
-        _;
-    }
-    
-    modifier allowedProposalType(uint8 proposalType) {
-        if (!isProposalTypeAllowed(proposalType)) {
-            revert ProposalTypeNotAllowed();
-        }
-        _;
-    }
-    
-    modifier whenNotPaused() {
-        if (paused) revert InvalidState();
-        _;
-    }
-    
-    // -------------------------------------------
-    //  Initializer & Upgrade Control
-    // -------------------------------------------
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
-    }
-    
+    mapping(address => uint256) public latestProposalIds;
+    mapping(uint256 => mapping(address => Vote)) public votes;
+    mapping(uint256 => mapping(address => bool)) public multiSigApprovals;
+    mapping(address => uint256) public lockedTokens;
+    mapping(uint16 => uint256) public chainGasLimits;
+    mapping(uint256 => uint256) public upgradeApprovals;
+
+    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant MULTISIG_ROLE = keccak256("MULTISIG_ROLE");
+    bytes32 public constant LIABILITY_MANAGER_ROLE = keccak256("LIABILITY_MANAGER_ROLE");
+
+    // Events
+    event ProposalCreated(uint256 indexed proposalId, address proposer, string description, uint8 proposalType);
+    event ProposalExecuted(uint256 indexed proposalId);
+    event ProposalCanceled(uint256 indexed proposalId);
+    event VoteCast(address indexed voter, uint256 indexed proposalId, bool support, uint256 votingPower);
+    event TokensLocked(address indexed user, uint256 amount);
+    event TokensUnlocked(address indexed user, uint256 amount);
+    event GovernanceParamsUpdated(uint256 votingPeriod, uint256 timelockPeriod, uint256 proposalThreshold, uint256 quorumThreshold);
+    event EmergencyShutdown(bool paused);
+    event CrossChainSyncSent(uint16 indexed chainId, bytes32 indexed payloadHash, uint256 nonce);
+    event ProposalThresholdUpdated(uint256 newThreshold);
+    event MultiSigUpgradeApproved(uint256 indexed proposalId, address approver);
+    event MultiSigUpgradeExecuted(uint256 indexed proposalId);
+
     function initialize(
-        address _treasuryManager,
+        address _governanceToken,
+        address _treasuryExecutor,
         address _validatorSafety,
-        address _guardianCouncil,
-        address _tStakeToken,
-        address _initialAdmin
-    ) external override initializer {
+        address _liquidityManager,
+        address _aiBridge,
+        address _crossChainHandler,
+        address _liabilityManager,
+        address _admin
+    ) external initializer {
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
-        
-        _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
-        _grantRole(UPGRADER_ROLE, _initialAdmin);
-        _grantRole(GOVERNANCE_ROLE, _initialAdmin);
-        _grantRole(GUARDIAN_ROLE, _initialAdmin);
-        
-        treasuryManager = ITerraStakeTreasuryManager(_treasuryManager);
-        validatorSafety = ITerraStakeValidatorSafety(_validatorSafety);
-        guardianCouncil = ITerraStakeGuardianCouncil(_guardianCouncil);
-        tStakeToken = IERC20(_tStakeToken);
-        
-        stakingContract = ITerraStakeStaking(_validatorSafety); // Assuming validatorSafety is staking contract
-        rewardDistributor = ITerraStakeRewardDistributor(_treasuryManager); // Assuming treasuryManager handles rewards
-        liquidityGuard = ITerraStakeLiquidityGuard(_treasuryManager); // Assuming treasuryManager handles liquidity
-        usdcToken = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48); // Example USDC address
-        uniswapRouter = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564); // Example Uniswap V3 router
-        
-        uint48 currentTime = uint48(block.timestamp);
-        govParams = GovernanceParams({
-            votingDelay: 1 days,
-            votingPeriod: 5 days,
-            executionDelay: TIMELOCK_DURATION,
-            executionPeriod: 7 days,
-            feeUpdateCooldown: 30 days,
-            proposalThreshold: 1000 * 10**18,
-            minimumHolding: 100 * 10**18,
-            treasuryWallet: _initialAdmin
-        });
-        
-        systemState = SystemState({
-            lastFeeUpdateTime: currentTime,
-            lastHalvingTime: currentTime,
-            proposalCount: 0,
-            totalVotesCast: 0,
-            totalProposalsExecuted: 0,
-            halvingEpoch: 0,
-            currentNonce: 1,
-            liquidityPairingEnabled: true
-        });
-        
-        currentFeeStructure = FeeProposal({
-            projectSubmissionFee: 500 * 10**6,
-            impactReportingFee: 100 * 10**6,
-            buybackPercentage: 30,
-            liquidityPairingPercentage: 30,
-            burnPercentage: 20,
-            treasuryPercentage: 20,
-            voteEnd: 0,
-            executed: true
-        });
-        
-        bootstrapMode = true;
-        bootstrapEndTime = currentTime + 90 days;
-        guardianCount = 1;
-        guardianCouncilMembers[_initialAdmin] = true;
-        originalValidatorThreshold = stakingContract.validatorThreshold();
-        governanceTier = 0;
+
+        if (_governanceToken == address(0) || _treasuryExecutor == address(0) ||
+            _validatorSafety == address(0) || _liquidityManager == address(0) ||
+            _aiBridge == address(0) || _crossChainHandler == address(0) ||
+            _liabilityManager == address(0) || _admin == address(0)) revert ZeroAddress();
+
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(GOVERNANCE_ROLE, _admin);
+        _grantRole(UPGRADER_ROLE, _admin);
+        _grantRole(MULTISIG_ROLE, _admin);
+        _grantRole(LIABILITY_MANAGER_ROLE, _admin);
+
+        governanceToken = IERC20Upgradeable(_governanceToken);
+        treasuryExecutor = _treasuryExecutor;
+        validatorSafety = _validatorSafety;
+        liquidityManager = _liquidityManager;
+        aiBridge = _aiBridge;
+        crossChainHandler = _crossChainHandler;
+        liabilityManager = ITerraStakeLiabilityManager(_liabilityManager);
+
+        votingPeriod = 5 days;
+        timelockPeriod = 2 days;
+        quorumThreshold = 5000; // 50%
+        requiredMultisigApprovals = 3;
+
+        _updateProposalThreshold();
     }
-    
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-    
-    // -------------------------------------------
-    //  Proposal Creation and Management
-    // -------------------------------------------
+
+    // ========== Proposal Lifecycle ==========
+
     function propose(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
         string memory description,
-        uint8 proposalType
-    ) external override nonReentrant allowedProposalType(proposalType) whenNotPaused returns (uint256) {
-        if (tStakeToken.balanceOf(msg.sender) < govParams.proposalThreshold) revert GovernanceThresholdNotMet();
-        if (targets.length != values.length || targets.length != calldatas.length || targets.length == 0) revert InvalidParameters();
-        if (targets.length > MAX_ACTIONS) revert TooManyActions();
-        
-        uint32 proposalId = ++systemState.proposalCount;
-        uint256 voteStart = block.timestamp + govParams.votingDelay;
-        uint256 voteEnd = voteStart + govParams.votingPeriod;
-        
+        uint8 proposalType,
+        bytes memory data
+    ) external nonReentrant returns (uint256) {
+        if (emergencyPause) revert EmergencyPauseActive();
+        if (proposalType < PROPOSAL_TYPE_TREASURY || proposalType > PROPOSAL_TYPE_LIABILITY_MANAGER) {
+            revert InvalidProposalType();
+        }
+
+        _updateProposalThreshold();
+        uint256 votingPower = governanceToken.balanceOf(msg.sender);
+        if (votingPower < proposalThreshold) revert InsufficientVotingPower();
+
+        governanceToken.safeTransferFrom(msg.sender, address(this), proposalThreshold);
+        lockedTokens[msg.sender] += proposalThreshold;
+        emit TokensLocked(msg.sender, proposalThreshold);
+
+        uint256 proposalId = ++proposalCount;
         proposals[proposalId] = Proposal({
             id: proposalId,
             proposer: msg.sender,
             description: description,
             proposalType: proposalType,
-            createTime: block.timestamp,
-            voteStart: voteStart,
-            voteEnd: voteEnd,
+            voteStart: block.timestamp,
+            voteEnd: block.timestamp + votingPeriod,
             forVotes: 0,
             againstVotes: 0,
             executed: false,
-            canceled: false
+            canceled: false,
+            totalVotingPower: governanceToken.totalSupply()
         });
-        
+
         proposalExtendedData[proposalId] = ExtendedProposalData({
-            customData: abi.encode(targets, values, calldatas),
-            timelockExpiry: voteEnd + govParams.executionDelay
+            customData: data,
+            timelockExpiry: block.timestamp + votingPeriod + timelockPeriod,
+            proposalHash: keccak256(abi.encode(proposalId, msg.sender, description, proposalType, data))
         });
-        
-        latestProposalIds[msg.sender] = proposalId;
-        
-        emit ProposalCreated(proposalId, msg.sender, description, proposalType, voteStart, voteEnd);
+
+        emit ProposalCreated(proposalId, msg.sender, description, proposalType);
+        _syncProposalCreation(proposalId, proposalType, description, data);
+
         return proposalId;
     }
-    
-    function castVote(uint256 proposalId, uint8 support, string memory reason) 
-        external 
-        override 
-        nonReentrant 
-        whenNotPaused 
-    {
-        if (support > uint8(VoteType.Abstain)) revert InvalidVote();
+
+    function executeProposal(uint256 proposalId) external nonReentrant {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        
         Proposal storage proposal = proposals[proposalId];
-        if (block.timestamp < proposal.voteStart || block.timestamp > proposal.voteEnd) revert ProposalNotActive();
-        if (receipts[proposalId][msg.sender].hasVoted) revert AlreadyVoted();
+        ExtendedProposalData storage extendedData = proposalExtendedData[proposalId];
         
-        uint256 weight = tStakeToken.balanceOf(msg.sender);
-        if (weight < govParams.minimumHolding) revert InsufficientVotingPower();
-        
-        VoteType voteType = VoteType(support);
-        receipts[proposalId][msg.sender] = Receipt(true, voteType, weight);
-        
-        if (voteType == VoteType.For) proposal.forVotes += weight;
-        else if (voteType == VoteType.Against) proposal.againstVotes += weight;
-        
-        unchecked { systemState.totalVotesCast++; }
-        emit VoteCast(proposalId, msg.sender, voteType == VoteType.For, weight);
-    }
-    
-    function validatorSupport(uint256 proposalId, bool support) external override whenNotPaused {
-        if (!hasRole(VALIDATOR_ROLE, msg.sender)) revert Unauthorized();
-        Proposal storage proposal = proposals[proposalId];
-        if (block.timestamp < proposal.voteStart || block.timestamp > proposal.voteEnd) revert ProposalNotActive();
-        
-        emit ValidatorSupport(msg.sender, proposalId, support);
-    }
-    
-    function queueProposal(uint256 proposalId) external override nonReentrant whenNotPaused {
-        Proposal storage proposal = proposals[proposalId];
-        if (proposal.id == 0) revert ProposalDoesNotExist();
-        if (proposal.executed || proposal.canceled) revert InvalidProposalState();
-        if (block.timestamp <= proposal.voteEnd) revert ProposalNotReady();
-        if (proposal.forVotes <= proposal.againstVotes) revert InvalidProposalState();
-        
-        emit ProposalQueued(proposalId, block.timestamp);
-    }
-    
-    function executeProposal(uint256 proposalId) 
-        external 
-        override 
-        nonReentrant 
-        validatorSafetyCheck 
-        whenNotPaused 
-    {
-        Proposal storage proposal = proposals[proposalId];
-        if (proposal.id == 0) revert ProposalDoesNotExist();
         if (proposal.executed) revert ProposalAlreadyExecuted();
-        if (block.timestamp <= proposal.voteEnd) revert ProposalNotReady();
+        if (proposal.canceled) revert ProposalAlreadyCanceled();
+        if (block.timestamp <= proposal.voteEnd) revert ProposalNotActive();
+        if (block.timestamp < extendedData.timelockExpiry) revert ProposalNotReady();
+        
+        uint256 totalVotes = proposal.forVotes + proposal.againstVotes;
+        if (totalVotes * BASIS_POINTS_DIVISOR / proposal.totalVotingPower < quorumThreshold) revert QuorumNotReached();
         if (proposal.forVotes <= proposal.againstVotes) revert InvalidProposalState();
         
-        ExtendedProposalData storage extData = proposalExtendedData[proposalId];
-        if (block.timestamp < extData.timelockExpiry) revert TimelockNotExpired();
-        if (block.timestamp > extData.timelockExpiry + govParams.executionPeriod) revert ProposalExpired();
-        
-        if (proposal.proposalType == PROPOSAL_TYPE_FEE_UPDATE) {
-            _executeFeeUpdate(proposalId);
-        } else if (proposal.proposalType == PROPOSAL_TYPE_VALIDATOR) {
-            _executeValidatorUpdate(proposalId);
-        } else {
-            (address[] memory targets, uint256[] memory values, bytes[] memory calldatas) = 
-                abi.decode(extData.customData, (address[], uint256[], bytes[]));
-            
-            for (uint256 i = 0; i < targets.length; i++) {
-                (bool success, ) = targets[i].call{value: values[i]}(calldatas[i]);
-                if (!success) revert InvalidParameters();
-            }
+        if (proposal.proposalType == PROPOSAL_TYPE_UPGRADE) {
+            if (upgradeApprovals[proposalId] < requiredMultisigApprovals) revert NotEnoughMultiSigApprovals();
         }
         
+        _executeProposal(proposalId, proposal.proposalType, extendedData.customData);
         proposal.executed = true;
-        unchecked { systemState.totalProposalsExecuted++; }
         emit ProposalExecuted(proposalId);
+        
+        _unlockTokens(proposal.proposer, proposalThreshold);
+        _syncProposalExecution(proposalId, proposal.proposalType, extendedData.customData);
     }
-    
-    function cancelProposal(uint256 proposalId) external override whenNotPaused {
+
+    function cancelProposal(uint256 proposalId) external {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        
         Proposal storage proposal = proposals[proposalId];
-        if (proposal.id == 0) revert ProposalDoesNotExist();
-        if (msg.sender != proposal.proposer && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) revert Unauthorized();
         if (proposal.executed) revert ProposalAlreadyExecuted();
+        if (proposal.canceled) revert ProposalAlreadyCanceled();
+        
+        if (msg.sender != proposal.proposer && !hasRole(GOVERNANCE_ROLE, msg.sender)) revert Unauthorized();
         
         proposal.canceled = true;
+        _unlockTokens(proposal.proposer, proposalThreshold);
+        
         emit ProposalCanceled(proposalId);
-    }
-    
-    // -------------------------------------------
-    //  Governance Parameter Management
-    // -------------------------------------------
-    function updateProposalThreshold(uint256 newThreshold) external override onlyRole(GOVERNANCE_ROLE) {
-        govParams.proposalThreshold = uint96(newThreshold);
-        emit GovernanceParametersUpdated("proposalThreshold", govParams.proposalThreshold, newThreshold);
-    }
-    
-    function updateVotingDelay(uint256 newVotingDelay) external override onlyRole(GOVERNANCE_ROLE) {
-        if (newVotingDelay > 7 days) revert InvalidParameters();
-        uint256 oldValue = govParams.votingDelay;
-        govParams.votingDelay = uint48(newVotingDelay);
-        emit GovernanceParametersUpdated("votingDelay", oldValue, newVotingDelay);
-    }
-    
-    function updateVotingPeriod(uint256 newVotingPeriod) external override onlyRole(GOVERNANCE_ROLE) {
-        if (newVotingPeriod < 1 days || newVotingPeriod > 14 days) revert InvalidParameters();
-        uint256 oldValue = govParams.votingPeriod;
-        govParams.votingPeriod = uint48(newVotingPeriod);
-        emit GovernanceParametersUpdated("votingPeriod", oldValue, newVotingPeriod);
-    }
-    
-    function updateExecutionDelay(uint256 newExecutionDelay) external override onlyRole(GOVERNANCE_ROLE) {
-        uint256 oldValue = govParams.executionDelay;
-        govParams.executionDelay = uint48(newExecutionDelay);
-        emit GovernanceParametersUpdated("executionDelay", oldValue, newExecutionDelay);
-    }
-    
-    function updateExecutionPeriod(uint256 newExecutionPeriod) external override onlyRole(GOVERNANCE_ROLE) {
-        if (newExecutionPeriod < 1 days) revert InvalidParameters();
-        uint256 oldValue = govParams.executionPeriod;
-        govParams.executionPeriod = uint48(newExecutionPeriod);
-        emit GovernanceParametersUpdated("executionPeriod", oldValue, newExecutionPeriod);
-    }
-    
-    // -------------------------------------------
-    //  Module Management
-    // -------------------------------------------
-    function updateTreasuryManager(address newTreasuryManager) external override onlyRole(GOVERNANCE_ROLE) {
-        if (newTreasuryManager == address(0)) revert InvalidParameters();
-        address oldManager = address(treasuryManager);
-        treasuryManager = ITerraStakeTreasuryManager(newTreasuryManager);
-        rewardDistributor = ITerraStakeRewardDistributor(newTreasuryManager);
-        liquidityGuard = ITerraStakeLiquidityGuard(newTreasuryManager);
-        emit ModuleUpdated("treasuryManager", oldManager, newTreasuryManager);
-    }
-    
-    function updateValidatorSafety(address newValidatorSafety) external override onlyRole(GOVERNANCE_ROLE) {
-        if (newValidatorSafety == address(0)) revert InvalidParameters();
-        address oldSafety = address(validatorSafety);
-        validatorSafety = ITerraStakeValidatorSafety(newValidatorSafety);
-        stakingContract = ITerraStakeStaking(newValidatorSafety);
-        emit ModuleUpdated("validatorSafety", oldSafety, newValidatorSafety);
-    }
-    
-    function updateGuardianCouncil(address newGuardianCouncil) external override onlyRole(GOVERNANCE_ROLE) {
-        if (newGuardianCouncil == address(0)) revert InvalidParameters();
-        address oldCouncil = address(guardianCouncil);
-        guardianCouncil = ITerraStakeGuardianCouncil(newGuardianCouncil);
-        emit ModuleUpdated("guardianCouncil", oldCouncil, newGuardianCouncil);
-    }
-    
-    // -------------------------------------------
-    //  Validator Safety Mechanisms
-    // -------------------------------------------
-    function updateGovernanceTier() public returns (uint8) {
-        uint256 validatorCount = stakingContract.getValidatorCount();
-        uint8 newTier = validatorCount >= OPTIMAL_VALIDATOR_THRESHOLD ? 2 :
-                       validatorCount >= CRITICAL_VALIDATOR_THRESHOLD ? 1 : 0;
-        
-        if (newTier != governanceTier) {
-            governanceTier = newTier;
-            emit GovernanceTierUpdated(newTier, validatorCount);
-        }
-        return newTier;
-    }
-    
-    function isProposalTypeAllowed(uint8 proposalType) public view returns (bool) {
-        uint256 validatorCount = stakingContract.getValidatorCount();
-        uint8 effectiveTier = validatorCount >= OPTIMAL_VALIDATOR_THRESHOLD ? 2 :
-                            validatorCount >= CRITICAL_VALIDATOR_THRESHOLD ? 1 : 0;
-        
-        if (effectiveTier == 0) {
-            return proposalType == PROPOSAL_TYPE_EMERGENCY ||
-                   proposalType == PROPOSAL_TYPE_VALIDATOR ||
-                   proposalType == PROPOSAL_TYPE_PENALTY;
-        }
-        return effectiveTier == 1 ? proposalType != PROPOSAL_TYPE_CONTRACT_UPDATE : true;
-    }
-    
-    function setValidatorBootstrap(uint256 duration) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (!bootstrapMode) revert InvalidProposalState();
-        bootstrapEndTime = uint48(block.timestamp) + uint48(duration);
-        emit BootstrapModeConfigured(duration);
-    }
-    
-    function exitBootstrapMode() external {
-        if (!bootstrapMode) revert InvalidProposalState();
-        if (block.timestamp <= bootstrapEndTime && 
-            stakingContract.getValidatorCount() < OPTIMAL_VALIDATOR_THRESHOLD) {
-            revert InvalidProposalState();
-        }
-        bootstrapMode = false;
-        emit BootstrapModeExited();
+        _syncProposalCancellation(proposalId);
     }
 
-    function emergencyReduceValidatorThreshold(uint256 newThreshold, uint256 duration) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-    {
-        if (stakingContract.getValidatorCount() >= CRITICAL_VALIDATOR_THRESHOLD) revert InvalidProposalState();
+    function unlockTokens(uint256 proposalId) external nonReentrant {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
         
-        if (temporaryThresholdEndTime == 0) originalValidatorThreshold = stakingContract.validatorThreshold();
-        
-        (bool success, ) = address(stakingContract).call(
-            abi.encodeWithSelector(ITerraStakeStaking.setValidatorThreshold.selector, newThreshold)
-        );
-        if (!success) revert InvalidParameters();
-        
-        temporaryThresholdEndTime = uint48(block.timestamp + duration);
-        emit EmergencyThresholdReduction(newThreshold, duration);
-        emit ThresholdResetScheduled(temporaryThresholdEndTime);
-    }
-    
-    function resetValidatorThreshold() external {
-        if (temporaryThresholdEndTime == 0 || block.timestamp < temporaryThresholdEndTime) revert InvalidProposalState();
-        
-        (bool success, ) = address(stakingContract).call(
-            abi.encodeWithSelector(ITerraStakeStaking.setValidatorThreshold.selector, originalValidatorThreshold)
-        );
-        if (!success) revert InvalidParameters();
-        
-        temporaryThresholdEndTime = 0;
-    }
-    
-    function checkValidatorHealth() external {
-        uint256 validatorCount = stakingContract.getValidatorCount();
-        uint256 totalStaked = stakingContract.totalStakedTokens();
-        emit ValidatorHealthCheck(validatorCount, totalStaked, 
-            validatorCount > 0 ? totalStaked / validatorCount : 0, governanceTier);
-    }
-    
-    function addGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (guardian == address(0) || guardianCouncilMembers[guardian]) revert InvalidParameters();
-        
-        guardianCouncilMembers[guardian] = true;
-        unchecked { guardianCount++; }
-        _grantRole(GUARDIAN_ROLE, guardian);
-        emit GuardianAdded(guardian);
-    }
-    
-    function removeGuardian(address guardian) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (!guardianCouncilMembers[guardian] || guardianCount <= 1) revert InvalidParameters();
-        
-        guardianCouncilMembers[guardian] = false;
-        unchecked { guardianCount--; }
-        _revokeRole(GUARDIAN_ROLE, guardian);
-        emit GuardianRemoved(guardian);
-    }
-    
-    function validateGuardianSignatures(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures
-    ) public view returns (bool) {
-        if (signatures.length < GUARDIAN_QUORUM) return false;
-        
-        bytes32 messageHash = keccak256(abi.encodePacked(operation, target, data, systemState.currentNonce))
-            .toEthSignedMessageHash();
-        
-        address[GUARDIAN_QUORUM] memory signers;
-        uint256 validCount;
-        
-        for (uint256 i = 0; i < signatures.length && validCount < GUARDIAN_QUORUM; i++) {
-            address signer = messageHash.recover(signatures[i]);
-            if (guardianCouncilMembers[signer]) {
-                bool isUnique = true;
-                for (uint256 j = 0; j < validCount; j++) {
-                    if (signers[j] == signer) {
-                        isUnique = false;
-                        break;
-                    }
-                }
-                if (isUnique) signers[validCount++] = signer;
-            }
-        }
-        return validCount >= GUARDIAN_QUORUM;
-    }
-    
-    function guardianOverride(
-        bytes4 operation,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures
-    ) external nonReentrant {
-        if (stakingContract.getValidatorCount() >= CRITICAL_VALIDATOR_THRESHOLD) revert InvalidProposalState();
-        if (!validateGuardianSignatures(operation, target, data, signatures)) revert InvalidGuardianSignatures();
-        if (executedNonces[systemState.currentNonce]) revert NonceAlreadyExecuted();
-        
-        executedNonces[systemState.currentNonce] = true;
-        unchecked { systemState.currentNonce++; }
-        
-        (bool success, ) = target.call(data);
-        if (!success) revert InvalidParameters();
-        
-        emit GuardianOverrideExecuted(msg.sender, operation, target);
-    }
-    
-    function createValidatorProposal(string calldata description, uint256 newThreshold, uint256 incentives) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-        returns (uint256) 
-    {
-        uint32 proposalId = ++systemState.proposalCount;
-        uint256 voteStart = block.timestamp + govParams.votingDelay;
-        uint256 voteEnd = voteStart + govParams.votingPeriod;
-        
-        proposals[proposalId] = Proposal({
-            id: proposalId,
-            proposer: msg.sender,
-            description: description,
-            proposalType: PROPOSAL_TYPE_VALIDATOR,
-            createTime: block.timestamp,
-            voteStart: voteStart,
-            voteEnd: voteEnd,
-            forVotes: 0,
-            againstVotes: 0,
-            executed: false,
-            canceled: false
-        });
-        
-        proposalExtendedData[proposalId] = ExtendedProposalData({
-            customData: abi.encode(newThreshold, incentives),
-            timelockExpiry: voteEnd + govParams.executionDelay
-        });
-        
-        emit ValidatorProposalCreated(proposalId, newThreshold);
-        return proposalId;
-    }
-    
-    function initiateValidatorRecruitment(uint256 incentiveAmount, uint256 targetCount) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-    {
-        if (stakingContract.getValidatorCount() >= REDUCED_VALIDATOR_THRESHOLD) revert InvalidProposalState();
-        emit ValidatorRecruitmentInitiated(incentiveAmount, targetCount);
-    }
-    
-    // -------------------------------------------
-    //  Treasury Management Functions
-    // -------------------------------------------
-    function createFeeProposal(
-        string calldata description,
-        uint256 projectSubmissionFee,
-        uint256 impactReportingFee,
-        uint8 buybackPercentage,
-        uint8 liquidityPairingPercentage,
-        uint8 burnPercentage,
-        uint8 treasuryPercentage
-    ) external nonReentrant allowedProposalType(PROPOSAL_TYPE_FEE_UPDATE) returns (uint256) {
-        if (tStakeToken.balanceOf(msg.sender) < govParams.proposalThreshold) revert GovernanceThresholdNotMet();
-        if (buybackPercentage + liquidityPairingPercentage + burnPercentage + treasuryPercentage != 100) {
-            revert InvalidParameters();
-        }
-        
-        uint32 proposalId = ++systemState.proposalCount;
-        uint256 voteStart = block.timestamp + govParams.votingDelay;
-        uint256 voteEnd = voteStart + govParams.votingPeriod;
-        
-        FeeProposal memory feeProposal = FeeProposal({
-            projectSubmissionFee: projectSubmissionFee,
-            impactReportingFee: impactReportingFee,
-            buybackPercentage: buybackPercentage,
-            liquidityPairingPercentage: liquidityPairingPercentage,
-            burnPercentage: burnPercentage,
-            treasuryPercentage: treasuryPercentage,
-            voteEnd: voteEnd,
-            executed: false
-        });
-        
-        proposals[proposalId] = Proposal({
-            id: proposalId,
-            proposer: msg.sender,
-            description: description,
-            proposalType: PROPOSAL_TYPE_FEE_UPDATE,
-            createTime: block.timestamp,
-            voteStart: voteStart,
-            voteEnd: voteEnd,
-            forVotes: 0,
-            againstVotes: 0,
-            executed: false,
-            canceled: false
-        });
-        
-        proposalExtendedData[proposalId] = ExtendedProposalData({
-            customData: abi.encode(feeProposal),
-            timelockExpiry: voteEnd + govParams.executionDelay
-        });
-        
-        emit ProposalCreated(proposalId, msg.sender, description, PROPOSAL_TYPE_FEE_UPDATE, voteStart, voteEnd);
-        return proposalId;
-    }
-    
-    function _executeFeeUpdate(uint256 proposalId) internal {
-        if (block.timestamp < systemState.lastFeeUpdateTime + govParams.feeUpdateCooldown) revert InvalidProposalState();
-        
-        FeeProposal memory newFees = abi.decode(proposalExtendedData[proposalId].customData, (FeeProposal));
-        
-        if (newFees.buybackPercentage + newFees.liquidityPairingPercentage + 
-            newFees.burnPercentage + newFees.treasuryPercentage != 100) {
-            revert InvalidParameters();
-        }
-        
-        currentFeeStructure = newFees;
-        systemState.lastFeeUpdateTime = uint48(block.timestamp);
-        emit FeeStructureUpdated(newFees.projectSubmissionFee, newFees.impactReportingFee,
-            newFees.buybackPercentage, newFees.liquidityPairingPercentage,
-            newFees.burnPercentage, newFees.treasuryPercentage);
-    }
-    
-    function _executeValidatorUpdate(uint256 proposalId) internal {
-        (uint256 newThreshold, uint256 incentives) = abi.decode(
-            proposalExtendedData[proposalId].customData, (uint256, uint256));
-        
-        if (newThreshold > 0) {
-            (bool success, ) = address(stakingContract).call(
-                abi.encodeWithSelector(ITerraStakeStaking.setValidatorThreshold.selector, newThreshold));
-            if (!success) revert InvalidParameters();
-            originalValidatorThreshold = uint96(newThreshold);
-        }
-        
-        if (incentives > 0) {
-            (bool success, ) = address(rewardDistributor).call(
-                abi.encodeWithSelector(ITerraStakeRewardDistributor.addValidatorIncentive.selector, incentives));
-            if (!success) revert InvalidParameters();
-        }
-    }
-    
-    function performBuyback(uint256 usdcAmount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        if (usdcAmount == 0 || usdcToken.balanceOf(address(this)) < usdcAmount) revert InvalidParameters();
-        
-        usdcToken.approve(address(uniswapRouter), usdcAmount);
-        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
-            tokenIn: address(usdcToken),
-            tokenOut: address(tStakeToken),
-            fee: POOL_FEE,
-            recipient: address(this),
-            deadline: block.timestamp + 15 minutes,
-            amountIn: usdcAmount,
-            amountOutMinimum: 0,
-            sqrtPriceLimitX96: 0
-        });
-        
-        uint256 amountOut = uniswapRouter.exactInputSingle(params);
-        emit BuybackExecuted(usdcAmount, amountOut);
-    }
-    
-    function addLiquidity(uint256 tStakeAmount, uint256 usdcAmount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        if (!systemState.liquidityPairingEnabled || tStakeAmount == 0 || usdcAmount == 0 ||
-            tStakeToken.balanceOf(address(this)) < tStakeAmount ||
-            usdcToken.balanceOf(address(this)) < usdcAmount) {
-            revert InvalidParameters();
-        }
-        
-        tStakeToken.transfer(address(liquidityGuard), tStakeAmount);
-        usdcToken.transfer(address(liquidityGuard), usdcAmount);
-        liquidityGuard.addLiquidity(tStakeAmount, usdcAmount);
-        emit LiquidityAdded(tStakeAmount, usdcAmount);
-    }
-    
-    function burnTokens(uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        if (amount == 0 || tStakeToken.balanceOf(address(this)) < amount) revert InvalidParameters();
-        
-        (bool success, ) = address(tStakeToken).call(abi.encodeWithSignature("burn(uint256)", amount));
-        if (!success) tStakeToken.transfer(address(0xdead), amount);
-        emit TokensBurned(amount);
-    }
-    
-    function treasuryTransfer(address token, address recipient, uint256 amount) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-        nonReentrant 
-    {
-        if (amount == 0 || recipient == address(0)) revert InvalidParameters();
-        IERC20(token).transfer(recipient, amount);
-        emit TreasuryTransfer(token, recipient, amount);
-    }
-    
-    // -------------------------------------------
-    //  Reward Distribution Functions
-    // -------------------------------------------
-    function applyHalving() external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        if (block.timestamp < systemState.lastHalvingTime + TWO_YEARS) revert InvalidProposalState();
-        
-        systemState.lastHalvingTime = uint48(block.timestamp);
-        unchecked { systemState.halvingEpoch++; }
-        rewardDistributor.updateEmissionRate();
-        emit HalvingInitiated(systemState.halvingEpoch);
-    }
-
-    function recordVote(uint256 proposalId, address voter, uint256 votingPower, bool support) external nonReentrant {
         Proposal storage proposal = proposals[proposalId];
+        if (msg.sender != proposal.proposer) revert Unauthorized();
+        if (!proposal.executed && !proposal.canceled && block.timestamp <= proposal.voteEnd) revert ProposalNotReady();
+        
+        _unlockTokens(msg.sender, proposalThreshold);
+    }
 
-        // Validate proposal existence and voting period
-        require(proposal.voteStart > 0, "Proposal does not exist");
-        require(block.timestamp >= proposal.voteStart && block.timestamp <= proposal.voteEnd, "Not in voting period");
+    // ========== Voting System ==========
 
-        // Validate voter eligibility
-        require(!proposal.hasVoted[voter], "Already voted");
-        require(votingPower >= govParams.minimumHolding, "Insufficient token balance to vote");
-
-        // Record the vote
+    function castVote(uint256 proposalId, bool support) external nonReentrant {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        
+        Proposal storage proposal = proposals[proposalId];
+        if (block.timestamp > proposal.voteEnd) revert ProposalExpired();
+        if (proposal.executed || proposal.canceled) revert ProposalNotActive();
+        
+        Vote storage vote = votes[proposalId][msg.sender];
+        if (vote.hasVoted) revert AlreadyVoted();
+        
+        uint256 votingPower = governanceToken.balanceOf(msg.sender);
+        if (votingPower == 0) revert InsufficientVotingPower();
+        
         if (support) {
             proposal.forVotes += votingPower;
         } else {
             proposal.againstVotes += votingPower;
         }
-
-        // Mark voter as having voted
-        proposal.hasVoted[voter] = true;
-        systemState.totalVotesCast++;
-    }
-    
-    function updateValidatorRewardRate(uint256 newRewardRate) 
-        external 
-        onlyRole(GOVERNANCE_ROLE) 
-        validatorSafetyCheck 
-    {
-        rewardDistributor.setValidatorRewardRate(newRewardRate);
-        emit ValidatorRewardRateUpdated(newRewardRate);
-    }
-    
-    // -------------------------------------------
-    //  Protocol Parameter Functions
-    // -------------------------------------------
-    function updateTreasuryWallet(address newTreasuryWallet) external onlyRole(GOVERNANCE_ROLE) {
-        if (newTreasuryWallet == address(0)) revert InvalidParameters();
-        govParams.treasuryWallet = newTreasuryWallet;
-        emit TreasuryWalletUpdated(newTreasuryWallet);
-    }
-    
-    function toggleLiquidityPairing(bool enabled) external onlyRole(GOVERNANCE_ROLE) {
-        systemState.liquidityPairingEnabled = enabled;
-        emit LiquidityPairingToggled(enabled);
-    }
-    
-    // -------------------------------------------
-    //  Governance Penalty Functions
-    // -------------------------------------------
-    function penalizeGovernor(address governor, string calldata reason) external onlyRole(GOVERNANCE_ROLE) {
-        if (penalizedGovernors[governor] || !hasRole(GOVERNANCE_ROLE, governor)) revert InvalidParameters();
         
-        penalizedGovernors[governor] = true;
-        if (address(stakingContract) != address(0)) {
-            uint256 stake = stakingContract.getValidatorStake(governor);
-            if (stake > 0) stakingContract.slashValidator(governor, (stake * PENALTY_FOR_VIOLATION) / 100);
-        }
-        _revokeRole(GOVERNANCE_ROLE, governor);
-        emit GovernorPenalized(governor, reason);
-    }
-    
-    function restoreGovernor(address governor) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (!penalizedGovernors[governor]) revert InvalidParameters();
-        penalizedGovernors[governor] = false;
-        _grantRole(GOVERNANCE_ROLE, governor);
-        emit GovernorRestored(governor);
-    }
-    
-    // -------------------------------------------
-    //  Emergency Functions
-    // -------------------------------------------
-    function pause() external override onlyRole(GUARDIAN_ROLE) {
-        paused = true;
-        emit EmergencyPauseActivated(new address[](0));
-    }
-    
-    function unpause() external override onlyRole(GUARDIAN_ROLE) {
-        paused = false;
-        emit EmergencyPauseDeactivated(new address[](0));
-    }
-    
-    function emergencyPause(address[] calldata contractAddresses) external onlyRole(GUARDIAN_ROLE) {
-        for (uint256 i = 0; i < contractAddresses.length; i++) {
-            (bool success, ) = contractAddresses[i].call(abi.encodeWithSignature("pause()"));
-            if (!success) revert InvalidParameters();
-        }
-        emit EmergencyPauseActivated(contractAddresses);
-    }
-    
-    function emergencyUnpause(address[] calldata contractAddresses) external onlyRole(GUARDIAN_ROLE) {
-        for (uint256 i = 0; i < contractAddresses.length; i++) {
-            (bool success, ) = contractAddresses[i].call(abi.encodeWithSignature("unpause()"));
-            if (!success) revert InvalidParameters();
-        }
-        emit EmergencyPauseDeactivated(contractAddresses);
-    }
-    
-    function emergencyRecoverTokens(address token, uint256 amount, address recipient) 
-        external 
-        onlyRole(GUARDIAN_ROLE) 
-    {
-        if (recipient == address(0)) revert InvalidParameters();
-        IERC20(token).transfer(recipient, amount);
-        emit EmergencyTokenRecovery(token, amount, recipient);
+        vote.support = support;
+        vote.votingPower = votingPower;
+        vote.hasVoted = true;
+        
+        emit VoteCast(msg.sender, proposalId, support, votingPower);
+        _syncVote(proposalId, msg.sender, support, votingPower);
     }
 
-    // -------------------------------------------
-    //  View Functions
-    // -------------------------------------------
-    function proposalThreshold() external view override returns (uint256) { return govParams.proposalThreshold; }
-    function votingDelay() external view override returns (uint256) { return govParams.votingDelay; }
-    function votingPeriod() external view override returns (uint256) { return govParams.votingPeriod; }
-    function executionDelay() external view override returns (uint256) { return govParams.executionDelay; }
-    function executionPeriod() external view override returns (uint256) { return govParams.executionPeriod; }
-    function proposalCount() external view override returns (uint256) { return systemState.proposalCount; }
-    
-    function getProposalState(uint256 proposalId) external view override returns (ProposalState) {
-        Proposal memory proposal = proposals[proposalId];
-        if (proposal.id == 0) return ProposalState.Pending;
-        if (proposal.canceled) return ProposalState.Canceled;
-        if (proposal.executed) return ProposalState.Executed;
-        if (block.timestamp < proposal.voteStart) return ProposalState.Pending;
-        if (block.timestamp <= proposal.voteEnd) return ProposalState.Active;
-        if (proposal.forVotes <= proposal.againstVotes) return ProposalState.Defeated;
-        if (block.timestamp < proposalExtendedData[proposalId].timelockExpiry) return ProposalState.Queued;
-        if (block.timestamp > proposalExtendedData[proposalId].timelockExpiry + govParams.executionPeriod) {
-            return ProposalState.Expired;
+    // ========== Multi-Sig System ==========
+
+    function approveUpgradeProposal(uint256 proposalId) external onlyRole(MULTISIG_ROLE) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        
+        Proposal storage proposal = proposals[proposalId];
+        if (proposal.proposalType != PROPOSAL_TYPE_UPGRADE) revert InvalidProposalType();
+        if (proposal.executed) revert ProposalAlreadyExecuted();
+        if (proposal.canceled) revert ProposalAlreadyCanceled();
+        if (multiSigApprovals[proposalId][msg.sender]) revert AlreadyVoted();
+        
+        multiSigApprovals[proposalId][msg.sender] = true;
+        upgradeApprovals[proposalId]++;
+        emit MultiSigUpgradeApproved(proposalId, msg.sender);
+
+        if (upgradeApprovals[proposalId] >= requiredMultisigApprovals) {
+            if (block.timestamp > proposal.voteEnd &&
+                proposal.forVotes > proposal.againstVotes &&
+                (proposal.forVotes + proposal.againstVotes) * BASIS_POINTS_DIVISOR / proposal.totalVotingPower >= quorumThreshold) {
+                _executeProposal(proposalId, PROPOSAL_TYPE_UPGRADE, proposalExtendedData[proposalId].customData);
+                emit MultiSigUpgradeExecuted(proposalId);
+            }
         }
-        return ProposalState.Succeeded;
-    }
-    
-    function getProposalDetails(uint256 proposalId) 
-        external 
-        view 
-        override 
-        returns (
-            address[] memory targets,
-            uint256[] memory values,
-            bytes[] memory calldatas,
-            string memory description
-        ) 
-    {
-        Proposal memory proposal = proposals[proposalId];
-        if (proposal.id == 0) revert ProposalDoesNotExist();
-        (targets, values, calldatas) = abi.decode(proposalExtendedData[proposalId].customData, 
-            (address[], uint256[], bytes[]));
-        description = proposal.description;
-    }
-    
-    function getProposalVotes(uint256 proposalId) 
-        external 
-        view 
-        override 
-        returns (
-            uint256 againstVotes,
-            uint256 forVotes,
-            uint256 abstainVotes,
-            uint256 validatorSupport
-        ) 
-    {
-        Proposal memory proposal = proposals[proposalId];
-        if (proposal.id == 0) revert ProposalDoesNotExist();
-        return (proposal.againstVotes, proposal.forVotes, 0, 0); // Abstain and validatorSupport not fully tracked
-    }
-    
-    function hasProposalSucceeded(uint256 proposalId) external view override returns (bool) {
-        Proposal memory proposal = proposals[proposalId];
-        if (proposal.id == 0) revert ProposalDoesNotExist();
-        return proposal.forVotes > proposal.againstVotes && block.timestamp > proposal.voteEnd;
-    }
-    
-    function getProposal(uint256 proposalId) external view returns (Proposal memory) {
-        return proposals[proposalId];
-    }
-    
-    function getProposalExtendedData(uint256 proposalId) external view returns (ExtendedProposalData memory) {
-        return proposalExtendedData[proposalId];
-    }
-    
-    function getCurrentFeeStructure() external view returns (FeeProposal memory) {
-        return currentFeeStructure;
-    }
-    
-    function getNextHalvingTime() external view returns (uint256) {
-        return systemState.lastHalvingTime + TWO_YEARS;
-    }
-    
-    function getValidatorSafetyStatus() external view returns (
-        uint8 tier,
-        uint256 validatorCount,
-        bool isBootstrapActive,
-        uint256 thresholdEndTime,
-        uint256 originalThreshold
-    ) {
-        return (governanceTier, stakingContract.getValidatorCount(), bootstrapMode, 
-            temporaryThresholdEndTime, originalValidatorThreshold);
-    }
-    
-    function isGuardianQuorumAchievable() external view returns (bool) {
-        return guardianCount >= GUARDIAN_QUORUM;
-    }
-    
-    function isGuardian(address account) external view returns (bool) {
-        return guardianCouncilMembers[account];
     }
 
-    // -------------------------------------------
-    //  TStake Token Reception
-    // -------------------------------------------
-    function notifyTStakeReceived(address sender, uint256 amount) external {
-        if (tStakeToken.balanceOf(address(this)) < amount) revert InvalidParameters();
-        emit TStakeReceived(sender, amount);
+    // ========== Internal Functions ==========
+
+    function _executeProposal(uint256 proposalId, uint8 proposalType, bytes memory data) internal {
+        if (proposalType == PROPOSAL_TYPE_TREASURY) {
+            (bool success, ) = treasuryExecutor.call(data);
+            if (!success) revert ExecutionFailed("Treasury action failed");
+        } 
+        else if (proposalType == PROPOSAL_TYPE_VALIDATOR) {
+            (bool success, ) = validatorSafety.call(data);
+            if (!success) revert ExecutionFailed("Validator action failed");
+        }
+        else if (proposalType == PROPOSAL_TYPE_LIQUIDITY) {
+            (bool success, ) = liquidityManager.call(data);
+            if (!success) revert ExecutionFailed("Liquidity action failed");
+        }
+        else if (proposalType == PROPOSAL_TYPE_UPGRADE) {
+            address newImplementation = abi.decode(data, (address));
+            _upgradeTo(newImplementation);
+        }
+        else if (proposalType == PROPOSAL_TYPE_AI_BRIDGE) {
+            (bool success, ) = aiBridge.call(data);
+            if (!success) revert ExecutionFailed("AI Bridge action failed");
+        }
+        else if (proposalType == PROPOSAL_TYPE_GOVERNANCE_PARAMS) {
+            (uint256 newVotingPeriod, uint256 newTimelockPeriod, uint256 newQuorumThreshold) = 
+                abi.decode(data, (uint256, uint256, uint256));
+            _updateGovernanceParams(newVotingPeriod, newTimelockPeriod, newQuorumThreshold);
+        }
+        else if (proposalType == PROPOSAL_TYPE_HALVING) {
+            uint256 newEpoch = abi.decode(data, (uint256));
+            if (newEpoch <= 0) revert InvalidHalvingEpoch();
+            // Additional halving logic would go here
+        }
+        else if (proposalType == PROPOSAL_TYPE_LIABILITY_MANAGER) {
+            (uint8 actionType, bytes memory actionData) = abi.decode(data, (uint8, bytes));
+            _executeLiabilityAction(actionType, actionData);
+        }
+        else {
+            revert InvalidProposalType();
+        }
     }
 
-    receive() external payable {
-        emit TStakeReceived(msg.sender, msg.value);
+    function _executeLiabilityAction(uint8 actionType, bytes memory actionData) internal {
+        if (actionType == 1) { // Update Oracle
+            (address token, address api3Proxy, uint256 heartbeatPeriod, 
+             uint256 minPrice, uint256 maxPrice, uint256 updateInterval) = 
+                abi.decode(actionData, (address, address, uint256, uint256, uint256, uint256));
+            try liabilityManager.configureOracle(token, api3Proxy, heartbeatPeriod, minPrice, maxPrice, updateInterval) {
+            } catch {
+                revert LiabilityManagerError("Oracle config failed");
+            }
+        }
+        else if (actionType == 2) { // Update TWAP
+            (address token, uint32 windowSize) = abi.decode(actionData, (address, uint32));
+            try liabilityManager.setCustomTWAPWindow(token, windowSize) {
+            } catch {
+                revert LiabilityManagerError("TWAP update failed");
+            }
+        }
+        else if (actionType == 3) { // Update Fees
+            (uint256 governanceShare, uint256 offsetFundShare) = abi.decode(actionData, (uint256, uint256));
+            try liabilityManager.updateFeeStructure(governanceShare, offsetFundShare) {
+            } catch {
+                revert LiabilityManagerError("Fee update failed");
+            }
+        }
+        else {
+            revert InvalidProposalType();
+        }
+    }
+
+    function _unlockTokens(address user, uint256 amount) internal {
+        if (lockedTokens[user] < amount) revert NoTokensToUnlock();
+        lockedTokens[user] -= amount;
+        governanceToken.safeTransfer(user, amount);
+        emit TokensUnlocked(user, amount);
+    }
+
+    function _updateProposalThreshold() internal {
+        uint256 totalSupply = governanceToken.totalSupply();
+        uint256 newThreshold = (totalSupply * PROPOSAL_THRESHOLD_BASIS_POINTS) / BASIS_POINTS_DIVISOR;
+        proposalThreshold = newThreshold;
+        emit ProposalThresholdUpdated(newThreshold);
+    }
+
+    function _updateGovernanceParams(
+        uint256 newVotingPeriod,
+        uint256 newTimelockPeriod,
+        uint256 newQuorumThreshold
+    ) internal {
+        if (newVotingPeriod < 1 days) revert InvalidVotingPeriod();
+        if (newTimelockPeriod < 1 days) revert InvalidTimelockPeriod();
+        if (newQuorumThreshold == 0 || newQuorumThreshold > BASIS_POINTS_DIVISOR) revert InvalidQuorum();
+
+        votingPeriod = newVotingPeriod;
+        timelockPeriod = newTimelockPeriod;
+        quorumThreshold = newQuorumThreshold;
+
+        emit GovernanceParamsUpdated(newVotingPeriod, newTimelockPeriod, proposalThreshold, newQuorumThreshold);
+        _syncGovernanceParamsUpdate(newVotingPeriod, newTimelockPeriod, proposalThreshold, newQuorumThreshold);
+    }
+
+    // ========== Cross-Chain Sync ==========
+
+    function _syncProposalCreation(uint256 proposalId, uint8 proposalType, string memory description, bytes memory data) internal {
+        bytes memory payload = abi.encode("CREATE", proposalId, msg.sender, proposalType, description, data);
+        _sendCrossChainMessage(CHAIN_ID_BSC, payload);
+        _sendCrossChainMessage(CHAIN_ID_POLYGON, payload);
+    }
+
+    function _syncVote(uint256 proposalId, address voter, bool support, uint256 votingPower) internal {
+        bytes memory payload = abi.encode("VOTE", proposalId, voter, support, votingPower);
+        _sendCrossChainMessage(CHAIN_ID_BSC, payload);
+        _sendCrossChainMessage(CHAIN_ID_POLYGON, payload);
+    }
+
+    function _syncProposalExecution(uint256 proposalId, uint8 proposalType, bytes memory data) internal {
+        bytes memory payload = abi.encode("EXECUTE", proposalId, proposalType, data);
+        _sendCrossChainMessage(CHAIN_ID_BSC, payload);
+        _sendCrossChainMessage(CHAIN_ID_POLYGON, payload);
+    }
+
+    function _syncProposalCancellation(uint256 proposalId) internal {
+        bytes memory payload = abi.encode("CANCEL", proposalId);
+        _sendCrossChainMessage(CHAIN_ID_BSC, payload);
+        _sendCrossChainMessage(CHAIN_ID_POLYGON, payload);
+    }
+
+    function _syncGovernanceParamsUpdate(
+        uint256 votingPeriod,
+        uint256 timelockPeriod,
+        uint256 proposalThreshold,
+        uint256 quorumThreshold
+    ) internal {
+        bytes memory payload = abi.encode(
+            "UPDATE_PARAMS",
+            votingPeriod,
+            timelockPeriod,
+            proposalThreshold,
+            quorumThreshold
+        );
+        _sendCrossChainMessage(CHAIN_ID_BSC, payload);
+        _sendCrossChainMessage(CHAIN_ID_POLYGON, payload);
+    }
+
+    function _sendCrossChainMessage(uint16 chainId, bytes memory payload) internal {
+        if (crossChainHandler == address(0)) return;
+        
+        (bool success, ) = crossChainHandler.call(
+            abi.encodeWithSignature(
+                "sendMessage(uint16,bytes)",
+                chainId,
+                payload
+            )
+        );
+        
+        if (!success) {
+            revert CrossChainSyncFailed(chainId, keccak256(payload));
+        }
+    }
+
+    // ========== View Functions ==========
+
+    function getProposalState(uint256 proposalId) external view returns (uint8) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        
+        Proposal storage proposal = proposals[proposalId];
+        
+        if (proposal.canceled) return 4; // Canceled
+        if (proposal.executed) return 3; // Executed
+        if (block.timestamp <= proposal.voteEnd) return 0; // Active
+        
+        uint256 totalVotes = proposal.forVotes + proposal.againstVotes;
+        if (totalVotes * BASIS_POINTS_DIVISOR / proposal.totalVotingPower < quorumThreshold) return 2; // Defeated
+        
+        return (proposal.forVotes > proposal.againstVotes) ? 1 : 2; // Succeeded or Defeated
+    }
+
+    function getMultisigApprovals(uint256 proposalId) external view returns (uint256, uint256) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        return (requiredMultisigApprovals, upgradeApprovals[proposalId]);
+    }
+
+    function hasApproved(uint256 proposalId, address approver) external view returns (bool) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalDoesNotExist();
+        return multiSigApprovals[proposalId][approver];
+    }
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
+        if (newImplementation == address(0)) revert ZeroAddress();
     }
 }

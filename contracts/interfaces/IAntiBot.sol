@@ -1,156 +1,291 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+pragma solidity ^0.8.21;
 
 /**
- * @title IAntiBot - Interface for the AntiBot contract
- * @notice Interface for interaction with the AntiBot security module
+ * @title IAntiBot - Interface for TerraStake AntiBot Security Module v4.0
+ * @notice Defines the public interface for the AntiBot contract, providing protection against
+ * front-running, flash crashes, sandwich attacks, and excessive transactions
  */
 interface IAntiBot {
+ 
+    // ================================
+    // Events
+    // ================================
+    event AntibotStatusUpdated(bool isEnabled);
+    event BlockThresholdUpdated(uint256 newThreshold);
+    event BuybackPaused(bool status);
+    event CircuitBreakerTriggered(bool status, int256 priceChange);
+    event CircuitBreakerReset(bytes32 indexed callerRole);
+    event EmergencyCircuitBreakerReset(address indexed admin, bytes32 indexed callerRole);
+    event AddressExempted(address indexed account);
+    event ExemptionRevoked(address indexed account, bytes32 indexed callerRole);
+    event TrustedContractAdded(address indexed contractAddress);
+    event TrustedContractRemoved(address indexed contractAddress, bytes32 indexed callerRole);
+    event PriceImpactThresholdUpdated(uint256 newThreshold);
+    event CircuitBreakerThresholdUpdated(uint256 newThreshold);
+    event LiquidityLockPeriodUpdated(uint256 newPeriod);
+    event GovernanceExemptionRequested(address indexed account, uint256 unlockTime);
+    event GovernanceExemptionApproved(address indexed account, bytes32 indexed callerRole);
+    event PriceMonitoringUpdated(uint256 timestamp, int256 oldPrice, int256 newPrice);
+    event PriceCheckCooldownUpdated(uint256 newCooldown);
+    event PriceSurgeDetected(bool status, int256 priceChange);
+    event PriceSurgeReset(bytes32 indexed callerRole);
+    event FailsafeModeActivated(address indexed activator);
+    event FailsafeModeDeactivated(address indexed deactivator);
+    event DynamicThrottlingUpdated(uint256 baseMultiplier, uint256 rapidThreshold, uint256 window, uint256 maxMultiplier);
+    event PriceSurgeThresholdUpdated(uint256 newThreshold, uint256 newCooldown);
+    event GovernanceInactivityThresholdUpdated(uint256 newThreshold);
+    event UserThrottled(address indexed user, uint256 multiplier, uint256 cooldownEnds);
+    event OracleAdded(address indexed oracle);
+    event OracleRemoved(address indexed oracle);
+    event MinimumOracleResponsesUpdated(uint8 count);
+    event RateLimitConfigUpdated(uint128 capacity, uint128 refillRate);
+    event SuspiciousPatternDetected(address indexed user, uint64 patternCount);
+    event TWAPUpdated(int256 price);
+
+    // ================================
+    // Structs
+    // ================================
+    struct GovernanceRequest {
+        address account;
+        uint64 unlockTime;
+    }
+
+    // ================================
+    // State Variables
+    // ================================
+    function isAntibotEnabled() external view returns (bool);
+    function isBuybackPaused() external view returns (bool);
+    function isCircuitBreakerTriggered() external view returns (bool);
+    function isPriceSurgeActive() external view returns (bool);
+    function failsafeMode() external view returns (bool);
+    function governanceExemptionCount() external view returns (uint8);
+    function minimumOracleResponses() external view returns (uint8);
+    function oracleCount() external view returns (uint8);
+    function blockThreshold() external view returns (uint256);
+    function priceImpactThreshold() external view returns (uint256);
+    function circuitBreakerThreshold() external view returns (uint256);
+    function liquidityLockPeriod() external view returns (uint256);
+    function priceCheckCooldown() external view returns (uint256);
+    function lastPriceCheckTime() external view returns (uint256);
+    function baseMultiplier() external view returns (uint256);
+    function rapidTransactionThreshold() external view returns (uint256);
+    function rapidTransactionWindow() external view returns (uint256);
+    function maxMultiplier() external view returns (uint256);
+    function priceSurgeThreshold() external view returns (uint256);
+    function surgeCooldownPeriod() external view returns (uint256);
+    function lastSurgeTime() external view returns (uint256);
+    function governanceInactivityThreshold() external view returns (uint256);
+    function lastGovernanceActivity() external view returns (uint256);
+    function lastCheckedPrice() external view returns (int256);
+    function pendingExemptions(address account) external view returns (GovernanceRequest memory);
+    function backupOracles(address oracle) external view returns (bool);
+    function priceOracle() external view returns (address);
+
+    // ================================
+    // Initialization
+    // ================================
     /**
-     * @notice Validates a token transfer
-     * @param from Address sending the token
-     * @param to Address receiving the token
-     * @param amount Transaction amount (unused in current implementation)
-     * @return isValid Whether the transaction passes anti-bot checks
+     * @notice Initializes the AntiBot contract
+     * @param governanceContract Address of the governance contract
+     * @param stakingContract Address of the staking contract
+     * @param _priceOracle Address of the primary price oracle
      */
-    function validateTransfer(address from, address to, uint256 amount) external returns (bool isValid);
-    
+    function initialize(
+        address governanceContract,
+        address stakingContract,
+        address _priceOracle
+    ) external;
+
+    // ================================
+    // Price Monitoring
+    // ================================
     /**
-     * @notice Checks if an account is exempt from antibot measures
-     * @param account Address to check
-     * @return Whether the account is exempt
+     * @notice Checks current price impact and updates circuit breakers
      */
-    function isExempt(address account) external view returns (bool);
-    
+    function checkPriceImpact() external;
+
     /**
-     * @notice Gets user cooldown status
+     * @notice Calculates the Time-Weighted Average Price
+     * @return Current TWAP value
+     */
+    function calculateTWAP() external view returns (int256);
+
+    /**
+     * @notice Resets the circuit breaker
+     */
+    function resetCircuitBreaker() external;
+
+    /**
+     * @notice Performs an emergency reset of the circuit breaker
+     */
+    function emergencyResetCircuitBreaker() external;
+
+    /**
+     * @notice Resets the price surge breaker
+     */
+    function resetPriceSurgeBreaker() external;
+
+    // ================================
+    // Oracle Management
+    // ================================
+    /**
+     * @notice Adds a backup oracle
+     * @param oracle Address of the oracle to add
+     */
+    function addOracle(address oracle) external;
+
+    /**
+     * @notice Removes a backup oracle
+     * @param oracle Address of the oracle to remove
+     */
+    function removeOracle(address oracle) external;
+
+    /**
+     * @notice Sets the minimum required oracle responses for consensus
+     * @param count Minimum number of oracle responses required
+     */
+    function setMinimumOracleResponses(uint8 count) external;
+
+    // ================================
+    // Configuration Management
+    // ================================
+    /**
+     * @notice Updates the block threshold for throttling
+     * @param newThreshold New block threshold value
+     */
+    function updateBlockThreshold(uint256 newThreshold) external;
+
+    /**
+     * @notice Updates dynamic throttling parameters
+     * @param _base Base multiplier for throttling
+     * @param _rapid Rapid transaction threshold
+     * @param _window Time window for rapid transactions
+     * @param _max Maximum multiplier
+     */
+    function updateDynamicThrottling(
+        uint256 _base,
+        uint256 _rapid,
+        uint256 _window,
+        uint256 _max
+    ) external;
+
+    /**
+     * @notice Updates price-related thresholds
+     * @param _impact Price impact threshold percentage
+     * @param _surge Price surge threshold percentage
+     * @param _circuit Circuit breaker threshold percentage
+     */
+    function updatePriceThresholds(
+        uint256 _impact,
+        uint256 _surge,
+        uint256 _circuit
+    ) external;
+
+    /**
+     * @notice Updates price check cooldown period
+     * @param cooldown New cooldown period in seconds
+     */
+    function updatePriceCheckCooldown(uint256 cooldown) external;
+
+    /**
+     * @notice Updates surge cooldown period
+     * @param period New surge cooldown period in seconds
+     */
+    function updateSurgeCooldownPeriod(uint256 period) external;
+
+    /**
+     * @notice Updates the primary price oracle
+     * @param newOracle Address of the new price oracle
+     */
+    function updatePriceOracle(address newOracle) external;
+
+    /**
+     * @notice Updates default rate limit parameters
+     * @param _capacity Maximum tokens per period
+     * @param _refillRate Tokens refilled per second
+     */
+    function updateRateLimitParams(uint256 _capacity, uint256 _refillRate) external;
+
+    /**
+     * @notice Sets custom rate limit for a specific address
+     * @param user Address to set custom rate limit for
+     * @param capacity Maximum tokens per period
+     * @param refillRate Tokens refilled per second
+     */
+    function setCustomRateLimit(address user, uint256 capacity, uint256 refillRate) external;
+
+    /**
+     * @notice Resets rate limit for a specific address to defaults
+     * @param user Address to reset rate limit for
+     */
+    function resetRateLimit(address user) external;
+
+    // ================================
+    // Failsafe Management
+    // ================================
+    /**
+     * @notice Activates failsafe mode
+     */
+    function activateFailsafeMode() external;
+
+    /**
+     * @notice Deactivates failsafe mode
+     */
+    function deactivateFailsafeMode() external;
+
+    /**
+     * @notice Updates governance inactivity threshold
+     * @param threshold New threshold in seconds
+     */
+    function updateGovernanceInactivityThreshold(uint256 threshold) external;
+
+    // ================================
+    // Utility Functions
+    // ================================
+    /**
+     * @notice Gets the current throttling multiplier for a user
      * @param user Address to check
-     * @return blockNum Current block number
-     * @return threshold Block threshold
-     * @return canTransact Whether user can transact
-     * @return currentMultiplier Applied throttling multiplier
+     * @return Current throttling multiplier
      */
-    function getUserCooldownStatus(address user) external view returns (
-        uint256 blockNum,
-        uint256 threshold,
-        bool canTransact,
-        uint256 currentMultiplier
-    );
-    
+    function getThrottlingMultiplier(address user) external view returns (uint256);
+
     /**
-     * @notice Gets price monitoring status
+     * @notice Gets the current rate limit status for a user
+     * @param user Address to check
+     * @return available Current available tokens
+     * @return capacity Maximum capacity
+     * @return refillRate Tokens per second refill rate
+     */
+    function getRateLimitStatus(address user) external view returns (
+        uint256 available,
+        uint256 capacity,
+        uint256 refillRate
+    );
+
+    /**
+     * @notice Gets the current circuit breaker status
+     * @return circuitBreakerActive Whether circuit breaker is triggered
+     * @return priceSurgeActive Whether price surge is active
+     * @return buybackPaused Whether buyback is paused
      * @return lastPrice Last checked price
-     * @return lastCheckTime Last price check timestamp
-     * @return isBreaker Whether circuit breaker is active
-     * @return isSurge Whether price surge breaker is active
-     * @return surgeCooldownEnd Timestamp when surge cooldown ends
+     * @return lastCheck Last price check timestamp
      */
-    function getPriceMonitoringStatus() external view returns (
+    function getCircuitBreakerStatus() external view returns (
+        bool circuitBreakerActive,
+        bool priceSurgeActive,
+        bool buybackPaused,
         int256 lastPrice,
-        uint256 lastCheckTime,
-        bool isBreaker,
-        bool isSurge,
-        uint256 surgeCooldownEnd
+        uint256 lastCheck
     );
-    
+
     /**
-     * @notice Gets liquidity lock status for a user
-     * @param user Address to check
-     * @return lockUntil Timestamp when lock expires
-     * @return isLocked Whether liquidity is locked
-     * @return remainingTime Time remaining until unlock
+     * @notice Gets the price history
+     * @return timestamps Array of observation timestamps
+     * @return prices Array of observed prices
      */
-    function getLiquidityLockStatus(address user) external view returns (
-        uint256 lockUntil,
-        bool isLocked,
-        uint256 remainingTime
+    function getPriceHistory() external view returns (
+        uint256[] memory timestamps,
+        int256[] memory prices
     );
-    
-    /**
-     * @notice Checks if a transaction would be throttled
-     * @param from Sender address
-     * @return wouldThrottle Whether the transaction would be throttled
-     * @return cooldownEnds Timestamp when cooldown ends
-     * @return appliedMultiplier Multiplier that would be applied
-     */
-    function checkWouldThrottle(address from) external view returns (
-        bool wouldThrottle, 
-        uint256 cooldownEnds,
-        uint256 appliedMultiplier
-    );
-    
-    /**
-     * @notice Gets security threshold parameters
-     * @return blockLimit Block threshold
-     * @return priceImpact Price impact threshold
-     * @return circuitBreaker Circuit breaker threshold
-     * @return lockPeriod Liquidity lock period
-     * @return priceCooldown Price check cooldown
-     * @return surgeThreshold Price surge threshold
-     * @return surgeCooldown Surge cooldown period
-     */
-    function getSecurityThresholds() external view returns (
-        uint256 blockLimit,
-        uint256 priceImpact,
-        uint256 circuitBreaker,
-        uint256 lockPeriod,
-        uint256 priceCooldown,
-        uint256 surgeThreshold,
-        uint256 surgeCooldown
-    );
-    
-    /**
-     * @notice Checks if liquidity can be withdrawn
-     * @param user Address to check
-     * @return Whether liquidity can be withdrawn
-     */
-    function canWithdrawLiquidity(address user) external view returns (bool);
-    
-    /**
-     * @notice Gets dynamic throttling parameters
-     * @return base Base multiplier
-     * @return rapid Rapid transaction threshold
-     * @return window Time window for rapid transactions
-     * @return maxMult Maximum multiplier
-     */
-    function getDynamicThrottlingParams() external view returns (
-        uint256 base,
-        uint256 rapid,
-        uint256 window,
-        uint256 maxMult
-    );
-    
-    /**
-     * @notice Gets failsafe mechanism status
-     * @return active Whether failsafe mode is active
-     * @return admin Current failsafe admin address
-     * @return governanceActive Whether governance is considered active
-     * @return lastActivity Last governance activity timestamp
-     * @return inactivityThreshold Governance inactivity threshold
-     */
-    function getFailsafeStatus() external view returns (
-        bool active,
-        address admin,
-        bool governanceActive,
-        uint256 lastActivity,
-        uint256 inactivityThreshold
-    );
-    
-    /**
-     * @notice Records a liquidity injection
-     * @param provider Liquidity provider address
-     */
-    function recordLiquidityInjection(address provider) external;
-    
-    /**
-     * @notice Checks if circuit breaker is active
-     * @return Whether circuit breaker is active
-     */
-    function isCircuitBreakerActive() external view returns (bool);
-    
-    /**
-     * @notice Checks if buyback is active
-     * @return Whether buyback is active
-     */
-    function isBuybackActive() external view returns (bool);
 }

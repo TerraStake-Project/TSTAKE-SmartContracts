@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.28;
+pragma solidity ^0.8.21;
 
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
@@ -9,9 +9,9 @@ import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "../interfaces/ITerraStakeGuardianCouncil.sol";
 
 /**
- * @title TerraStakeGuardianCouncil
- * @author TerraStake Protocol Team
- * @notice Secure, lean guardian council for emergency actions on Arbitrum
+ * @title TerraStakeGuardianCouncil v2.1
+ * @notice Fully decentralized and economy-friendly Guardian Council for emergency actions.
+ * @dev Uses multi-signature approvals, on-chain voting, and timelocks to ensure fair governance.
  */
 contract TerraStakeGuardianCouncil is 
     Initializable, 
@@ -20,315 +20,312 @@ contract TerraStakeGuardianCouncil is
     UUPSUpgradeable
 {
     using ECDSA for bytes32;
-    
+
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
-    
-    bytes4 public constant EMERGENCY_PAUSE = 0x72a24f77;
-    bytes4 public constant EMERGENCY_UNPAUSE = 0x8b05f491;
-    bytes4 public constant REMOVE_VALIDATOR = 0x3d18f5f9;
-    bytes4 public constant REDUCE_THRESHOLD = 0x7e9e7d8e;
-    bytes4 public constant GUARDIAN_OVERRIDE = 0x1c4d82e4;
-    
+
+    // Actions Guardians can perform
+    bytes4 public constant FREEZE_VALIDATOR = 0x3d18f5f9;
+    bytes4 public constant UNFREEZE_VALIDATOR = 0x7e9e7d8e;
+
     uint96 public quorumNeeded;
     uint96 public nonce;
-    uint64 public signatureExpiry;
+    uint64 public proposalExpiry;
     uint64 public changeCooldown;
     uint64 public lastChangeTime;
-    
+    uint64 public timelockDuration;
+
     mapping(address => bool) public guardianCouncil;
     address[] public guardianList;
-    mapping(bytes32 => bool) public usedOps;
-    mapping(bytes4 => address[]) public actionTargets;
-    
+
+    struct GuardianProposal {
+        bytes4 action;
+        address target;
+        uint256 createdAt;
+        uint256 executeAfter;
+        bool executed;
+    }
+
+    mapping(bytes32 => GuardianProposal) public proposals;
+    mapping(bytes32 => mapping(address => bool)) public proposalVotes;
+
     event GuardianAdded(address indexed guardian);
     event GuardianRemoved(address indexed guardian);
     event QuorumUpdated(uint256 oldQuorum, uint256 newQuorum);
+    event ProposalCreated(bytes32 proposalId, bytes4 action, address target, uint256 createdAt);
+    event ProposalExecuted(bytes32 proposalId, bool success);
+    event ProposalVoted(bytes32 proposalId, address voter);
     event SignatureExpiryUpdated(uint256 newExpiry);
     event ChangeCooldownUpdated(uint256 newCooldown);
-    event TargetAdded(bytes4 actionType, address target);
-    event TargetRemoved(bytes4 actionType, address target);
-    event NonceBumped(uint256 newNonce);
-    event OverrideDone(bytes4 action, address target, bytes data);
-    event ActionTried(bytes4 actionType, bool worked);
-    
+    event TimelockUpdated(uint256 newDuration);
+
+    error InvalidAddress();
+    error InvalidQuorum();
+    error DuplicateGuardian();
+    error NotGuardian();
+    error MinimumGuardians();
+    error CooldownActive();
+    error ProposalNotFound();
+    error ProposalExpired();
+    error AlreadyExecuted();
+    error AlreadyVoted();
+    error TimelockNotPassed();
+    error InvalidAction();
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
-    
-    function initialize(address boss, address[] calldata firstGuardians) external initializer {
+
+    /**
+     * @notice Initialize the contract with admin and initial guardians
+     * @param admin The address of the admin
+     * @param initialGuardians Array of initial guardian addresses
+     * @dev Requires at least 3 guardians to start
+     */
+    function initialize(address admin, address[] calldata initialGuardians) external initializer {
         __AccessControlEnumerable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
-        
-        require(boss != address(0), "Boss can't be zero");
-        _grantRole(DEFAULT_ADMIN_ROLE, boss);
-        _grantRole(UPGRADER_ROLE, boss);
-        _grantRole(GOVERNANCE_ROLE, boss);
-        
-        require(firstGuardians.length >= 3, "Need at least 3 guardians to start");
-        for (uint256 i = 0; i < firstGuardians.length; i++) {
-            address guardian = firstGuardians[i];
-            require(guardian != address(0) && !guardianCouncil[guardian], "Bad guardian setup");
+
+        if (admin == address(0)) revert InvalidAddress();
+        if (initialGuardians.length < 3) revert MinimumGuardians();
+
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(UPGRADER_ROLE, admin);
+        _grantRole(GOVERNANCE_ROLE, admin);
+
+        for (uint256 i = 0; i < initialGuardians.length; i++) {
+            address guardian = initialGuardians[i];
+            if (guardian == address(0)) revert InvalidAddress();
+            if (guardianCouncil[guardian]) revert DuplicateGuardian();
+
             guardianCouncil[guardian] = true;
             guardianList.push(guardian);
             _grantRole(GUARDIAN_ROLE, guardian);
         }
-        
-        quorumNeeded = uint96(firstGuardians.length * 2 / 3 + 1);
+
+        quorumNeeded = uint96((initialGuardians.length * 2) / 3 + 1);
         nonce = 1;
-        signatureExpiry = 1 days;
+        proposalExpiry = 2 days;
         changeCooldown = 7 days;
+        timelockDuration = 1 days;
     }
-    
-    function _authorizeUpgrade(address newCode) internal override onlyRole(UPGRADER_ROLE) {}
-    
-    function addGuardian(address newGuardian) external onlyRole(GOVERNANCE_ROLE) {
-        uint64 _now = uint64(block.timestamp);
-        require(_now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
-        require(newGuardian != address(0) && !guardianCouncil[newGuardian], "Bad guardian pick");
-        require(guardianList.length < 100, "Too many guardians");
+
+    /**
+     * @notice Authorize contract upgrades
+     * @param newImplementation Address of the new implementation
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+
+    /**
+     * @notice Propose a new action to be executed
+     * @param action The action to perform (FREEZE_VALIDATOR or UNFREEZE_VALIDATOR)
+     * @param target The target address for the action
+     * @return proposalId The ID of the created proposal
+     */
+    function proposeAction(bytes4 action, address target) external onlyRole(GUARDIAN_ROLE) returns (bytes32 proposalId) {
+        if (action != FREEZE_VALIDATOR && action != UNFREEZE_VALIDATOR) revert InvalidAction();
+        if (target == address(0)) revert InvalidAddress();
+
+        proposalId = keccak256(abi.encode(action, target, nonce++));
+        if (proposals[proposalId].createdAt > 0) revert("Proposal already exists");
+
+        proposals[proposalId] = GuardianProposal({
+            action: action,
+            target: target,
+            createdAt: block.timestamp,
+            executeAfter: block.timestamp + timelockDuration,
+            executed: false
+        });
+
+        emit ProposalCreated(proposalId, action, target, block.timestamp);
+    }
+
+    /**
+     * @notice Vote on an existing proposal
+     * @param proposalId The ID of the proposal to vote on
+     */
+    function voteOnProposal(bytes32 proposalId) external onlyRole(GUARDIAN_ROLE) {
+        GuardianProposal storage proposal = proposals[proposalId];
+        if (proposal.createdAt == 0) revert ProposalNotFound();
+        if (proposal.executed) revert AlreadyExecuted();
+        if (proposalVotes[proposalId][msg.sender]) revert AlreadyVoted();
+        if (block.timestamp > proposal.createdAt + proposalExpiry) revert ProposalExpired();
+
+        proposalVotes[proposalId][msg.sender] = true;
+        emit ProposalVoted(proposalId, msg.sender);
+
+        uint256 voteCount = 0;
+        for (uint256 i = 0; i < guardianList.length; i++) {
+            if (proposalVotes[proposalId][guardianList[i]]) voteCount++;
+        }
+
+        if (voteCount >= quorumNeeded && block.timestamp >= proposal.executeAfter) {
+            _executeProposal(proposalId);
+        }
+    }
+
+    /**
+     * @notice Execute a proposal that has reached quorum
+     * @param proposalId The ID of the proposal to execute
+     */
+    function executeProposal(bytes32 proposalId) external onlyRole(GUARDIAN_ROLE) {
+        GuardianProposal storage proposal = proposals[proposalId];
+        if (proposal.createdAt == 0) revert ProposalNotFound();
+        if (proposal.executed) revert AlreadyExecuted();
+        if (block.timestamp < proposal.executeAfter) revert TimelockNotPassed();
+        if (block.timestamp > proposal.createdAt + proposalExpiry) revert ProposalExpired();
+
+        uint256 voteCount = 0;
+        for (uint256 i = 0; i < guardianList.length; i++) {
+            if (proposalVotes[proposalId][guardianList[i]]) voteCount++;
+        }
+        if (voteCount < quorumNeeded) revert("Quorum not reached");
+
+        _executeProposal(proposalId);
+    }
+
+    /**
+     * @dev Internal function to execute a proposal
+     * @param proposalId The ID of the proposal to execute
+     */
+    function _executeProposal(bytes32 proposalId) internal {
+        GuardianProposal storage proposal = proposals[proposalId];
+        proposal.executed = true;
         
-        guardianCouncil[newGuardian] = true;
-        guardianList.push(newGuardian);
-        _grantRole(GUARDIAN_ROLE, newGuardian);
+        (bool success, ) = proposal.target.call(abi.encodeWithSelector(proposal.action));
+        emit ProposalExecuted(proposalId, success);
+    }
+
+    /**
+     * @notice Add a new guardian to the council
+     * @param guardian The address of the new guardian
+     */
+    function addGuardian(address guardian) external onlyRole(GOVERNANCE_ROLE) {
+        uint64 _now = uint64(block.timestamp);
+        if (_now < lastChangeTime + changeCooldown) revert CooldownActive();
+        if (guardian == address(0)) revert InvalidAddress();
+        if (guardianCouncil[guardian]) revert DuplicateGuardian();
+
+        guardianCouncil[guardian] = true;
+        guardianList.push(guardian);
+        _grantRole(GUARDIAN_ROLE, guardian);
+        
         lastChangeTime = _now;
-        
-        emit GuardianAdded(newGuardian);
+        quorumNeeded = uint96((guardianList.length * 2) / 3 + 1);
+
+        emit GuardianAdded(guardian);
+        emit QuorumUpdated(quorumNeeded - 1, quorumNeeded);
     }
-    
-    function removeGuardian(address oldGuardian) external onlyRole(GOVERNANCE_ROLE) {
+
+    /**
+     * @notice Remove a guardian from the council
+     * @param guardian The address of the guardian to remove
+     */
+    function removeGuardian(address guardian) external onlyRole(GOVERNANCE_ROLE) {
         uint64 _now = uint64(block.timestamp);
-        require(_now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
-        require(guardianCouncil[oldGuardian] && guardianList.length > 3, "Can't remove this one");
-        
-        guardianCouncil[oldGuardian] = false;
-        uint256 count = guardianList.length;
-        for (uint256 i = 0; i < count; i++) {
-            if (guardianList[i] == oldGuardian) {
-                guardianList[i] = guardianList[count - 1];
+        if (_now < lastChangeTime + changeCooldown) revert CooldownActive();
+        if (!guardianCouncil[guardian]) revert NotGuardian();
+        if (guardianList.length <= 3) revert MinimumGuardians();
+
+        guardianCouncil[guardian] = false;
+        for (uint256 i = 0; i < guardianList.length; i++) {
+            if (guardianList[i] == guardian) {
+                guardianList[i] = guardianList[guardianList.length - 1];
                 guardianList.pop();
                 break;
             }
-            if (i == count - 1) {
-                _revokeRole(GUARDIAN_ROLE, oldGuardian);
-                emit GuardianRemoved(oldGuardian);
-                return;
-            }
         }
-        
-        _revokeRole(GUARDIAN_ROLE, oldGuardian);
+
+        _revokeRole(GUARDIAN_ROLE, guardian);
         lastChangeTime = _now;
-        
-        uint96 minQuorum = uint96(guardianList.length * 2 / 3 + 1);
-        if (quorumNeeded > guardianList.length || quorumNeeded < minQuorum) {
-            uint96 old = quorumNeeded;
-            quorumNeeded = minQuorum;
-            emit QuorumUpdated(old, minQuorum);
-        }
-        
-        emit GuardianRemoved(oldGuardian);
+        uint96 oldQuorum = quorumNeeded;
+        quorumNeeded = uint96((guardianList.length * 2) / 3 + 1);
+
+        emit GuardianRemoved(guardian);
+        emit QuorumUpdated(oldQuorum, quorumNeeded);
     }
-    
+
+    /**
+     * @notice Update the quorum needed for proposals
+     * @param newQuorum The new quorum value
+     */
     function updateQuorum(uint96 newQuorum) external onlyRole(GOVERNANCE_ROLE) {
-        uint64 _now = uint64(block.timestamp);
-        require(_now >= lastChangeTime + changeCooldown, "Cool it, still on cooldown");
+        uint256 minQuorum = (guardianList.length * 2) / 3 + 1;
+        if (newQuorum < minQuorum || newQuorum > guardianList.length) revert InvalidQuorum();
         
-        uint256 count = guardianList.length;
-        uint96 min = uint96(count * 6 / 10 + 1);
-        uint96 max = uint96(count * 9 / 10 + 1);
-        require(newQuorum > 0 && newQuorum >= min && newQuorum <= max && newQuorum <= count, "Quorum out of bounds");
-        
-        uint96 old = quorumNeeded;
+        uint96 oldQuorum = quorumNeeded;
         quorumNeeded = newQuorum;
-        lastChangeTime = _now;
-        
-        emit QuorumUpdated(old, newQuorum);
+        emit QuorumUpdated(oldQuorum, newQuorum);
     }
-    
-    function setSignatureExpiry(uint64 newExpiry) external onlyRole(GOVERNANCE_ROLE) {
-        require(newExpiry >= 1 hours && newExpiry <= 7 days, "Expiry out of range");
-        signatureExpiry = newExpiry;
+
+    /**
+     * @notice Update the proposal expiry duration
+     * @param newExpiry The new expiry duration in seconds
+     */
+    function updateProposalExpiry(uint64 newExpiry) external onlyRole(GOVERNANCE_ROLE) {
+        proposalExpiry = newExpiry;
         emit SignatureExpiryUpdated(newExpiry);
     }
-    
-    function setChangeCooldown(uint64 newCooldown) external onlyRole(GOVERNANCE_ROLE) {
-        require(newCooldown >= 1 days && newCooldown <= 30 days, "Cooldown out of range");
+
+    /**
+     * @notice Update the cooldown period between guardian changes
+     * @param newCooldown The new cooldown duration in seconds
+     */
+    function updateChangeCooldown(uint64 newCooldown) external onlyRole(GOVERNANCE_ROLE) {
         changeCooldown = newCooldown;
         emit ChangeCooldownUpdated(newCooldown);
     }
-    
-    function addTarget(bytes4 actionType, address target) external onlyRole(GOVERNANCE_ROLE) {
-        require(target != address(0), "No zero targets");
-        address[] storage targets = actionTargets[actionType];
-        require(targets.length < 50, "Too many targets");
-        uint256 count = targets.length;
-        for (uint256 i = 0; i < count; i++) {
-            require(targets[i] != target, "Target already here");
-        }
-        targets.push(target);
-        emit TargetAdded(actionType, target);
+
+    /**
+     * @notice Update the timelock duration for proposals
+     * @param newDuration The new timelock duration in seconds
+     */
+    function updateTimelockDuration(uint64 newDuration) external onlyRole(GOVERNANCE_ROLE) {
+        timelockDuration = newDuration;
+        emit TimelockUpdated(newDuration);
     }
-    
-    function removeTarget(bytes4 actionType, address target) external onlyRole(GOVERNANCE_ROLE) {
-        address[] storage targets = actionTargets[actionType];
-        uint256 count = targets.length;
-        for (uint256 i = 0; i < count; i++) {
-            if (targets[i] == target) {
-                targets[i] = targets[count - 1];
-                targets.pop();
-                emit TargetRemoved(actionType, target);
-                return;
-            }
-        }
-        revert("Target not found");
-    }
-    
-    function bumpNonce() external onlyRole(GUARDIAN_ROLE) {
-        nonce++;
-        emit NonceBumped(nonce);
-    }
-    
-    function checkSignatures(
-        bytes4 action,
-        address target,
-        bytes memory data,
-        bytes[] calldata signatures,
-        uint256 timestamp
-    ) public view returns (bool) {
-        if (signatures.length < quorumNeeded) return false;
-        uint64 _now = uint64(block.timestamp);
-        if (_now > timestamp + signatureExpiry || timestamp > _now) return false;
-        
-        bytes32 hash = keccak256(abi.encode(action, target, keccak256(data), nonce, timestamp));
-        bytes32 signedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
-        
-        uint256 validVotes;
-        uint256 seen;
-        for (uint256 i = 0; i < signatures.length; i++) {
-            address signer = signedHash.recover(signatures[i]);
-            if (guardianCouncil[signer]) {
-                uint256 bit = 1 << (uint8(uint160(signer) & 0xFF));
-                if (seen & bit == 0) {
-                    seen |= bit;
-                    validVotes++;
-                }
-            }
-        }
-        return validVotes >= quorumNeeded;
-    }
-    
-    function overrideAction(
-        bytes4 action,
-        address target,
-        bytes calldata data,
-        bytes[] calldata signatures,
-        uint256 timestamp
-    ) external nonReentrant {
-        bytes32 opHash = keccak256(abi.encode(action, target, keccak256(data), nonce));
-        require(!usedOps[opHash], "Action already done");
-        require(checkSignatures(action, target, data, signatures, timestamp), "Bad signatures");
-        require(uint64(block.timestamp) <= timestamp + signatureExpiry, "Signatures too old");
-        
-        usedOps[opHash] = true;
-        (bool ok, ) = target.call{ gas: gasleft() - 3000 }(data);
-        require(ok, "Action failed");
-        
-        nonce++;
-        emit OverrideDone(action, target, data);
-        emit NonceBumped(nonce);
-    }
-    
-    function pauseAll(bytes[] calldata signatures, uint256 timestamp) external nonReentrant {
-        address[] storage targets = actionTargets[EMERGENCY_PAUSE];
-        require(targets.length > 0, "No targets to pause");
-        
-        bytes memory callData = abi.encodeWithSelector(0x8456cb59);
-        bytes32 dataHash = keccak256(callData);
-        uint256 count = targets.length;
-        for (uint256 i = 0; i < count; i++) {
-            address target = targets[i];
-            bytes32 opHash = keccak256(abi.encode(EMERGENCY_PAUSE, target, dataHash, nonce));
-            if (usedOps[opHash]) continue;
-            
-            if (checkSignatures(EMERGENCY_PAUSE, target, callData, signatures, timestamp)) {
-                usedOps[opHash] = true;
-                (bool ok, ) = target.call{ gas: gasleft() - 3000 }(callData);
-                emit ActionTried(EMERGENCY_PAUSE, ok);
-            } else {
-                emit ActionTried(EMERGENCY_PAUSE, false);
-            }
-        }
-        nonce++;
-        emit NonceBumped(nonce);
-    }
-    
-    function unpauseAll(bytes[] calldata signatures, uint256 timestamp) external nonReentrant {
-        address[] storage targets = actionTargets[EMERGENCY_UNPAUSE];
-        require(targets.length > 0, "No targets to unpause");
-        
-        bytes memory callData = abi.encodeWithSelector(0x3f4ba83a);
-        bytes32 dataHash = keccak256(callData);
-        uint256 count = targets.length;
-        for (uint256 i = 0; i < count; i++) {
-            address target = targets[i];
-            bytes32 opHash = keccak256(abi.encode(EMERGENCY_UNPAUSE, target, dataHash, nonce));
-            if (usedOps[opHash]) continue;
-            
-            if (checkSignatures(EMERGENCY_UNPAUSE, target, callData, signatures, timestamp)) {
-                usedOps[opHash] = true;
-                (bool ok, ) = target.call{ gas: gasleft() - 3000 }(callData);
-                emit ActionTried(EMERGENCY_UNPAUSE, ok);
-            } else {
-                emit ActionTried(EMERGENCY_UNPAUSE, false);
-            }
-        }
-        nonce++;
-        emit NonceBumped(nonce);
-    }
-    
-    function kickValidator(address validator, bytes[] calldata signatures, uint256 timestamp) external nonReentrant {
-        address[] storage targets = actionTargets[REMOVE_VALIDATOR];
-        require(targets.length > 0, "No targets for validator kick");
-        
-        bytes memory callData = abi.encodeWithSignature("removeValidator(address)", validator);
-        bytes32 dataHash = keccak256(callData);
-        uint256 count = targets.length;
-        for (uint256 i = 0; i < count; i++) {
-            address target = targets[i];
-            bytes32 opHash = keccak256(abi.encode(REMOVE_VALIDATOR, target, dataHash, nonce));
-            if (usedOps[opHash]) continue;
-            
-            if (checkSignatures(REMOVE_VALIDATOR, target, callData, signatures, timestamp)) {
-                usedOps[opHash] = true;
-                (bool ok, ) = target.call{ gas: gasleft() - 3000 }(callData);
-                emit ActionTried(REMOVE_VALIDATOR, ok);
-            } else {
-                emit ActionTried(REMOVE_VALIDATOR, false);
-            }
-        }
-        nonce++;
-        emit NonceBumped(nonce);
-    }
-    
+
+    /**
+     * @notice Get all guardian addresses
+     * @return Array of guardian addresses
+     */
     function getAllGuardians() external view returns (address[] memory) {
         return guardianList;
     }
-    
-    function getGuardianCount() external view returns (uint256) {
-        return guardianList.length;
+
+    /**
+     * @notice Get proposal details
+     * @param proposalId The ID of the proposal
+     * @return The proposal details
+     */
+    function getProposal(bytes32 proposalId) external view returns (GuardianProposal memory) {
+        return proposals[proposalId];
     }
-    
-    function isOnCooldown() external view returns (bool) {
-        return uint64(block.timestamp) < lastChangeTime + changeCooldown;
+
+    /**
+     * @notice Check if an address is a guardian
+     * @param user The address to check
+     * @return True if the address is a guardian
+     */
+    function isGuardian(address user) external view returns (bool) {
+        return guardianCouncil[user];
     }
-    
-    function getTargets(bytes4 actionType) external view returns (address[] memory) {
-        return actionTargets[actionType];
-    }
-    
-    function isActionDone(bytes4 action, address target, bytes calldata data) external view returns (bool) {
-        return usedOps[keccak256(abi.encode(action, target, keccak256(data), nonce))];
+
+    /**
+     * @notice Get the current vote count for a proposal
+     * @param proposalId The ID of the proposal
+     * @return The number of votes received
+     */
+    function getVoteCount(bytes32 proposalId) external view returns (uint256) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < guardianList.length; i++) {
+            if (proposalVotes[proposalId][guardianList[i]]) {
+                count++;
+            }
+        }
+        return count;
     }
 }

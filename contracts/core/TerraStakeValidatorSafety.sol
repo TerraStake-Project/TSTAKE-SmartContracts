@@ -37,12 +37,7 @@ contract TerraStakeValidatorSafety is
     uint256 public validatorQuorum;
     uint256 public validatorCooldownPeriod;
     uint256 public lastValidatorConfigUpdate;
-    
-    // Governance tiers
-    uint256 public governanceTier1Threshold;
-    uint256 public governanceTier2Threshold;
-    uint256 public governanceTier3Threshold;
-    
+        
     // Risk parameters
     uint256 public riskScoreThreshold;
     mapping(address => uint256) public validatorRiskScores;
@@ -145,12 +140,7 @@ contract TerraStakeValidatorSafety is
         validatorInactivityThreshold = 7 days; // Default inactivity threshold
         timelockPeriod = 2 days; // Default timelock for critical operations
         autoSuspendHighRiskValidators = true; // Auto-suspend high risk validators by default
-        
-        // Set governance tier thresholds
-        governanceTier1Threshold = 50_000 * 10**18; // 50,000 tokens
-        governanceTier2Threshold = 100_000 * 10**18; // 100,000 tokens
-        governanceTier3Threshold = 250_000 * 10**18; // 250,000 tokens
-        
+                
         // Set emergency parameters
         emergencyMode = false;
         emergencyModeCooldown = 30 days;
@@ -375,33 +365,6 @@ contract TerraStakeValidatorSafety is
         lastValidatorConfigUpdate = block.timestamp;
         
         emit ValidatorQuorumUpdated(newQuorum);
-    }
-    
-    /**
-     * @notice Update governance tier thresholds
-     * @param tierId Tier ID (1, 2, or 3)
-     * @param newThreshold New token threshold for this tier
-     */
-    function updateGovernanceTier(uint8 tierId, uint256 newThreshold) external 
-        nonReentrant 
-        onlyRole(GOVERNANCE_ROLE)
-        notInEmergencyMode 
-    {
-        if (tierId < 1 || tierId > 3) revert InvalidParameters();
-        
-        if (tierId == 1) {
-            governanceTier1Threshold = newThreshold;
-        } else if (tierId == 2) {
-            // Ensure tier 2 is higher than tier 1
-            if (newThreshold <= governanceTier1Threshold) revert InvalidParameters();
-            governanceTier2Threshold = newThreshold;
-        } else if (tierId == 3) {
-            // Ensure tier 3 is higher than tier 2
-            if (newThreshold <= governanceTier2Threshold) revert InvalidParameters();
-            governanceTier3Threshold = newThreshold;
-        }
-        
-        emit GovernanceTierUpdated(tierId, newThreshold);
     }
     
     /**
@@ -653,23 +616,6 @@ contract TerraStakeValidatorSafety is
      */
     function isValidatorConfigCooldownActive() external view returns (bool) {
         return block.timestamp < lastValidatorConfigUpdate + validatorCooldownPeriod;
-    }
-    
-    /**
-     * @notice Get governance tier for a token amount
-     * @param tokenAmount Amount of tokens
-     * @return Governance tier (0-3, where 0 means below tier 1)
-     */
-    function getGovernanceTier(uint256 tokenAmount) external view returns (uint8) {
-        if (tokenAmount >= governanceTier3Threshold) {
-            return 3;
-        } else if (tokenAmount >= governanceTier2Threshold) {
-            return 2;
-        } else if (tokenAmount >= governanceTier1Threshold) {
-            return 1;
-        } else {
-            return 0;
-        }
     }
     
     /**
