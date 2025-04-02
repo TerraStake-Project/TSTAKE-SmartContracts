@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.21;
 
-import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
+import {Client} from "@chainlink/contracts/src/v0.8/ccip/libraries/Client.sol";
 
 /**
  * @title ICrossChainHandler
@@ -249,8 +249,4 @@ interface ICrossChainHandler {
 // Required interfaces for completeness
 interface StateSync {
     function syncState(uint16 srcChainId, ICrossChainHandler.CrossChainState memory state) external;
-}
-
-interface IAntiBot {
-    function checkThrottle(address user) external view returns (bool isThrottled, uint256 cooldownEnds);
 }

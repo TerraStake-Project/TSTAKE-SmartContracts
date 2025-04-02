@@ -4,9 +4,9 @@ pragma solidity ^0.8.21;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./ITerraStakeLiquidityGuard.sol";
 import "./ITerraStakeTreasury.sol";
-import "@uniswap/v4-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@uniswap/v4-periphery/contracts/interfaces/IQuoter.sol";
-import "@api3/contracts/v0.8/interfaces/IProxy.sol";
+import "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
+import "@uniswap/v4-periphery/src/interfaces/IV4Quoter.sol";
+import "@api3/contracts/api3-server-v1/proxies/interfaces/IProxy.sol";
 
 /**
  * @title ITerraStakeTreasuryManager
@@ -96,8 +96,8 @@ interface ITerraStakeTreasuryManager {
     function POOL_FEE() external view returns (uint24);
     
     function liquidityGuard() external view returns (ITerraStakeLiquidityGuard);
-    function uniswapRouter() external view returns (ISwapRouter);
-    function uniswapQuoter() external view returns (IQuoter);
+    function uniswapRouter() external view returns (IV4Router);
+    function uniswapQuoter() external view returns (IV4Quoter);
     function tStakeToken() external view returns (IERC20);
     function usdcToken() external view returns (IERC20);
     function treasury() external view returns (ITerraStakeTreasury);

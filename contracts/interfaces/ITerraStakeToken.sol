@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.21;
 
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+
 /**
  * @title ITerraStakeToken
  * @notice Interface for the TerraStakeToken contract, an advanced ERC20 token with Uniswap V4 integration,
@@ -251,7 +255,7 @@ interface ITerraStakeToken {
      * @param key Pool key for the callback.
      * @param data Callback data.
      */
-    function v4HookCallback(address sender, PoolKey key, bytes calldata data) external;
+    function v4HookCallback(address sender, PoolKey calldata key, bytes calldata data) external;
 
     /**
      * @notice Retrieves the time-weighted average price (TWAP) for a given period.
@@ -537,11 +541,6 @@ interface ITerraStakeToken {
     function tokenStandard() external pure returns (string memory name);
 }
 
-// Required external interfaces
-interface IHooks {
-    // Uniswap V4 hook interface
-}
-
 interface ICrossChainHandler {
     struct CrossChainState {
         uint256 halvingEpoch;
@@ -550,17 +549,4 @@ interface ICrossChainHandler {
         uint256 lastTWAPPrice;
         uint256 emissionRate;
     }
-}
-
-interface Currency {
-    function unwrap() external view returns (address);
-}
-
-interface PoolKey {
-    function currency0() external view returns (Currency);
-    function currency1() external view returns (Currency);
-    function fee() external view returns (uint24);
-    function tickSpacing() external view returns (int24);
-    function hooks() external view returns (IHooks);
-    function toId() external view returns (bytes32);
 }

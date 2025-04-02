@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.21;
 
-import "@openzeppelin/contracts-upgradeable/utils/introspection/IERC165Upgradeable.sol";
+import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 /**
  * @title ITerraStakeStaking
  * @notice Interface for the TerraStakeStaking contract with updated halving logic from TerraStakeToken
  */
-interface ITerraStakeStaking is IERC165Upgradeable {
+interface ITerraStakeStaking is IERC165 {
     // Structs
     struct StakingPosition {
         uint256 amount;

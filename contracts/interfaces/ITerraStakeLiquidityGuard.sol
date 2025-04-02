@@ -2,8 +2,8 @@
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@uniswap/v4-periphery/src/interfaces/IPositionManager.sol";
+import "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import "./ITerraStakeRewardDistributor.sol";
 import "./ITerraStakeTreasuryManager.sol";
 
@@ -48,8 +48,8 @@ interface ITerraStakeLiquidityGuard {
     // State variables access
     function tStakeToken() external view returns (ERC20Upgradeable);
     function usdcToken() external view returns (ERC20Upgradeable);
-    function positionManager() external view returns (INonfungiblePositionManager);
-    function uniswapPool() external view returns (IUniswapV3Pool);
+    function positionManager() external view returns (IPositionManager);
+    function uniswapPool() external view returns (IPoolManager);
     function rewardDistributor() external view returns (ITerraStakeRewardDistributor);
     function treasuryManager() external view returns (ITerraStakeTreasuryManager);
    

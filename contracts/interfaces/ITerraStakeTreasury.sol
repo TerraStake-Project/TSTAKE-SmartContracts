@@ -2,16 +2,8 @@
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
-import "../interfaces/IAntiBot.sol";
-import "../interfaces/ITerraStakeITO.sol";
-
-
-/// @dev Minimal interface extending IERC20 to include burning functionality.
-interface IBurnableERC20 is IERC20 {
-    function burn(uint256 amount) external;
-}
-
+import "./IAntiBot.sol";
+import "./ITerraStakeITO.sol";
 
 /**
  * @title ITerraStakeTreasury
