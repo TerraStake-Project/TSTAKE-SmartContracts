@@ -37,7 +37,7 @@ interface ITerraStakeStaking is IERC165 {
     }
 
     // Halving Mechanism (Updated to match TerraStakeToken logic)
-    function applyHalving() external; // Governance-triggered halving
+    function applyHalving() external returns (uint256); // Governance-triggered halving
     function triggerHalving() external returns (uint256); // Admin-triggered halving
     function checkAndApplyHalving() external returns (bool); // Automatic halving check
     function getHalvingDetails() external view returns (
@@ -46,6 +46,8 @@ interface ITerraStakeStaking is IERC165 {
         uint256 epoch,
         uint256 nextHalving
     );
+    function getHalvingPeriod() external view returns (uint256);
+    
     function setHalvingPeriod(uint256 newPeriod) external;
 
     // LayerZero Cross-Chain Functions (Unchanged)
@@ -133,6 +135,7 @@ interface ITerraStakeStaking is IERC165 {
     function version() external pure returns (string memory);
     function adjustRewardRates() external;
     function getActiveStakers() external view returns (address[] memory);
+    function getHalvingEpoch() external view returns (uint256);
 
     // Events (Updated to match contract)
     event HalvingApplied(

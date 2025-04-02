@@ -191,7 +191,7 @@ interface ITerraStakeNFT is IERC1155 {
     event TokenURIUpdated(uint256 indexed tokenId, string newUri);
     event TokenURILocked(uint256 indexed tokenId);
 
-    function uri(uint256 tokenId) external view override returns (string memory);
+    function uri(uint256 tokenId) external view returns (string memory);
 
     function setTokenURI(uint256 tokenId, string calldata newUri) external;
 

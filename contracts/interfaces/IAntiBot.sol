@@ -288,4 +288,7 @@ interface IAntiBot {
         uint256[] memory timestamps,
         int256[] memory prices
     );
+
+    function checkThrottle(address from) external view returns (bool);
+    function isBot(address account) external view returns (bool);
 }
