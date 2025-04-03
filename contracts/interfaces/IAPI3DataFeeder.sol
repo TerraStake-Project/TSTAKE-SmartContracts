@@ -3,11 +3,11 @@ pragma solidity ^0.8.21;
 
 // Required imports for types used in the interface
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@api3/contracts/v0.8/interfaces/IAirnodeRrpV0.sol";
-import "../interfaces/ITerraStakeProjects.sol";
-import "../interfaces/ITerraStakeToken.sol";
-import "../interfaces/ITerraStakeLiquidityGuard.sol";
-import "../interfaces/ITerraStakeGovernance.sol";
+import "@api3/airnode-protocol/contracts/rrp/interfaces/IAirnodeRrpV0.sol";
+import "./ITerraStakeProjects.sol";
+import "./ITerraStakeToken.sol";
+import "./ITerraStakeLiquidityGuard.sol";
+import "./ITerraStakeGovernance.sol";
 
 /**
  * @title IAPI3DataFeeder
@@ -26,7 +26,6 @@ interface IAPI3DataFeeder {
     error InvalidParameters();
     error StaleData();
     error NoDataAvailable();
-    error CircuitBreakerTriggered();
     error InvalidMetric();
     error MetricAlreadyExists();
     error InvalidValue();

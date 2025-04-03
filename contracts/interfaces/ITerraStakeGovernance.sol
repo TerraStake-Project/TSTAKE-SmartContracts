@@ -94,10 +94,6 @@ interface ITerraStakeGovernance {
     
     function syncHalvingEpoch(uint256 epoch, uint256 timestamp) external;
     
-    function getHalvingPeriod() external view returns (uint256);
-    
-    function getHalvingEpoch() external view returns (uint256);
-    
     // ========== Cross-Chain Integration ==========
     function setCCIPRouter(address _router) external;
     

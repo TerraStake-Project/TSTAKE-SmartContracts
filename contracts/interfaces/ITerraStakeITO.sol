@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.21;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "@uniswap/v4-core/contracts/interfaces/IPoolManager.sol";
-import "@uniswap/v4-core/contracts/interfaces/IHooks.sol";
-import "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import "@chainlink/contracts/src/v0.8/ccip/libraries/Client.sol";
 import "../interfaces/IAntiBot.sol";
 
-interface IBurnableERC20 is IERC20Upgradeable {
+interface IBurnableERC20 is IERC20 {
     function burn(uint256 amount) external;
     function totalSupply() external view returns (uint256);
 }
@@ -146,7 +146,7 @@ interface ITerraStakeITO is IHooks {
     // State variables
     function antiBot() external view returns (IAntiBot);
     function tStakeToken() external view returns (IBurnableERC20);
-    function usdcToken() external view returns (IERC20Upgradeable);
+    function usdcToken() external view returns (IERC20);
     function poolManager() external view returns (IPoolManager);
     function ccipRouter() external view returns (address);
     function poolKey() external view returns (address currency0, address currency1, uint24 fee, int24 tickSpacing, IHooks hooks);

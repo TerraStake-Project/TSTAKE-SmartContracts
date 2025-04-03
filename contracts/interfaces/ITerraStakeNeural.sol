@@ -237,4 +237,8 @@ interface ITerraStakeNeural {
     function manualSyncWithAIEngine() external;
     function pause() external;
     function unpause() external;
+
+    function recordCrossChainTransfer(uint16 srcChainId, address recipient, uint256 amount, bytes32 txreference) external;
+    function recordMint(address recipient, uint256 amount) external;
+    function recordTransfer(address from, address to, uint256 amount) external;
 }

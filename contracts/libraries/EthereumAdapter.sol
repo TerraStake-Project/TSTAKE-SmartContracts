@@ -1,49 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.21;
+pragma solidity ^0.8.21;
 
 /**
  * @title EthereumAdapter
- * @dev Handles Ethereum-specific cross-chain logic for LayerZero integration
+ * @dev Ethereum-specific helpers for Chainlink CCIP integration
+ * @notice This version is Chainlink-native (no LayerZero logic)
  */
 library EthereumAdapter {
-    // Ethereum Mainnet chain ID constant (LayerZero uses uint16 for chain IDs)
-    uint16 internal constant CHAIN_ID = 1;
+    // ============ Constants ============
+    // Chainlink CCIP selector for Ethereum Mainnet
+    uint64 internal constant CHAIN_SELECTOR = 5009297550715157269;
 
-    // Errors
-    error InvalidAddressLength();
+    // ============ Errors ============
+    error InvalidAddress();
+    error InvalidPayload();
 
     /**
-     * @dev Formats an Ethereum address for LayerZero cross-chain compatibility
-     * @param localAddr Local Ethereum address
-     * @param remoteAddr Remote address (on destination chain)
-     * @return bytes 40-byte path compatible with LayerZero (local + remote address)
+     * @notice Formats a destination address for CCIP (EVM-compatible)
+     * @param destination Address on the target chain
+     * @return encoded Encoded destination for CCIP receiver
      */
-    function formatAddress(address localAddr, address remoteAddr) internal pure returns (bytes memory) {
-        return abi.encodePacked(localAddr, remoteAddr);
+    function formatReceiver(address destination) internal pure returns (bytes memory encoded) {
+        if (destination == address(0)) revert InvalidAddress();
+        return abi.encode(destination);
     }
-    
+
     /**
-     * @dev Parses an Ethereum address from a LayerZero path
-     * @param path 40-byte path containing local and remote addresses
-     * @return localAddr Local Ethereum address
-     * @return remoteAddr Remote address
+     * @notice Parses a destination address from CCIP message
+     * @param encodedReceiver Encoded bytes from CCIP `message.sender`
+     * @return decoded Address parsed from encoded value
      */
-    function parseAddress(bytes memory path) internal pure returns (address localAddr, address remoteAddr) {
-        if (path.length != 40) revert InvalidAddressLength();
-        
-        assembly {
-            localAddr := shr(96, mload(add(path, 32)))
-            remoteAddr := shr(96, mload(add(path, 40)))
-        }
+    function parseReceiver(bytes memory encodedReceiver) internal pure returns (address decoded) {
+        if (encodedReceiver.length != 32) revert InvalidPayload(); // ABI encoding of address is 32 bytes
+        decoded = abi.decode(encodedReceiver, (address));
     }
-    
+
     /**
-     * @dev Estimates gas needed for Ethereum cross-chain operations
-     * @param payloadSize Size of the message payload in bytes
-     * @return uint256 Estimated gas cost
+     * @notice Estimates gas needed for CCIP operations (approximate)
+     * @param payloadSize Payload size in bytes
+     * @return gasEstimate Estimated gas cost (rough)
      */
-    function estimateGas(uint256 payloadSize) internal pure returns (uint256) {
-        // Base gas (100k) + additional gas per 32-byte chunk of payload
+    function estimateGas(uint256 payloadSize) internal pure returns (uint256 gasEstimate) {
         unchecked {
             return 100_000 + ((payloadSize + 31) / 32) * 16_000;
         }

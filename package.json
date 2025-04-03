@@ -8,11 +8,13 @@
     "hardhat": "^2.22.19"
   },
   "dependencies": {
+    "@api3/airnode-protocol": "^0.15.0",
     "@api3/contracts": "^19.1.0",
     "@openzeppelin/contracts": "^5.2.0",
     "@openzeppelin/contracts-upgradeable": "^5.2.0",
     "@uniswap/v4-core": "github:uniswap/v4-core",
     "@uniswap/v4-periphery": "github:uniswap/v4-periphery",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "permit2": "github:uniswap/permit2"
   }
 }

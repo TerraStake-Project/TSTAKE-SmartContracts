@@ -1,25 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.21;
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
-import "@uniswap/v4-core/contracts/interfaces/IPoolManager.sol";
-import "@uniswap/v4-core/contracts/interfaces/IHooks.sol";
-import "@uniswap/v4-core/contracts/interfaces/callback/IUnlockCallback.sol";
-import "@uniswap/v4-core/contracts/types/PoolKey.sol";
-import "@uniswap/v4-core/contracts/libraries/PoolId.sol";
-import "@uniswap/v4-core/contracts/libraries/CurrencyLibrary.sol";
-import "@uniswap/v4-core/contracts/libraries/TickMath.sol";
-import "@uniswap/v4-core/contracts/libraries/LiquidityAmounts.sol";
 
-import "@api3/airnode-protocol/contracts/rrp/interfaces/IProxy.sol";
+import "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import "@uniswap/v4-core/src/types/PoolKey.sol";
+import "@uniswap/v4-core/src/types/PoolId.sol";
+import "@uniswap/v4-core/src/libraries/TickMath.sol";
+import "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
+
+import "@api3/contracts/api3-server-v1/proxies/interfaces/IProxy.sol";
 
 import "../interfaces/ITerraStakeGovernance.sol";
 import "../interfaces/ITerraStakeStaking.sol";
@@ -37,23 +39,25 @@ import "../interfaces/IAntiBot.sol";
  * @dev Integrates with TerraStakeNeuralManager for AI-driven indexing and rebalancing with full Uniswap V4 support
  */
 contract TerraStakeToken is
+    Initializable,
     ERC20Upgradeable,
     ERC20PermitUpgradeable,
     ERC20BurnableUpgradeable,
     AccessControlEnumerableUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
-    UUPSUpgradeable,
-    IUnlockCallback
+    UUPSUpgradeable
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
-    using PoolId for PoolKey;
+    using SafeERC20 for IERC20;
+    using PoolIdLibrary for PoolKey;
+    using StateLibrary for IPoolManager;
 
     // ============ Constants ============
     uint256 public constant MAX_SUPPLY = 3_000_000_000 * 10**18;
     uint32 public constant MIN_TWAP_PERIOD = 5 minutes;
     uint256 public constant MAX_BATCH_SIZE = 200;
     uint256 public constant PRICE_DECIMALS = 18;
+    uint256 public constant MIN_TRANSFER_AMOUNT = 1 * 10**18; // 1.0 TSTAKE
     uint256 public constant LARGE_TRANSFER_THRESHOLD = 1_000_000 * 10**18;
     uint256 public constant MAX_VOLATILITY_THRESHOLD = 5000;
     uint256 public constant TWAP_UPDATE_COOLDOWN = 30 minutes;
@@ -89,6 +93,15 @@ contract TerraStakeToken is
         uint128 liquidity;
         uint256 tokenId;
         bool isActive;
+    }
+
+    struct PoolInfo {
+        bytes32 id;
+        uint160 sqrtPriceX96;
+        int24 tick;
+        uint16 observationIndex;
+        uint16 observationCardinality;
+        uint24 fee;
     }
 
     // ============ State Variables ============
@@ -153,6 +166,7 @@ contract TerraStakeToken is
 
     // ============ Roles ============
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant LIQUIDITY_MANAGER_ROLE = keccak256("LIQUIDITY_MANAGER_ROLE");
@@ -161,6 +175,8 @@ contract TerraStakeToken is
     bytes32 public constant PRICE_ORACLE_ROLE = keccak256("PRICE_ORACLE_ROLE");
     bytes32 public constant CROSS_CHAIN_OPERATOR_ROLE = keccak256("CROSS_CHAIN_OPERATOR_ROLE");
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
+    bytes32 public constant STAKING_MANAGER_ROLE = keccak256("STAKING_MANAGER_ROLE");
 
     // ============ Events ============
     event BlacklistUpdated(address indexed account, bool status);
@@ -178,10 +194,18 @@ contract TerraStakeToken is
     event CrossChainHandlerUpdated(address indexed crossChainHandler);
     event CrossChainMessageSent(uint16 indexed destChainId, bytes32 indexed payloadHash, uint256 nonce);
     event CrossChainStateUpdated(uint16 indexed srcChainId, ICrossChainHandler.CrossChainState state);
+    event CrossChainSyncFailed(bytes reason);
     event AntiBotUpdated(address indexed newAntiBot);
-    event TransactionThrottled(address indexed user, uint256 cooldownEnds);
     event ChainSupportUpdated(uint16 indexed chainId, bool supported);
     event EmissionRateUpdated(uint256 newRate);
+    event NeuralManagerUpdated(address indexed neuralManager);
+    event MaxGasPriceUpdated(uint256 newMaxGasPrice);
+    event TwapDeviationThresholdUpdated(uint256 newThreshold);
+    event HalvingToMintUpdated(bool isApplied);
+    event BuybackBudgetTransferred(uint256 amount, address indexed recipient);
+    event TokensMinted(address indexed recipient, uint256 amount);
+    event StakingMint(uint256 amount);
+    event GovernanceMint(uint256 amount);
     
     // Uniswap V4 specific events
     event PoolInitialized(bytes32 indexed poolId, PoolKey poolKey, uint160 sqrtPriceX96);
@@ -202,10 +226,13 @@ contract TerraStakeToken is
     error PoolNotInitialized();
     error NeuralManagerNotSet();
     error CrossChainHandlerNotSet();
-    error CrossChainSyncFailed(bytes reason);
     error InvalidChainId();
     error StaleMessage();
     error TransactionThrottled();
+    error MaxGasPriceExceeded();
+    error TransferAmountTooSmall();
+    error SenderIsBot();
+    error ReceiverIsBot();
     
     // Uniswap V4 specific errors
     error PoolAlreadyInitialized();
@@ -290,6 +317,11 @@ contract TerraStakeToken is
         poolInitialized = false;
     }
 
+    // ================================
+    //  Upgradeability (Arbitrum considerations)
+    // ================================
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
+
     // ============ Uniswap V4 Integration ============
     
     /**
@@ -321,8 +353,8 @@ contract TerraStakeToken is
         });
         
         // Initialize the pool
-        bytes32 _poolId = key.toId();
-        poolManager.initialize(key, _sqrtPriceX96, _hookData);
+        bytes32 _poolId = PoolId.unwrap(key.toId());
+        poolManager.initialize(key, _sqrtPriceX96);
         
         // Store pool information
         poolKey = key;
@@ -374,15 +406,19 @@ contract TerraStakeToken is
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: tickLower,
             tickUpper: tickUpper,
-            liquidityDelta: int256(uint256(liquidityDesired))
+            liquidityDelta: int256(uint256(liquidityDesired)),
+            salt: keccak256(abi.encode(block.timestamp, tickLower, tickUpper, liquidityDesired))
         });
         
         // Call pool manager to add liquidity
-        (int256 amount0, int256 amount1) = poolManager.modifyLiquidity(
+        (BalanceDelta _amount0, BalanceDelta _amount1) = poolManager.modifyLiquidity(
             poolKey,
             params,
             abi.encode(this, recipient)
         );
+
+        int256 amount0 = BalanceDelta.unwrap(_amount0);
+        int256 amount1 = BalanceDelta.unwrap(_amount1);
         
         // Calculate token amounts required
         uint256 amount0Uint = amount0 >= 0 ? 0 : uint256(-amount0);
@@ -390,21 +426,21 @@ contract TerraStakeToken is
         
         // Ensure this contract has enough tokens
         if (amount0Uint > 0) {
-            IERC20Upgradeable(Currency.unwrap(poolKey.currency0)).safeTransferFrom(
+            IERC20(Currency.unwrap(poolKey.currency0)).safeTransferFrom(
                 msg.sender,
                 address(this),
                 amount0Uint
             );
-            IERC20Upgradeable(Currency.unwrap(poolKey.currency0)).safeApprove(address(poolManager), amount0Uint);
+            IERC20(Currency.unwrap(poolKey.currency0)).approve(address(poolManager), amount0Uint);
         }
         
         if (amount1Uint > 0) {
-            IERC20Upgradeable(Currency.unwrap(poolKey.currency1)).safeTransferFrom(
+            IERC20(Currency.unwrap(poolKey.currency1)).safeTransferFrom(
                 msg.sender,
                 address(this),
                 amount1Uint
             );
-            IERC20Upgradeable(Currency.unwrap(poolKey.currency1)).safeApprove(address(poolManager), amount1Uint);
+            IERC20(Currency.unwrap(poolKey.currency1)).approve(address(poolManager), amount1Uint);
         }
         
         // Store position info
@@ -457,16 +493,20 @@ contract TerraStakeToken is
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: position.tickLower,
             tickUpper: position.tickUpper,
-            liquidityDelta: -int256(uint256(liquidityToRemove))
+            liquidityDelta: -int256(uint256(liquidityToRemove)),
+            salt: keccak256(abi.encode(block.timestamp, position.tickLower, position.tickUpper, liquidityToRemove))
         });
         
         // Remove liquidity from the pool
-        (int256 amount0Delta, int256 amount1Delta) = poolManager.modifyLiquidity(
+        (BalanceDelta _amount0Delta, BalanceDelta _amount1Delta) = poolManager.modifyLiquidity(
             poolKey,
             params,
             abi.encode(this, recipient)
         );
         
+        int256 amount0Delta = BalanceDelta.unwrap(_amount0Delta);
+        int256 amount1Delta = BalanceDelta.unwrap(_amount1Delta);
+
         // Update token amounts
         amount0 = amount0Delta > 0 ? uint256(amount0Delta) : 0;
         amount1 = amount1Delta > 0 ? uint256(amount1Delta) : 0;
@@ -511,27 +551,27 @@ contract TerraStakeToken is
         bool zeroForOne = tokenIn == Currency.unwrap(poolKey.currency0);
         
         // Transfer tokens from sender to this contract
-        IERC20Upgradeable(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
-        IERC20Upgradeable(tokenIn).safeApprove(address(poolManager), amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).approve(address(poolManager), amountIn);
         
         // Prepare swap parameters
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
             zeroForOne: zeroForOne,
             amountSpecified: int256(amountIn),
             sqrtPriceLimitX96: sqrtPriceLimitX96 == 0 ? 
-                (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1) : 
+                (zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1) : 
                 sqrtPriceLimitX96
         });
         
         // Execute swap
-        (int256 amount0Delta, int256 amount1Delta) = poolManager.swap(
+        int256 swapDelta = BalanceDelta.unwrap(poolManager.swap(
             poolKey,
             params,
             abi.encode(this, recipient)
-        );
+        ));
         
         // Calculate output amount
-        amountOut = uint256(-(zeroForOne ? amount1Delta : amount0Delta));
+        amountOut = uint256(-(swapDelta));
         
         // Ensure minimum output amount is satisfied
         if (amountOut < amountOutMinimum) revert SwapSlippageExceeded();
@@ -560,12 +600,12 @@ contract TerraStakeToken is
         address sender,
         PoolKey calldata key,
         bytes calldata data
-    ) external override {
+    ) external {
         // Ensure callback is coming from the pool manager
         if (msg.sender != address(poolManager)) revert CallbackNotAuthorized();
         
         // Ensure the pool key matches our pool
-        if (key.toId() != poolId) revert InvalidPool();
+        if (PoolId.unwrap(key.toId()) != poolId) revert InvalidPool();
         
         // Handle callback based on the callback type
         (address callbackContract, address recipient) = abi.decode(data, (address, address));
@@ -580,7 +620,8 @@ contract TerraStakeToken is
     function _recordTWAPObservation() internal {
         if (!poolInitialized) return;
         
-        (uint160 sqrtPriceX96, int24 tick, , uint128 liquidity) = poolManager.getSlot0(poolKey);
+        (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(PoolId.wrap(poolId));
+        uint128 liquidity = poolManager.getLiquidity(PoolId.wrap(poolId));
         
         TWAPObservation memory observation = TWAPObservation({
             blockTimestamp: uint32(block.timestamp),
@@ -902,9 +943,9 @@ contract TerraStakeToken is
             uint16 chainId = activeChainIds[i];
             try crossChainHandler.sendMessage(chainId, payload) returns (bytes32 payloadHash, uint256 nonce) {
                 emit CrossChainMessageSent(chainId, payloadHash, nonce);
-            } catch (bytes memory reason) {
-                emit CrossChainSyncFailed();
                 emit CrossChainStateUpdated(chainId, state);
+            } catch (bytes memory reason) {
+                emit CrossChainSyncFailed(reason);
             }
         }
     }
@@ -940,7 +981,7 @@ contract TerraStakeToken is
         emissionRate = state.emissionRate;
         
         if (stakingContract.getHalvingEpoch() < state.halvingEpoch) {
-            stakingContract.syncHalvingEpoch(state.halvingEpoch, state.timestamp);
+            stakingContract.externalHalvingSync(state.halvingEpoch, state.timestamp);
         }
         
         emit CrossChainStateUpdated(srcChainId, state);
@@ -977,31 +1018,26 @@ contract TerraStakeToken is
         bool zeroForOne = poolKey.currency0 == Currency.wrap(address(priceFeed));
         
         // Ensure the contract has approval to spend the tokens
-        IERC20Upgradeable(Currency.unwrap(zeroForOne ? poolKey.currency0 : poolKey.currency1))
-            .safeApprove(address(poolManager), usdcAmount);
+        IERC20(Currency.unwrap(zeroForOne ? poolKey.currency0 : poolKey.currency1))
+            .approve(address(poolManager), usdcAmount);
         
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
             zeroForOne: zeroForOne,
             amountSpecified: int256(usdcAmount),
             sqrtPriceLimitX96: zeroForOne ? 
-                TickMath.MIN_SQRT_RATIO + 1 : 
-                TickMath.MAX_SQRT_RATIO - 1
+                TickMath.MIN_SQRT_PRICE + 1 : 
+                TickMath.MAX_SQRT_PRICE - 1
         });
         
         // Execute the swap
-        (int256 amount0Delta, int256 amount1Delta) = poolManager.swap(
+        int256 swapDelta = BalanceDelta.unwrap(poolManager.swap(
             poolKey,
             params,
             abi.encode(address(this), address(this))
-        );
+        ));
         
         // Calculate how many tokens we received
-        uint256 tokensReceived;
-        if (zeroForOne) {
-            tokensReceived = uint256(-amount1Delta);
-        } else {
-            tokensReceived = uint256(-amount0Delta);
-        }
+        uint256 tokensReceived = uint256(-swapDelta);
         
         // Record the TWAP observation after the swap
         _recordTWAPObservation();
@@ -1028,7 +1064,7 @@ contract TerraStakeToken is
         require(tokenAmount > 0, "Zero token amount");
         
         // Ensure this contract has enough USDC 
-        IERC20Upgradeable(Currency.unwrap(poolKey.currency0)).safeTransferFrom(
+        IERC20(Currency.unwrap(poolKey.currency0)).safeTransferFrom(
             msg.sender,
             address(this),
             usdcAmount
@@ -1041,24 +1077,25 @@ contract TerraStakeToken is
         }
         
         // Calculate the liquidity amount based on the current price
-        (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(poolKey);
+        (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(PoolId.wrap(poolId));
         uint128 liquidity = _calculateLiquidityForAmounts(
             sqrtPriceX96, 
-            TickMath.getSqrtRatioAtTick(tickLower),
-            TickMath.getSqrtRatioAtTick(tickUpper),
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
             usdcAmount,
             tokenAmount
         );
         
         // Approve tokens for pool manager
-        IERC20Upgradeable(Currency.unwrap(poolKey.currency0)).safeApprove(address(poolManager), usdcAmount);
-        IERC20Upgradeable(Currency.unwrap(poolKey.currency1)).safeApprove(address(poolManager), tokenAmount);
+        IERC20(Currency.unwrap(poolKey.currency0)).approve(address(poolManager), usdcAmount);
+        IERC20(Currency.unwrap(poolKey.currency1)).approve(address(poolManager), tokenAmount);
         
         // Add liquidity to the pool
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: tickLower,
             tickUpper: tickUpper,
-            liquidityDelta: int256(uint256(liquidity))
+            liquidityDelta: int256(uint256(liquidity)),
+            salt: keccak256(abi.encode(block.timestamp, tickLower, tickUpper, liquidity))
         });
         
         poolManager.modifyLiquidity(
@@ -1131,7 +1168,7 @@ contract TerraStakeToken is
     ) internal view returns (uint256 tokenAmount) {
         if (!poolInitialized) return 0;
         
-        (uint160 sqrtPriceX96, int24 currentTick, , ) = poolManager.getSlot0(poolKey);
+        (uint160 sqrtPriceX96, int24 currentTick, , ) = poolManager.getSlot0(PoolId.wrap(poolId));
         
         // Calculate token amount based on the price range
         if (currentTick < tickLower) {
@@ -1140,7 +1177,7 @@ contract TerraStakeToken is
         } else if (currentTick >= tickUpper) {
             // Current price is above range, only token1 (TSTAKE) is needed
             // Calculate based on the upper tick price
-            uint160 sqrtRatioAtUpperTick = TickMath.getSqrtRatioAtTick(tickUpper);
+            uint160 sqrtRatioAtUpperTick = TickMath.getSqrtPriceAtTick(tickUpper);
             uint256 priceAtUpperTick = FullMath.mulDiv(
                 uint256(sqrtRatioAtUpperTick) * uint256(sqrtRatioAtUpperTick),
                 1,
@@ -1155,8 +1192,8 @@ contract TerraStakeToken is
         } else {
             // Current price is within range, need both tokens
             // Calculate amounts for the portion of the range we're in
-            uint160 sqrtRatioAtLowerTick = TickMath.getSqrtRatioAtTick(tickLower);
-            uint160 sqrtRatioAtUpperTick = TickMath.getSqrtRatioAtTick(tickUpper);
+            uint160 sqrtRatioAtLowerTick = TickMath.getSqrtPriceAtTick(tickLower);
+            uint160 sqrtRatioAtUpperTick = TickMath.getSqrtPriceAtTick(tickUpper);
             
             // Calculate liquidity amount
             uint128 liquidity = LiquidityAmounts.getLiquidityForAmount0(
@@ -1178,51 +1215,6 @@ contract TerraStakeToken is
 
     // ============ Token Transfers ============
 
-    function _update(
-        address from,
-        address to,
-        uint256 amount
-    ) internal override whenNotPaused {
-        // Anti-bot check
-        if (address(antiBot) != address(0)) {
-            (bool isThrottled, ) = antiBot.checkThrottle(from);
-            if (isThrottled) revert TransactionThrottled();
-        }
-
-        // Security checks
-        if (from != address(0)) require(!isBlacklisted[from], "Sender blacklisted");
-        if (to != address(0)) require(!isBlacklisted[to], "Recipient blacklisted");
-        
-        // Large transfer verification
-        if (amount >= LARGE_TRANSFER_THRESHOLD) {
-            require(liquidityGuard.verifyTWAPForWithdrawal(), "Liquidity check failed");
-        }
-
-        // Apply taxes if neither party is exempt
-        if (!taxExempt[from] && !taxExempt[to]) {
-            uint256 burnAmount = (amount * burnRateBasisPoints) / 10000;
-            uint256 taxAmount = (amount * buybackTaxBasisPoints) / 10000;
-            uint256 totalDeduction = burnAmount + taxAmount;
-            
-            if (totalDeduction > 0) {
-                if (burnAmount > 0) {
-                    super._update(from, address(0), burnAmount);
-                    emit TokenBurned(from, burnAmount);
-                }
-                
-                if (taxAmount > 0) {
-                    buybackBudget += taxAmount;
-                    super._update(from, address(this), taxAmount);
-                }
-                
-                super._update(from, to, amount - totalDeduction);
-                return;
-            }
-        }
-        
-        super._update(from, to, amount);
-    }
-    
     /**
      * @notice Set tax exempt status for an address
      * @param account Address to update
@@ -1300,7 +1292,7 @@ contract TerraStakeToken is
      * @param _neuralManager Address of the neural management contract
      */
     function setNeuralManager(address _neuralManager) external onlyRole(ADMIN_ROLE) {
-        neuralManager = ITerraStakeNeuralManager(_neuralManager);
+        neuralManager = ITerraStakeNeural(_neuralManager);
         emit NeuralManagerUpdated(_neuralManager);
     }
     
@@ -1454,7 +1446,7 @@ contract TerraStakeToken is
      * @notice Mint tokens for governance rewards
      * @param amount Amount to mint
      */
-    function mintForGovernance(uint256 amount) external onlyRole(GOVERNANCE_MANAGER_ROLE) nonReentrant returns (uint256) {
+    function mintForGovernance(uint256 amount) external onlyRole(GOVERNANCE_ROLE) nonReentrant returns (uint256) {
         require(address(governanceContract) != address(0), "Governance not set");
         
         uint256 adjustedAmount = amount;
@@ -1500,13 +1492,14 @@ contract TerraStakeToken is
     // ============ Hooks ============
     
     /**
-     * @dev Hook that is called before any transfer of tokens
+     * @dev Hook that is called before/after any transfer of tokens
      */
-    function _beforeTokenTransfer(
+    function _update(
         address from,
         address to,
         uint256 amount
     ) internal override whenNotPaused {
+        // Custom logic before transfer
         // Validate gas price to prevent front-running
         if (tx.gasprice > maxGasPrice) revert MaxGasPriceExceeded();
         
@@ -1519,21 +1512,45 @@ contract TerraStakeToken is
         if (address(antiBot) != address(0) && from != address(0) && to != address(0)) {
             if (antiBot.isBot(from)) revert SenderIsBot();
             if (antiBot.isBot(to)) revert ReceiverIsBot();
+
+            bool isThrottled = antiBot.checkThrottle(from);
+            if (isThrottled) revert TransactionThrottled();
+        }
+
+        // Security checks
+        if (from != address(0)) require(!isBlacklisted[from], "Sender blacklisted");
+        if (to != address(0)) require(!isBlacklisted[to], "Recipient blacklisted");
+        
+        // Large transfer verification
+        if (amount >= LARGE_TRANSFER_THRESHOLD) {
+            require(liquidityGuard.verifyTWAPForWithdrawal(), "Liquidity check failed");
+        }
+
+        // Apply taxes if neither party is exempt
+        if (!taxExempt[from] && !taxExempt[to]) {
+            uint256 burnAmount = (amount * burnRateBasisPoints) / 10000;
+            uint256 taxAmount = (amount * buybackTaxBasisPoints) / 10000;
+            uint256 totalDeduction = burnAmount + taxAmount;
+            
+            if (totalDeduction > 0) {
+                if (burnAmount > 0) {
+                    super._update(from, address(0), burnAmount);
+                    emit TokenBurned(from, burnAmount);
+                }
+                
+                if (taxAmount > 0) {
+                    buybackBudget += taxAmount;
+                    super._update(from, address(this), taxAmount);
+                }
+                
+                super._update(from, to, amount - totalDeduction);
+                return;
+            }
         }
         
-        super._beforeTokenTransfer(from, to, amount);
-    }
-    
-    /**
-     * @dev Hook that is called after any transfer of tokens
-     */
-    function _afterTokenTransfer(
-        address from,
-        address to,
-        uint256 amount
-    ) internal override {
-        super._afterTokenTransfer(from, to, amount);
-        
+        super._update(from, to, amount);
+
+        // Custom logic after transfer
         // Notify neuralManager about the transfer if it's set
         if (address(neuralManager) != address(0) && from != address(0) && to != address(0)) {
             neuralManager.recordTransfer(from, to, amount);
@@ -1559,8 +1576,8 @@ contract TerraStakeToken is
             return PoolInfo(bytes32(0), 0, 0, 0, 0, 0);
         }
         
-        (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality) = 
-            poolManager.getSlot0(poolKey);
+        (uint160 sqrtPriceX96, int24 tick, uint24 observationIndex, uint24 observationCardinality) = 
+            poolManager.getSlot0(PoolId.wrap(poolId));
         
         return PoolInfo({
             id: poolId,
