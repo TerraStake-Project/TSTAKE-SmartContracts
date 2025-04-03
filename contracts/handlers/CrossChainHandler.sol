@@ -41,9 +41,15 @@ contract CrossChainHandler is
     uint256 public constant FEE_BUFFER_BPS = 1000; // 10%
     uint256 public constant MAX_TIMESTAMP_DRIFT = 15 minutes;
 
+    // Arbitrum Mainnet
+    address constant ARB_CCIP_ROUTER = 0xE1053aE1857476f36A3C62580FF9b016E8EE8F6f;
+
+    // Arbitrum Sepolia Testnet
+    address constant ARB_SEPOLIA_ROUTER = 0xE1053aE1857476f36A3C62580FF9b016E8EE8F6f;
+
     // ============ Immutables ============
-    IRouterClient public immutable ccipRouter; // CCIP Router instead of LayerZero endpoint
-    uint64 public immutable localChainId; // Chain selector ID format for CCIP
+    address public immutable ccipRouter; 
+    uint64 public immutable localChainId; // Uses CCIP's chain selector format
 
     // ============ State Variables ============
     struct ChainConfig {
@@ -61,6 +67,51 @@ contract CrossChainHandler is
     mapping(bytes32 => bool) private _processedMessages;         // Track processed messages
     mapping(uint64 => CrossChainState) private _chainStates;     // Store chain states (including halving)
     mapping(address => bool) private _allowedSenders;            // Authorized source contracts on other chains
+
+    /**
+     * @notice Sets the authorization status of a sender
+     * @param sender Address of the sender
+     * @param authorized True to authorize, false to revoke
+     */
+    function setAuthorizedSender(address sender, bool authorized) external onlyRole(ADMIN_ROLE) {
+        _allowedSenders[sender] = authorized;
+        emit MessageSenderAuthorized(sender, authorized);
+    }
+
+    /**
+     * @notice Allows the admin to withdraw all ETH from the contract in case of emergency
+     * @param to Address to send the withdrawn ETH
+     */
+    function emergencyWithdrawETH(address to) external onlyRole(ADMIN_ROLE) {
+        if (to == address(0)) revert ZeroAddress();
+        payable(to).transfer(address(this).balance);
+    }
+
+    // ============ Configuration ============
+    /**
+     * @notice Configures a destination chain for cross-chain messaging
+     * @param chainId Destination chain ID (CCIP chain selector)
+     * @param processor Address of the CrossChainHandler on the destination chain
+     * @param gasLimit Gas limit for messages to this chain
+     */
+    function configureChain(
+        uint64 chainId,
+        address processor,
+        uint256 gasLimit
+    ) external onlyRole(ADMIN_ROLE) {
+        require(gasLimit >= MIN_GAS_LIMIT && gasLimit <= MAX_GAS_LIMIT, "Invalid gas");
+        if (chainId == 0 || chainId == localChainId) revert InvalidChain();
+        if (processor == address(0)) revert ZeroAddress();
+
+        _chains[chainId] = ChainConfig({
+            isSupported: true,
+            processor: processor,
+            gasLimit: gasLimit,
+            lastUpdate: block.timestamp
+        });
+
+        emit ChainConfigured(chainId, processor, gasLimit);
+    }
 
     // ============ Events ============
     event MessageSent(uint64 indexed destChainId, bytes32 indexed payloadHash, uint64 messageId, uint256 fee);
@@ -89,11 +140,8 @@ contract CrossChainHandler is
     // ============ Modifiers ============
     modifier checkThrottle(address user) {
         if (address(antiBot) != address(0)) {
-            (bool isThrottled, uint256 cooldownEnds) = antiBot.checkThrottle(user);
-            if (isThrottled) {
-                emit TransactionThrottled(user, cooldownEnds);
-                revert TransactionThrottled();
-            }
+            (bool isThrottled, ) = antiBot.checkThrottle(user);
+            require(!isThrottled, "Throttled");
         }
         _;
     }
@@ -138,62 +186,6 @@ contract CrossChainHandler is
         emit AntiBotUpdated(_antiBot);
     }
 
-    // ============ Configuration ============
-    /**
-     * @notice Configures a destination chain for cross-chain messaging
-     * @param chainId Destination chain ID (CCIP chain selector)
-     * @param processor Address of the CrossChainHandler on the destination chain
-     * @param gasLimit Gas limit for messages to this chain
-     */
-    function configureChain(
-        uint64 chainId,
-        address processor,
-        uint256 gasLimit
-    ) external onlyRole(ADMIN_ROLE) {
-        if (chainId == 0 || chainId == localChainId) revert InvalidChain();
-        if (processor == address(0)) revert ZeroAddress();
-        if (gasLimit < MIN_GAS_LIMIT || gasLimit > MAX_GAS_LIMIT) revert InvalidPayload();
-        _chains[chainId] = ChainConfig({
-            isSupported: true,
-            processor: processor,
-            gasLimit: gasLimit,
-            lastUpdate: block.timestamp
-        });
-        emit ChainConfigured(chainId, processor, gasLimit);
-    }
-
-    /**
-     * @notice Authorize or deauthorize a sender from a source chain
-     * @param sender Address of the sender to authorize/deauthorize
-     * @param authorized Whether to authorize or deauthorize the sender
-     */
-    function setAuthorizedSender(address sender, bool authorized) external onlyRole(ADMIN_ROLE) {
-        if (sender == address(0)) revert ZeroAddress();
-        _allowedSenders[sender] = authorized;
-        emit MessageSenderAuthorized(sender, authorized);
-    }
-
-    /**
-     * @notice Updates the StateSync contract address
-     * @param _stateSync New StateSync contract address
-     */
-    function setStateSync(address _stateSync) external onlyRole(ADMIN_ROLE) {
-        if (_stateSync == address(0)) revert ZeroAddress();
-        stateSync = StateSync(_stateSync);
-        emit StateSyncUpdated(_stateSync);
-    }
-
-    /**
-     * @notice Updates the AntiBot contract address
-     * @param _antiBot New AntiBot contract address
-     */
-    function setAntiBot(address _antiBot) external onlyRole(ADMIN_ROLE) {
-        if (_antiBot == address(0)) revert ZeroAddress();
-        antiBot = IAntiBot(_antiBot);
-        emit AntiBotUpdated(_antiBot);
-    }
-
-    // ============ Core Operations ============
     /**
      * @notice Sends a cross-chain message to a destination chain
      * @param destChainId Destination chain ID (CCIP chain selector)
@@ -202,37 +194,30 @@ contract CrossChainHandler is
      * @return messageId CCIP message ID
      */
     function sendMessage(
-        uint16 destChainId, // Keep same parameter type for compatibility
+        uint64 destChainId, 
         bytes calldata payload
     ) external payable onlyRole(OPERATOR_ROLE) checkThrottle(msg.sender) nonReentrant whenNotPaused returns (bytes32 payloadHash, uint256 messageId) {
-        uint64 ccipDestChainId = uint64(destChainId); // Convert to uint64 for CCIP
-        ChainConfig memory config = _chains[ccipDestChainId];
-        if (!config.isSupported) revert InvalidChain();
+        uint64 ccipDestChainId = uint64(destChainId); // Convert to CCIP format
         
         payloadHash = keccak256(payload);
         
-        // Prepare CCIP message format
+        // CCIP message struct
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
-            receiver: abi.encode(config.processor),
+            receiver: abi.encode(_chains[ccipDestChainId].processor),
             data: payload,
             tokenAmounts: new Client.EVMTokenAmount[](0), // No token transfers
-            extraArgs: Client._argsToBytes(
-                Client.EVMExtraArgsV1({
-                    gasLimit: config.gasLimit,
-                    strict: false
-                })
-            ),
-            feeToken: address(0) // Use native for fees
+            extraArgs: Client._argsToBytes(Client.EVMExtraArgsV1({
+                gasLimit: _chains[ccipDestChainId].gasLimit,
+                strict: false
+            })),
+            feeToken: address(0) // Pay fees in native ETH
         });
         
-        // Get fee
         uint256 fee = ccipRouter.getFee(ccipDestChainId, message);
         if (msg.value < fee) revert InsufficientFee();
         
-        // Send CCIP message
-        uint64 ccipMessageId = ccipRouter.ccipSend{value: fee}(ccipDestChainId, message);
-        
-        emit MessageSent(ccipDestChainId, payloadHash, ccipMessageId, fee);
+        messageId = ccipRouter.ccipSend{value: fee}(ccipDestChainId, message);
+        emit MessageSent(ccipDestChainId, payloadHash, messageId, fee);
         
         // Emit CrossChainSyncInitiated for state sync messages (halving sync with TerraStakeToken)
         if (payload.validateHeader() == 1) { // MessageType 1 = State sync
@@ -240,61 +225,29 @@ contract CrossChainHandler is
             emit CrossChainSyncInitiated(ccipDestChainId, state.halvingEpoch);
         }
         
-        return (payloadHash, ccipMessageId);
+        return (payloadHash, messageId);
     }
 
     /**
-     * @notice Receives and processes a cross-chain message via Chainlink CCIP
-     * @param message CCIP message containing source chain, sender and payload
-     */
-    function ccipReceive(
-        Client.Any2EVMMessage memory message
-    ) external override nonReentrant whenNotPaused {
-        // Verify this came from CCIP Router
-        if (msg.sender != address(ccipRouter)) revert InvalidCaller();
-        
-        // Extract the sender address
-        address sender = abi.decode(message.sender, (address));
-        if (!_allowedSenders[sender]) revert UnauthorizedSender(sender);
-        
-        // Create unique message ID
-        bytes32 messageId = keccak256(abi.encode(message.sourceChainSelector, message.sender, message.messageId));
-        if (_processedMessages[messageId]) revert StaleMessage();
-        _processedMessages[messageId] = true;
-        
-        try this._processMessage(message.sourceChainSelector, message.data) {
-            emit MessageProcessed(message.sourceChainSelector, keccak256(message.data), messageId);
-        } catch (bytes memory reason) {
-            delete _processedMessages[messageId]; // Allow retry on failure
-            emit MessageFailed(message.sourceChainSelector, keccak256(message.data), reason);
-        }
-    }
-
-    // ============ Message Processing ============
-    /**
-     * @notice Internal function to process received messages (self-called for safety)
+     * @notice Executes a token action (e.g., minting) on the token contract
      * @param srcChainId Source chain ID
-     * @param payload Message payload
+     * @param recipient Recipient address
+     * @param amount Amount of tokens
+     * @param ref Unique reference for the action
      */
-    function _processMessage(uint64 srcChainId, bytes calldata payload) external {
-        require(msg.sender == address(this), "Unauthorized");
-        
-        uint8 messageType = payload.validateHeader();
-        bytes memory data = payload.extractData();
-        if (messageType == 1) { // State sync (e.g., halving)
-            CrossChainState memory state = abi.decode(data, (CrossChainState));
-            _updateChainState(srcChainId, state);
-            if (address(stateSync) != address(0)) {
-                stateSync.syncState(uint16(srcChainId), state); // Convert back to uint16 for compatibility
-            }
-            emit CrossChainStateUpdated(srcChainId, state);
-        } else if (messageType == 2) { // Token action
-            (address recipient, uint256 amount, bytes32 reference) = abi.decode(data, (address, uint256, bytes32));
-            _executeTokenAction(uint16(srcChainId), recipient, amount, reference); // Convert to uint16 for compatibility
-            emit TokenActionExecuted(srcChainId, recipient, amount, reference);
-        } else {
-            revert InvalidPayload();
-        }
+    function _executeTokenAction(uint16 srcChainId, address recipient, uint256 amount, bytes32 ref) 
+        internal 
+    {
+        (bool success, ) = tokenContract.call(
+            abi.encodeWithSelector(
+                ICrossChainHandler.executeRemoteTokenAction.selector,
+                srcChainId,
+                recipient,
+                amount,
+                ref
+            )
+        );
+        require(success, "Token action failed");
     }
 
     /**
@@ -303,40 +256,37 @@ contract CrossChainHandler is
      * @param state CrossChainState containing halving epoch, timestamp, etc.
      */
     function _updateChainState(uint64 srcChainId, CrossChainState memory state) internal {
-        if (state.timestamp > block.timestamp + MAX_TIMESTAMP_DRIFT) revert InvalidPayload();
-        if (state.timestamp <= _chainStates[srcChainId].timestamp) revert StaleMessage();
+        if (state.timestamp > block.timestamp + MAX_TIMESTAMP_DRIFT) revert("Future timestamp");
+        
+        // Update local state
         _chainStates[srcChainId] = state;
-        // Sync with token contract (TerraStakeToken) if halving epoch is newer
+        
+        // Sync with TerraStakeToken (if newer halving epoch)
         if (address(tokenContract) != address(0)) {
-            try ICrossChainHandler(tokenContract).updateFromCrossChain(uint16(srcChainId), state) {
-                // Success, state updated in token contract
-            } catch {
-                // Log failure but continue (token contract handles its own state)
-            }
+            ICrossChainHandler(tokenContract).updateFromCrossChain(
+                uint16(srcChainId), // Convert back to uint16 for token contract
+                state
+            );
         }
     }
 
+    // ============ Utility Functions ============
     /**
-     * @notice Executes a token action (e.g., minting) on the token contract
-     * @param srcChainId Source chain ID
-     * @param recipient Recipient address
-     * @param amount Amount of tokens
-     * @param reference Unique reference for the action
+     * @notice Processes incoming messages
+     * @param sourceChainSelector Source chain ID
+     * @param data Message payload
      */
-    function _executeTokenAction(uint16 srcChainId, address recipient, uint256 amount, bytes32 reference) internal {
-        (bool success, ) = tokenContract.call(
-            abi.encodeWithSelector(
-                ICrossChainHandler.executeRemoteTokenAction.selector,
-                srcChainId,
-                recipient,
-                amount,
-                reference
-            )
-        );
-        if (!success) revert InvalidPayload();
+    function _processMessage(uint64 sourceChainSelector, bytes memory data) internal {
+        // Validate payload structure
+        if (data.length == 0) revert InvalidPayload();
+        
+        // Decode and process message
+        CrossChainState memory state = abi.decode(data, (CrossChainState));
+        _updateChainState(sourceChainSelector, state);
+        
+        emit CrossChainStateUpdated(sourceChainSelector, state);
     }
 
-    // ============ Utility Functions ============
     /**
      * @notice Estimates the fee for sending a message to a destination chain
      * @param destChainId Destination chain ID (CCIP chain selector)
@@ -344,33 +294,23 @@ contract CrossChainHandler is
      * @return nativeFee Native token fee
      */
     function estimateMessageFee(
-        uint16 destChainId, // Keep same parameter type for compatibility
+        uint64 destChainId, // Standardized to uint64 for CCIP compatibility
         bytes calldata payload
     ) external view returns (uint256 nativeFee, uint256) {
         uint64 ccipDestChainId = uint64(destChainId); // Convert to uint64 for CCIP
-        ChainConfig memory config = _chains[ccipDestChainId];
-        if (!config.isSupported) revert InvalidChain();
-        
-        // Prepare CCIP message format for fee estimation
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
-            receiver: abi.encode(config.processor),
+            receiver: abi.encode(_chains[ccipDestChainId].processor),
             data: payload,
             tokenAmounts: new Client.EVMTokenAmount[](0), // No token transfers
             extraArgs: Client._argsToBytes(
                 Client.EVMExtraArgsV1({
-                    gasLimit: config.gasLimit,
+                    gasLimit: _chains[ccipDestChainId].gasLimit,
                     strict: false
                 })
             ),
             feeToken: address(0) // Use native for fees
         });
-        
-        // Get CCIP fee
-        nativeFee = ccipRouter.getFee(ccipDestChainId, message);
-        
-        // Return second value as 0 for compatibility with old interface
-        // (LayerZero returned zroFee as second parameter)
-        return (nativeFee, 0);
+        return (ccipRouter.getFee(ccipDestChainId, message), 0);
     }
 
     /**
@@ -428,6 +368,27 @@ contract CrossChainHandler is
         return "3.0.0"; // Updated for CCIP integration
     }
 
+    /**
+     * @notice Handles incoming CCIP messages
+     * @param message The CCIP message
+     */
+    function ccipReceive(Client.Any2EVMMessage memory message) external override {
+        require(msg.sender == address(ccipRouter), "Invalid caller");
+        
+        address sender = abi.decode(message.sender, (address));
+        if (!_allowedSenders[sender]) revert UnauthorizedSender(sender);
+        
+        bytes32 messageId = keccak256(abi.encode(
+            message.sourceChainSelector, 
+            message.sender, 
+            message.messageId
+        ));
+        if (_processedMessages[messageId]) revert StaleMessage();
+        
+        _processedMessages[messageId] = true;
+        _processMessage(message.sourceChainSelector, message.data);
+    }
+
     // ============ Emergency Functions ============
     /**
      * @notice Pauses the contract in an emergency
@@ -447,4 +408,4 @@ contract CrossChainHandler is
      * @notice Allows the contract to receive native tokens (required for CCIP fees)
      */
     receive() external payable {}
-}           
+}
