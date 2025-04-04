@@ -108,6 +108,7 @@ interface IAIEngine {
     // AI Learning Enhancements
     // ===============================
     function updateMLPredictions(address asset) external;
+    function trainModel(string calldata modelVersion) external;
 
     // ===============================
     // Diversity Index Management
