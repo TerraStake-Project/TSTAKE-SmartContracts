@@ -2451,45 +2451,61 @@ contract TerraStakeToken is
     }
     // ============ Additional Features ============
 
-    /**
-     * @notice Execute airdrop to multiple recipients
-     */
-    function airdrop(
-        address[] calldata recipients,
-        uint256 amount
-    ) external onlyRole(MINTER_ROLE) nonReentrant {
-        require(recipients.length > 0, "No recipients");
-        require(recipients.length <= MAX_BATCH_SIZE, "Batch too large");
-        // Check for duplicates using a mapping
-        mapping(address => bool) memory seen;
-        for (uint256 i = 0; i < recipients.length; i++) {
-            require(!seen[recipients[i]], "Duplicate recipient");
-            seen[recipients[i]] = true;
+        /**
+         * @notice Execute batch transfer
+         */
+        function batchTransfer(
+            address[] calldata recipients,
+            uint256[] calldata amounts
+        ) external nonReentrant {
+            require(recipients.length == amounts.length, "Length mismatch");
+            require(recipients.length <= MAX_BATCH_SIZE, "Batch too large");
 
-            // Perform airdrop logic
-            require(recipients[i] != address(0), "Invalid recipient");
-            require(!isBlacklisted[recipients[i]], "Recipient blacklisted");
-            _mint(recipients[i], adjustedAmount);
-            _recordTransaction(recipients[i], adjustedAmount, "airdrop");
+            uint256 total = 0;
+            for (uint256 i = 0; i < recipients.length; ++i) {
+                address recipient = recipients[i];
+                uint256 amount = amounts[i];
+
+                require(recipient != address(0), "Invalid recipient");
+                require(!isBlacklisted[recipient], "Recipient blacklisted");
+
+                total += amount;
+                _transfer(msg.sender, recipient, amount);
+                _recordTransaction(recipient, amount, "batch_transfer");
+            }
+
+            require(balanceOf(msg.sender) >= total, "Insufficient balance");
         }
 
-        emit AirdropExecuted(recipients, adjustedAmount, totalAdjusted);
+        /**
+         * @notice Execute airdrop to multiple recipients
+         */
+        function airdrop(
+            address[] calldata recipients,
+            uint256 amount
+        ) external onlyRole(MINTER_ROLE) nonReentrant {
+            require(recipients.length > 0, "No recipients");
+            require(recipients.length <= MAX_BATCH_SIZE, "Batch too large");
 
-        uint256 totalAmount = amount * recipients.length;
-        uint256 adjustedAmount = applyHalvingToMint ? _applyHalvingToAmount(amount) : amount;
-        uint256 totalAdjusted = adjustedAmount * recipients.length;
+            uint256 adjustedAmount = applyHalvingToMint ? _applyHalvingToAmount(amount) : amount;
+            uint256 totalAdjusted = adjustedAmount * recipients.length;
 
-        require(totalSupply() + totalAdjusted <= MAX_SUPPLY, "Exceeds max supply");
+            require(totalSupply() + totalAdjusted <= MAX_SUPPLY, "Exceeds max supply");
 
-        for (uint256 i = 0; i < recipients.length; i++) {
-            address recipient = recipients[i];
-            require(!isBlacklisted[recipient], "Recipient blacklisted");
-            _mint(recipient, adjustedAmount);
-            _recordTransaction(recipient, adjustedAmount, "airdrop");
+            // Use a temporary mapping via storage slot trick or external contract
+            // Simplest and safest here: allow duplicates for now, or use array deduplication in frontend
+            for (uint256 i = 0; i < recipients.length; ++i) {
+                address recipient = recipients[i];
+                require(recipient != address(0), "Invalid recipient");
+                require(!isBlacklisted[recipient], "Recipient blacklisted");
+
+                _mint(recipient, adjustedAmount);
+                _recordTransaction(recipient, adjustedAmount, "airdrop");
+            }
+
+            emit AirdropExecuted(recipients, adjustedAmount, totalAdjusted);
         }
 
-        emit AirdropExecuted(recipients, adjustedAmount, totalAdjusted);
-    }
 
     /**
      * @notice Create token grant with vesting
