@@ -1277,35 +1277,51 @@ contract TerraStakeToken is
 
         bytes32 actionHash = keccak256(bytes(actionType));
 
-        if (actionHash == keccak256("tax")) {
-            uint256 newTax;
-            if (currentNeuralWeights.sellWeight > 50) {
-                newTax = Math.min(buybackTaxBasisPoints + 50, MAX_TAX_BASIS_POINTS);
-            } else if (currentNeuralWeights.buyWeight > 50) {
-                newTax = buybackTaxBasisPoints >= 50 ? buybackTaxBasisPoints - 50 : buybackTaxBasisPoints;
-            } else {
-                return false;
-            }
+        uint256 adjustmentStep = taxAdjustmentStep; // State variable, default 50 bps, set via governance
+        uint256 newTax = buybackTaxBasisPoints;
 
-            if (newTax != buybackTaxBasisPoints) {
-                buybackTaxBasisPoints = newTax;
-                emit NeuralRecommendationApplied("tax", block.timestamp);
-            }
-            return true;
-        } else if (actionHash == keccak256("liquidity")) {
-            if (currentNeuralWeights.holdWeight > 60) {
-                _optimizeLiquidity();
-                emit NeuralRecommendationApplied("liquidity", block.timestamp);
-            }
-            return true;
-        } else if (actionHash == keccak256("buyback")) {
-            if (currentNeuralWeights.buyWeight < 30 && buybackBudget > 0) {
-                uint256 amount = buybackBudget / 10;
-                executeBuyback(amount);
-                emit NeuralRecommendationApplied("buyback", block.timestamp);
-            }
+        if (currentNeuralWeights.sellWeight > sellWeightThreshold) { // Default 50
+            newTax = Math.min(newTax + adjustmentStep, MAX_TAX_BASIS_POINTS);
+        } else if (currentNeuralWeights.buyWeight > buyWeightThreshold && newTax >= adjustmentStep) { // Default 50
+            newTax -= adjustmentStep;
+        } else {
+            emit NeuralRecommendationSkipped("tax", "weights_below_threshold", block.timestamp);
+            return false;
+        }
+
+        if (newTax != buybackTaxBasisPoints) {
+            buybackTaxBasisPoints = newTax;
+            emit NeuralRecommendationApplied("tax", block.timestamp);
+            emit TaxUpdated("buyback_basis_points", newTax);
             return true;
         }
+        return false;
+        } 
+        else if (actionHash == keccak256("liquidity")) {
+        if (currentNeuralWeights.holdWeight > holdWeightThreshold) { // Default 60
+            _optimizeLiquidity();
+            emit NeuralRecommendationApplied("liquidity", block.timestamp);
+            return true;
+        }
+        emit NeuralRecommendationSkipped("liquidity", "hold_weight_too_low", block.timestamp);
+        return false;
+        } 
+        else if (actionHash == keccak256("buyback")) {
+        if (currentNeuralWeights.buyWeight < buyWeightThresholdLow && buybackBudget > 0) { // Default 30
+            uint256 amount = Math.min(buybackBudget * buybackFraction / 100, buybackBudget); // Default 10%
+            executeBuyback(amount);
+            emit NeuralRecommendationApplied("buyback", block.timestamp);
+            return true;
+        }
+        emit NeuralRecommendationSkipped("buyback", 
+            buybackBudget == 0 ? "insufficient_budget" : "buy_weight_too_high", 
+            block.timestamp);
+        return false;
+        } 
+        else {
+        revert InvalidActionType(actionType);
+        }
+    }
         return false;
     }
 
