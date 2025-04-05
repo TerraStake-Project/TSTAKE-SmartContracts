@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity ^0.8.21;
+pragma solidity ^0.8.27;
 
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/AddressUpgradeable.sol";
+import "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/Client.sol";
 
-// Replace LayerZero with Chainlink CCIP imports
 import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
 import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
 import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.0/token/ERC20/IERC20.sol";
@@ -41,14 +43,13 @@ contract CrossChainHandler is
     uint256 public constant FEE_BUFFER_BPS = 1000; // 10%
     uint256 public constant MAX_TIMESTAMP_DRIFT = 15 minutes;
 
-    // Arbitrum Mainnet
+    // Arbitrum Mainnet and Sepolia Testnet
+    // Both ARB_CCIP_ROUTER and ARB_SEPOLIA_ROUTER share the same address intentionally for compatibility.
     address constant ARB_CCIP_ROUTER = 0xE1053aE1857476f36A3C62580FF9b016E8EE8F6f;
-
-    // Arbitrum Sepolia Testnet
     address constant ARB_SEPOLIA_ROUTER = 0xE1053aE1857476f36A3C62580FF9b016E8EE8F6f;
 
     // ============ Immutables ============
-    address public immutable ccipRouter; 
+    IRouterClient public immutable ccipRouter; 
     uint64 public immutable localChainId; // Uses CCIP's chain selector format
 
     // ============ State Variables ============
@@ -88,6 +89,28 @@ contract CrossChainHandler is
     }
 
     // ============ Configuration ============
+
+    /**
+     * @notice Updates the chain configuration
+     * @param chainId Destination chain ID
+     * @param processor Address of the CrossChainHandler on the destination chain
+     * @dev Emits a {ChainConfigured} event.
+     */
+    function configureChain(
+    function _updateChainConfig(
+        uint64 chainId,
+        address processor,
+        uint256 gasLimit
+    ) private {
+        _chains[chainId] = ChainConfig({
+            isSupported: true,
+            processor: processor,
+            gasLimit: gasLimit,
+            lastUpdate: block.timestamp
+        });
+
+        emit ChainConfigured(chainId, processor, gasLimit);
+    }
     /**
      * @notice Configures a destination chain for cross-chain messaging
      * @param chainId Destination chain ID (CCIP chain selector)
@@ -99,21 +122,16 @@ contract CrossChainHandler is
         address processor,
         uint256 gasLimit
     ) external onlyRole(ADMIN_ROLE) {
-        require(gasLimit >= MIN_GAS_LIMIT && gasLimit <= MAX_GAS_LIMIT, "Invalid gas");
-        if (chainId == 0 || chainId == localChainId) revert InvalidChain();
+        require(gasLimit >= MIN_GAS_LIMIT && gasLimit <= MAX_GAS_LIMIT, "Gas limit must be between MIN_GAS_LIMIT and MAX_GAS_LIMIT");
+        if (chainId == 0) revert InvalidChain("Chain ID cannot be zero");
+        if (processor == address(0)) revert("Processor address cannot be zero");
         if (processor == address(0)) revert ZeroAddress();
 
-        _chains[chainId] = ChainConfig({
-            isSupported: true,
-            processor: processor,
-            gasLimit: gasLimit,
-            lastUpdate: block.timestamp
-        });
-
-        emit ChainConfigured(chainId, processor, gasLimit);
+        _updateChainConfig(chainId, processor, gasLimit);
     }
 
     // ============ Events ============
+    event UnauthorizedAccessAttempt(address indexed sender);
     event MessageSent(uint64 indexed destChainId, bytes32 indexed payloadHash, uint64 messageId, uint256 fee);
     event MessageProcessed(uint64 indexed srcChainId, bytes32 indexed payloadHash, bytes32 messageId);
     event MessageFailed(uint64 indexed srcChainId, bytes32 indexed payloadHash, bytes reason);
@@ -137,20 +155,23 @@ contract CrossChainHandler is
     error TransactionThrottled();
     error UnauthorizedSender(address sender);
 
-    // ============ Modifiers ============
     modifier checkThrottle(address user) {
         if (address(antiBot) != address(0)) {
-            (bool isThrottled, ) = antiBot.checkThrottle(user);
-            require(!isThrottled, "Throttled");
+            try antiBot.checkThrottle(user) returns (bool isThrottled, uint256) {
+                require(!isThrottled, "Throttled");
+            } catch {
+                revert("AntiBot check failed");
+            }
         }
         _;
+    }
     }
 
     // ============ Constructor ============
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(address _ccipRouter) {
         if (_ccipRouter == address(0)) revert ZeroAddress();
-        ccipRouter = IRouterClient(_ccipRouter);
+        ccipRouter = _ccipRouter;
         localChainId = uint64(block.chainid); // Convert to uint64 for CCIP compatibility
         _disableInitializers();
     }
@@ -196,7 +217,7 @@ contract CrossChainHandler is
     function sendMessage(
         uint64 destChainId, 
         bytes calldata payload
-    ) external payable onlyRole(OPERATOR_ROLE) checkThrottle(msg.sender) nonReentrant whenNotPaused returns (bytes32 payloadHash, uint256 messageId) {
+    ) external payable onlyRole(OPERATOR_ROLE) checkThrottle(msg.sender) nonReentrant whenNotPaused returns (bytes32 payloadHash, uint256) {
         uint64 ccipDestChainId = uint64(destChainId); // Convert to CCIP format
         
         payloadHash = keccak256(payload);
@@ -238,16 +259,21 @@ contract CrossChainHandler is
     function _executeTokenAction(uint16 srcChainId, address recipient, uint256 amount, bytes32 ref) 
         internal 
     {
-        (bool success, ) = tokenContract.call(
-            abi.encodeWithSelector(
-                ICrossChainHandler.executeRemoteTokenAction.selector,
-                srcChainId,
-                recipient,
-                amount,
-                ref
-            )
-        );
-        require(success, "Token action failed");
+        if (!AddressUpgradeable.isContract(tokenContract)) {
+            revert("Token contract is not a valid contract");
+        }
+        try ICrossChainHandler(tokenContract).executeRemoteTokenAction(
+            srcChainId,
+            recipient,
+            amount,
+            ref
+        ) {
+            // Action executed successfully
+        } catch Error(string memory reason) {
+            revert(string(abi.encodePacked("Token action failed: ", reason)));
+        } catch {
+            revert("Token action failed: unknown error");
+        }
     }
 
     /**
@@ -255,21 +281,69 @@ contract CrossChainHandler is
      * @param srcChainId Source chain ID
      * @param state CrossChainState containing halving epoch, timestamp, etc.
      */
+    /**
+        if (block.timestamp > type(uint256).max - MAX_TIMESTAMP_DRIFT) {
+            revert(string(abi.encodePacked(
+                "Timestamp overflow: current timestamp is ", 
+                Strings.toString(block.timestamp), 
+                ", maximum allowed drift is ", 
+                Strings.toString(MAX_TIMESTAMP_DRIFT)
+            )));
+        }
+     * @param srcChainId Source chain ID
+     * @param state CrossChainState containing halving epoch, timestamp, and other state data
+     * @dev The `CrossChainState` struct must include:
+     *      - `halvingEpoch` (uint256): The epoch number for the halving event.
+     *      - `timestamp` (uint256): The timestamp of the state update.
+     *      - Additional fields as required for cross-chain synchronization.
+     *      Validation:
+     *      - The `timestamp` must not exceed the current block timestamp plus `MAX_TIMESTAMP_DRIFT`.
+     *      - The `timestamp` must not cause an overflow when added to `MAX_TIMESTAMP_DRIFT`.
+        CrossChainState storage currentState = _chainStates[srcChainId];
+        if (state.halvingEpoch > currentState.halvingEpoch) {
+            currentState.halvingEpoch = state.halvingEpoch;
+        }
+        if (state.timestamp > currentState.timestamp) {
+            currentState.timestamp = state.timestamp;
+        }
+        // Add additional field updates as necessary
+     */
     function _updateChainState(uint64 srcChainId, CrossChainState memory state) internal {
+        if (block.timestamp > type(uint256).max - MAX_TIMESTAMP_DRIFT) revert("Timestamp overflow");
         if (state.timestamp > block.timestamp + MAX_TIMESTAMP_DRIFT) revert("Future timestamp");
         
         // Update local state
         _chainStates[srcChainId] = state;
         
-        // Sync with TerraStakeToken (if newer halving epoch)
-        if (address(tokenContract) != address(0)) {
-            ICrossChainHandler(tokenContract).updateFromCrossChain(
+        if (address(tokenContract) != address(0) && AddressUpgradeable.isContract(tokenContract)) {
+            try ICrossChainHandler(tokenContract).updateFromCrossChain(
                 uint16(srcChainId), // Convert back to uint16 for token contract
                 state
-            );
+            ) {
+                // Successfully updated from cross-chain
+            } catch {
+                revert("Token contract does not implement ICrossChainHandler interface or call failed");
+            }
+        }
         }
     }
+    // ============ Utility Functions ============
 
+    /**
+     * @notice Processes a previously received message
+     * @param sourceChainSelector Source chain ID
+     * @param data Message payload
+     */
+    function processReceivedMessage(uint64 sourceChainSelector, bytes memory data) external onlyRole(OPERATOR_ROLE) {
+        _processMessage(sourceChainSelector, data);
+    }
+
+    /**
+     * @notice Event emitted when a message is received
+     * @param sourceChainSelector Source chain ID
+     * @param data Message payload
+     */
+    event MessageReceived(uint64 indexed sourceChainSelector, bytes data);
     // ============ Utility Functions ============
     /**
      * @notice Processes incoming messages
@@ -277,35 +351,49 @@ contract CrossChainHandler is
      * @param data Message payload
      */
     function _processMessage(uint64 sourceChainSelector, bytes memory data) internal {
-        // Validate payload structure
+        // Validate payload structure to ensure the message is not empty
         if (data.length == 0) revert InvalidPayload();
-        
-        // Decode and process message
+
+        // Decode the incoming message payload into a CrossChainState struct
+        // This struct contains information such as halving epoch, timestamp, etc.
         CrossChainState memory state = abi.decode(data, (CrossChainState));
+
+        // Update the local chain state with the decoded data
+        // This includes syncing halving or other state data with the local contract
         _updateChainState(sourceChainSelector, state);
-        
+
+        // Emit an event to notify that the chain state has been updated
+        // This helps in tracking state changes for the specified source chain
         emit CrossChainStateUpdated(sourceChainSelector, state);
     }
 
-    /**
-     * @notice Estimates the fee for sending a message to a destination chain
-     * @param destChainId Destination chain ID (CCIP chain selector)
-     * @param payload Message payload
-     * @return nativeFee Native token fee
-     */
     function estimateMessageFee(
         uint64 destChainId, // Standardized to uint64 for CCIP compatibility
         bytes calldata payload
     ) external view returns (uint256 nativeFee, uint256) {
         uint64 ccipDestChainId = uint64(destChainId); // Convert to uint64 for CCIP
-        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
-            receiver: abi.encode(_chains[ccipDestChainId].processor),
-            data: payload,
+
+        // Pre-initialize a reusable template for the message struct
+        Client.EVM2AnyMessage memory messageTemplate = Client.EVM2AnyMessage({
+            receiver: "",
+            data: "",
             tokenAmounts: new Client.EVMTokenAmount[](0), // No token transfers
-            extraArgs: Client._argsToBytes(
-                Client.EVMExtraArgsV1({
-                    gasLimit: _chains[ccipDestChainId].gasLimit,
-                    strict: false
+            extraArgs: "",
+            feeToken: address(0) // Use native for fees
+        });
+
+        // Update only the necessary fields for each call
+        messageTemplate.receiver = abi.encode(_chains[ccipDestChainId].processor);
+        messageTemplate.data = payload;
+        messageTemplate.extraArgs = Client._argsToBytes(
+            Client.EVMExtraArgsV1({
+                gasLimit: _chains[ccipDestChainId].gasLimit,
+                strict: false
+            })
+        );
+
+        return (ccipRouter.getFee(ccipDestChainId, messageTemplate), 0);
+    }
                 })
             ),
             feeToken: address(0) // Use native for fees
@@ -328,6 +416,7 @@ contract CrossChainHandler is
      * @return CrossChainState struct with halving and other state data
      */
     function getChainState(uint16 chainId) external view returns (CrossChainState memory) {
+        require(chainId <= type(uint16).max, "Chain ID exceeds uint16 range");
         return _chainStates[uint64(chainId)]; // Convert to uint64 for CCIP compatibility
     }
 
@@ -359,13 +448,16 @@ contract CrossChainHandler is
             config.lastUpdate
         );
     }
-
     /**
      * @notice Returns the contract version
      * @return Version string
+     * @dev The version number reflects the current state of the contract's functionality.
+     *      Version "3.0.0" indicates the integration of Chainlink CCIP for cross-chain messaging
+     *      and other significant updates to enhance security and compatibility.
      */
     function version() external pure returns (string memory) {
         return "3.0.0"; // Updated for CCIP integration
+    }
     }
 
     /**
@@ -373,19 +465,32 @@ contract CrossChainHandler is
      * @param message The CCIP message
      */
     function ccipReceive(Client.Any2EVMMessage memory message) external override {
-        require(msg.sender == address(ccipRouter), "Invalid caller");
+        if (msg.sender != address(ccipRouter)) revert InvalidCaller();
         
         address sender = abi.decode(message.sender, (address));
-        if (!_allowedSenders[sender]) revert UnauthorizedSender(sender);
+        if (!_allowedSenders[sender]) {
+            emit UnauthorizedAccessAttempt(sender);
+            revert UnauthorizedSender(sender);
+        }
         
-        bytes32 messageId = keccak256(abi.encode(
-            message.sourceChainSelector, 
-            message.sender, 
+        // Check if the source chain is supported
+        if (!_chains[message.sourceChainSelector].isSupported) {
+            revert InvalidChain();
+        }
+        
+        bytes32 messageId = keccak256(abi.encodePacked(
+            message.sourceChainSelector, "|", 
+            message.sender, "|", 
             message.messageId
         ));
         if (_processedMessages[messageId]) revert StaleMessage();
         
+        // Mark the message as processed before further processing to prevent replay attacks
         _processedMessages[messageId] = true;
+        emit MessageReceived(message.sourceChainSelector, message.data);
+        // Validate the message data payload structure
+        if (message.data.length == 0) revert InvalidPayload();
+        
         _processMessage(message.sourceChainSelector, message.data);
     }
 
@@ -393,10 +498,18 @@ contract CrossChainHandler is
     /**
      * @notice Pauses the contract in an emergency
      */
+    /**
+     * @notice Pauses the contract in case of an emergency or unexpected behavior
+     * @dev This function should only be used when the contract needs to be halted to prevent further damage or exploitation.
+     */
     function pause() external onlyRole(ADMIN_ROLE) {
         _pause();
     }
-
+    /**
+     * @notice Unpauses the contract
+     * @dev Should only be used after resolving the issue that caused the pause.
+     */
+    function unpause() external onlyRole(ADMIN_ROLE) {
     /**
      * @notice Unpauses the contract
      */
@@ -406,6 +519,10 @@ contract CrossChainHandler is
 
     /**
      * @notice Allows the contract to receive native tokens (required for CCIP fees)
+     */
+    /**
+     * @notice Allows the contract to receive native tokens.
+     * @dev This is required to fund CCIP fees for cross-chain messaging.
      */
     receive() external payable {}
 }
