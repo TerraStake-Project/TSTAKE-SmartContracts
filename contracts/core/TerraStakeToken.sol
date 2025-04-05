@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
@@ -8,9 +9,7 @@ import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnume
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -27,6 +26,7 @@ import "../interfaces/IAIEngine.sol";
 import "../interfaces/ITerraStakeNeural.sol";
 import "../interfaces/ICrossChainHandler.sol";
 import "../interfaces/IAntiBot.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title TerraStakeToken 
@@ -64,6 +64,7 @@ contract TerraStakeToken is
     uint256 public constant EMERGENCY_COOLDOWN = 24 hours;
     uint256 public constant MAX_RATE_LIMIT_WINDOW = 1 hours;
     uint256 public constant CROSS_CHAIN_MESSAGE_EXPIRY = 1 days;
+    uint256 public constant MAX_TWAP_OBSERVATIONS = 100;
 
     // ============ Structs ============
     struct BuybackStats {
@@ -219,6 +220,9 @@ contract TerraStakeToken is
     AggregatorV3Interface public priceFeed;
     AggregatorV3Interface public gasOracle;
 
+    // Governance Address
+    address public governanceAddress;
+
     // Token Metrics
     uint256 public lastTWAPPrice;
     uint256 public lastTWAPUpdate;
@@ -250,7 +254,7 @@ contract TerraStakeToken is
     // Mapping to check if an address is exempt from rate limits
     mapping(address => bool) public isExemptFromRateLimit;
     // Mapping to store daily transfers per address
-    mapping(address => mapping(uint256 => uint256)) public transfersPerDay;
+    mapping(address => mapping(address => uint256)) public transfersPerDay;
 
     // Transaction Tax
     uint256 public buybackTaxBasisPoints;
@@ -823,6 +827,14 @@ contract TerraStakeToken is
     function _recordTWAPObservation() internal {
         if (!poolInitialized) return;
         
+        if (twapObservations[poolId].length >= MAX_TWAP_OBSERVATIONS) {
+            delete twapObservations[poolId][0];
+            for (uint256 i = 1; i < twapObservations[poolId].length; i++) {
+                twapObservations[poolId][i - 1] = twapObservations[poolId][i];
+            }
+            twapObservations[poolId].pop();
+        }
+
         (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(PoolId.wrap(poolId));
         uint128 liquidity = poolManager.getLiquidity(PoolId.wrap(poolId));
         
@@ -1025,7 +1037,7 @@ contract TerraStakeToken is
      */
     function syncStateToChains() external onlyRole(CROSS_CHAIN_OPERATOR_ROLE) nonReentrant {
         if (address(crossChainHandler) == address(0)) revert CrossChainHandlerNotSet();
-        
+
         ICrossChainHandler.CrossChainState memory state = ICrossChainHandler.CrossChainState({
             halvingEpoch: currentHalvingEpoch,
             timestamp: block.timestamp,
@@ -1035,10 +1047,11 @@ contract TerraStakeToken is
         });
 
         bytes memory payload = abi.encode(state);
-        
+
         for (uint256 i = 0; i < activeChainIds.length; i++) {
             uint16 chainId = activeChainIds[i];
-            try crossChainHandler.sendMessage(chainId, payload) returns (bytes32 payloadHash, uint256 nonce) {
+            try {
+                (bytes32 payloadHash, uint256 nonce) = crossChainHandler.sendMessage(chainId, payload);
                 emit CrossChainMessageSent(chainId, payloadHash, nonce);
                 emit CrossChainStateUpdated(chainId, state);
             } catch (bytes memory reason) {
@@ -1059,9 +1072,10 @@ contract TerraStakeToken is
         require(msg.sender == address(crossChainHandler), "Unauthorized");
         require(!isBlacklisted[recipient], "Recipient blacklisted");
         require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
-        
+
         _mint(recipient, amount);
-        
+        _recordTransaction(recipient, amount, "cross_chain_mint");
+
         if (address(neuralManager) != address(0)) {
             neuralManager.recordCrossChainTransfer(srcChainId, recipient, amount, txreference);
         }
@@ -1179,6 +1193,7 @@ contract TerraStakeToken is
         bool supported,
         address[] calldata trustedSenders
     ) external onlyRole(ADMIN_ROLE) {
+        bool previousState = supportedChainIds[chainId];
         supportedChainIds[chainId] = supported;
 
         // Revoke previous trusted senders
@@ -1198,7 +1213,9 @@ contract TerraStakeToken is
             trustedCrossChainSenders[senderHash] = true;
         }
 
-        emit ChainSupportUpdated(chainId, supported);
+        if (previousState != supported) {
+            emit ChainSupportUpdated(chainId, supported);
+        }
     }
     // ============ Neural Network & AI Functions ============
 
@@ -1324,29 +1341,85 @@ contract TerraStakeToken is
     }
 
     /**
-     * @notice Internal liquidity optimization
+     * @notice Internal liquidity optimization based on neural recommendations and current TWAP
      */
     function _optimizeLiquidity() internal {
-        // Implementation would rebalance Uniswap positions
-        // based on current market conditions and neural weights
-    }
-    // ============ Staking & Governance Functions ============
-    /**
-     * @notice Set governance contract
-     */
-    function setGovernanceContract(address _governanceContract) external onlyRole(ADMIN_ROLE) {
-        require(_governanceContract != address(0), "Zero address");
-        governanceContract = ITerraStakeGovernance(_governanceContract);
-        emit GovernanceUpdated(_governanceContract);
-    }
+        if (!poolInitialized) revert PoolNotInitialized();
+        if (positions[positionCounter].isActive) {
+            _removeLiquidity(positionCounter, 0, address(this));
+        }
 
+        (uint160 sqrtPriceX96, int24 currentTick, , ) = poolManager.getSlot0(PoolId.wrap(poolId));
+
+        // Determine direction bias from neural weights
+        bool biasUp = currentNeuralWeights.buyWeight > currentNeuralWeights.sellWeight;
+
+        int24 tickSpacing = poolKey.tickSpacing;
+        int24 centerTick = (currentTick / tickSpacing) * tickSpacing;
+
+        int24 range = tickSpacing * 20; // ±20 ticks from center
+        if (currentNeuralWeights.confidenceScore >= 85) {
+            range = tickSpacing * 10; // tighter if confident
+        } else if (currentNeuralWeights.holdWeight > 50) {
+            range = tickSpacing * 30; // wider for passive
+        }
+
+        int24 tickLower = centerTick - range;
+        int24 tickUpper = centerTick + range;
+
+        if (biasUp) {
+            tickLower += tickSpacing;
+            tickUpper += tickSpacing;
+        } else {
+            tickLower -= tickSpacing;
+            tickUpper -= tickSpacing;
+        }
+
+        uint256 usdcAmount = IERC20(Currency.unwrap(poolKey.currency0)).balanceOf(address(this));
+        uint256 tokenAmount = balanceOf(address(this));
+        require(usdcAmount > 0 && tokenAmount > 0, "Insufficient balance");
+
+        // Calculate liquidity based on available balances
+        uint128 liquidity = _calculateLiquidityForAmounts(
+            sqrtPriceX96,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            usdcAmount,
+            tokenAmount
+        );
+
+        IERC20(Currency.unwrap(poolKey.currency0)).approve(address(poolManager), usdcAmount);
+        IERC20(Currency.unwrap(poolKey.currency1)).approve(address(poolManager), tokenAmount);
+
+        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidityDelta: int256(uint256(liquidity)),
+            salt: keccak256(abi.encode(block.timestamp, tickLower, tickUpper, liquidity))
+        });
+
+        poolManager.modifyLiquidity(poolKey, params, abi.encode(address(this), address(this)));
+
+        positionCounter++;
+        positions[positionCounter] = PoolPosition({
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidity: liquidity,
+            tokenId: positionCounter,
+            isActive: true
+        });
+
+        emit PositionCreated(positionCounter, tickLower, tickUpper, liquidity);
+        _recordTWAPObservation();
+    }
+    // ============ Governance Functions ============
     /**
-     * @notice Set staking contract
+     * @notice Set governance address
      */
-    function setStakingContract(address _stakingContract) external onlyRole(ADMIN_ROLE) {
-        require(_stakingContract != address(0), "Zero address");
-        stakingContract = ITerraStakeStaking(_stakingContract);
-        emit StakingUpdated(_stakingContract);
+    function setGovernance(address _governance) external onlyRole(ADMIN_ROLE) {
+        require(_governance != address(0), "Zero address");
+        governanceAddress = _governance;
+        emit GovernanceUpdated(_governance);
     }
 
     /**
@@ -1366,6 +1439,7 @@ contract TerraStakeToken is
         treasuryAddress = _treasuryAddress;
         emit TreasuryUpdated(_treasuryAddress);
     }
+
 
     // ============ Token Economics Functions ============
 
@@ -1392,6 +1466,7 @@ contract TerraStakeToken is
         _burn(address(this), tokensReceived);
         emit BuybackExecuted(usdcAmount, tokensReceived, lastTWAPPrice);
     }
+
 
     /**
      * @notice Internal buyback execution
@@ -1464,8 +1539,29 @@ contract TerraStakeToken is
             tickLower: tickLower,
             tickUpper: tickUpper,
             liquidityDelta: int256(uint256(liquidity)),
-            salt: keccak256(abi.encode(block.timestamp, tickLower, tickUpper, liquidity))
-        });
+                salt: keccak256(abi.encode(block.timestamp, tickLower, tickUpper, liquidity))
+            });
+            
+            (BalanceDelta delta0, BalanceDelta delta1) = poolManager.modifyLiquidity(
+                poolKey,
+                params,
+                abi.encode(address(this), address(this))
+            );
+            
+            positionId = ++positionCounter;
+            positions[positionId] = PoolPosition({
+                tickLower: tickLower,
+                tickUpper: tickUpper,
+                liquidity: liquidity,
+                tokenId: positionId,
+                isActive: true
+            });
+            
+            emit LiquidityInjected(usdcAmount, tokenAmount);
+            emit PositionCreated(positionId, tickLower, tickUpper, liquidity);
+            _recordTWAPObservation();
+            return positionId;
+        }
         
         poolManager.modifyLiquidity(
             poolKey,
@@ -1637,23 +1733,10 @@ contract TerraStakeToken is
     /**
      * @notice Calculate tax amount for a transaction
      */
-    function _calculateTax(
-        address sender,
-        address recipient,
-        uint256 amount,
-        string memory taxType
-    ) internal view returns (uint256 taxAmount) {
-        if (isExemptFromTax[sender] || isExemptFromTax[recipient]) return 0;
+    enum TaxType { Buy, Sell, Transfer }
 
-        uint256 taxRate;
-        if (keccak256(bytes(taxType)) == keccak256("buy")) {
-            taxRate = buyTax;
-        } else if (keccak256(bytes(taxType)) == keccak256("sell")) {
-            taxRate = sellTax;
-        } else {
-            taxRate = transferTax;
-        }
-
+    function _calculateTax(address sender, address recipient, uint256 amount, TaxType taxType) internal view returns (uint256 taxAmount) {
+        uint256 taxRate = (taxType == TaxType.Buy) ? buyTax : (taxType == TaxType.Sell) ? sellTax : transferTax;
         return (amount * taxRate) / 100;
     }
 
@@ -1708,6 +1791,20 @@ contract TerraStakeToken is
      */
     function batchBlacklist(address[] calldata accounts, bool status) external onlyRole(ADMIN_ROLE) {
         for (uint256 i = 0; i < accounts.length; ) {
+            address account = accounts[i];
+            require(account != address(0), "Invalid address");
+            isBlacklisted[account] = status;
+            emit BlacklistUpdated(account, status);
+            unchecked { ++i; }
+        }
+    }
+
+    /**
+     * @notice Batch update blacklist status with range
+     */
+    function batchBlacklist(address[] calldata accounts, bool status, uint256 startIndex, uint256 endIndex) external onlyRole(ADMIN_ROLE) {
+        require(startIndex < endIndex && endIndex <= accounts.length, "Invalid range");
+        for (uint256 i = startIndex; i < endIndex; ) {
             address account = accounts[i];
             require(account != address(0), "Invalid address");
             isBlacklisted[account] = status;
@@ -1967,6 +2064,7 @@ contract TerraStakeToken is
         
         // Large transfer verification
         if (amount >= LARGE_TRANSFER_THRESHOLD) {
+            require(address(poolManager) != address(0), "PoolManager not set");
             require(liquidityGuard.verifyTWAPForWithdrawal(), "Liquidity check failed");
         }
         
@@ -2265,6 +2363,8 @@ contract TerraStakeToken is
      * @notice Get pool information
      */
     function getPoolInfo() external view returns (PoolInfo memory poolInfo) {
+        require(address(poolManager) != address(0), "PoolManager not set");
+        require(poolInitialized, "Pool not initialized");
         if (!poolInitialized) {
             return PoolInfo(bytes32(0), 0, 0, 0, 0, 0);
         }
@@ -2344,14 +2444,20 @@ contract TerraStakeToken is
     ) external onlyRole(MINTER_ROLE) nonReentrant {
         require(recipients.length > 0, "No recipients");
         require(recipients.length <= MAX_BATCH_SIZE, "Batch too large");
-        require(amount > 0, "Zero amount");
-
-        // Check for duplicates
+        // Check for duplicates using a mapping
+        mapping(address => bool) memory seen;
         for (uint256 i = 0; i < recipients.length; i++) {
-            for (uint256 j = i + 1; j < recipients.length; j++) {
-                require(recipients[i] != recipients[j], "Duplicate recipient");
-            }
+            require(!seen[recipients[i]], "Duplicate recipient");
+            seen[recipients[i]] = true;
+
+            // Perform airdrop logic
+            require(recipients[i] != address(0), "Invalid recipient");
+            require(!isBlacklisted[recipients[i]], "Recipient blacklisted");
+            _mint(recipients[i], adjustedAmount);
+            _recordTransaction(recipients[i], adjustedAmount, "airdrop");
         }
+
+        emit AirdropExecuted(recipients, adjustedAmount, totalAdjusted);
 
         uint256 totalAmount = amount * recipients.length;
         uint256 adjustedAmount = applyHalvingToMint ? _applyHalvingToAmount(amount) : amount;
@@ -2382,6 +2488,7 @@ contract TerraStakeToken is
     ) external onlyRole(GOVERNANCE_ROLE) returns (uint256 grantId) {
         require(beneficiary != address(0), "Invalid beneficiary");
         require(amount > 0, "Zero amount");
+        require(startTime >= block.timestamp, "Start time must be in the future or now");
         require(cliffDuration <= vestingDuration, "Invalid cliff");
         
         grantId = grants.length;
@@ -2408,7 +2515,8 @@ contract TerraStakeToken is
     function claimGrant(uint256 grantId) external nonReentrant {
         require(grantId < grants.length, "Invalid grant");
         Grant storage grant = grants[grantId];
-        require(msg.sender == grant.beneficiary, "Not beneficiary");
+        require(!grant.revoked, "Grant revoked");
+        require(grant.vestingDuration > 0, "Invalid vesting duration");
         require(!grant.revoked, "Grant revoked");
 
         uint256 vested = calculateVestedAmount(grantId);
@@ -2458,7 +2566,12 @@ contract TerraStakeToken is
     /**
      * @notice Distribute collected fees
      */
-    function distributeFees() external onlyRole(TREASURY_ROLE) nonReentrant {
+    function distributeFees() external onlyRole(GOVERNANCE_ROLE) {
+        require(
+            buyTaxAllocation.liquidity + buyTaxAllocation.treasury + buyTaxAllocation.staking + buyTaxAllocation.buyback == 100,
+            "Allocation percentages must sum to 100"
+        );
+
         uint256 totalFees = buybackBudget;
         require(totalFees > 0, "No fees to distribute");
 
@@ -2467,39 +2580,40 @@ contract TerraStakeToken is
         uint256 stakingAmount = (totalFees * buyTaxAllocation.staking) / 100;
         uint256 buybackAmount = totalFees - liquidityAmount - treasuryAmount - stakingAmount;
 
+        // Ensure poolManager is properly initialized
+        require(address(poolManager) != address(0), "PoolManager not set");
+
         if (liquidityAmount > 0) {
             _transfer(address(this), address(poolManager), liquidityAmount);
         }
-        if (treasuryAmount > 0) {
-            _transfer(address(this), treasuryAddress, treasuryAmount);
+        if (stakingAmount > 0) {
+            require(address(stakingContract) != address(0), "Staking contract not initialized");
+            _transfer(address(this), address(stakingContract), stakingAmount);
         }
         if (stakingAmount > 0 && address(stakingContract) != address(0)) {
             _transfer(address(this), address(stakingContract), stakingAmount);
         }
-
-        buybackBudget = buybackAmount;
+        require(buybackAmount >= 0, "Buyback amount cannot be negative");
         emit FeesDistributed(liquidityAmount, treasuryAmount, stakingAmount, buybackAmount);
+        
     }
 
     /**
      * @notice Execute batch transfer
-     */
-    function batchTransfer(
-        address[] calldata recipients,
-        uint256[] calldata amounts
-    ) external nonReentrant {
         require(recipients.length == amounts.length, "Length mismatch");
         require(recipients.length <= MAX_BATCH_SIZE, "Batch too large");
 
         uint256 total = 0;
-        for (uint256 i = 0; i < amounts.length; i++) {
-            total += amounts[i];
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address recipient = recipients[i];
+            uint256 amount = amounts[i];
+            require(recipient != address(0), "Invalid recipient");
+            total += amount;
+            _transfer(msg.sender, recipient, amount);
+            _recordTransaction(recipient, amount, "batch_transfer");
         }
 
         require(balanceOf(msg.sender) >= total, "Insufficient balance");
-
-        for (uint256 i = 0; i < recipients.length; i++) {
-            address recipient = recipients[i];
             uint256 amount = amounts[i];
             require(recipient != address(0), "Invalid recipient");
             _transfer(msg.sender, recipient, amount);
